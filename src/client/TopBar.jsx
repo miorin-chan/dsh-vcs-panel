@@ -612,10 +612,12 @@ export function TopBar({
         </span>
       )}
       {syncable ? <SyncButton branch={branch} syncing={syncing} onSync={onSync} t={t} locale={locale} /> : null}
+      <span className="vcs-sr-only" role="status">{notice?.tone === 'info' ? notice.text : ''}</span>
       {notice === null || notice === undefined ? null : (
         <p
           className={notice.tone === 'info' ? 'vcs-notice vcs-notice-info' : 'vcs-notice'}
-          role={notice.tone === 'info' ? 'status' : 'alert'}
+          aria-hidden={notice.tone === 'info' ? true : undefined}
+          role={notice.tone === 'error' ? 'alert' : undefined}
           title={notice.text}
         >
           {notice.text}

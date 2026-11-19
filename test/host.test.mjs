@@ -1969,8 +1969,9 @@ test('apply registers nine GET routes and every write route inside the fence and
     '/api/vcs.tag',
     '/api/vcs.commit-op',
     '/api/vcs.stage',
+    '/api/vcs.stage-history',
   ])
-  const writePaths = new Set(['/api/vcs.sync', '/api/vcs.switch', '/api/vcs.branch', '/api/vcs.tag', '/api/vcs.commit-op', '/api/vcs.stage'])
+  const writePaths = new Set(['/api/vcs.sync', '/api/vcs.switch', '/api/vcs.branch', '/api/vcs.tag', '/api/vcs.commit-op', '/api/vcs.stage', '/api/vcs.stage-history'])
   for (const registered of routes) {
     assert.deepEqual(registered.methods, writePaths.has(registered.path) ? ['POST'] : ['GET'])
     assert.equal(registered.requestBody, 'buffered')

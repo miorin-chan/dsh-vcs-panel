@@ -213,6 +213,7 @@ export function VcsView({
   const detailRoot = selectedWorktree?.path ?? state.repo
   const detailApi = detailRoot === state.repo ? api : siblingApi
   const detailStatus = selectedTree === null ? status : statuses[selectedTree.path] ?? IDLE_STATUS
+  const canStage = capabilities?.stageOps === true && selectedWorktree?.path === state.repo
   const anchorHead = showCurrentHead ? worktreeRows[0]?.head ?? null : null
   const graphWorktreesKey = JSON.stringify(worktreeRows.map(({ id, head }) => ({ id, head })))
   const layout = useMemo(
@@ -1397,8 +1398,8 @@ export function VcsView({
                   onReading={onReading}
                   control={detailControl}
                   capabilities={capabilities}
-                  onStage={capabilities?.stageOps === true && selectedWorktree?.path === state.repo
-                    ? actions.stage : undefined}
+                  onStage={canStage ? actions.stage : undefined}
+                  onStageHistory={canStage ? actions.stageHistory : undefined}
                   stageDisabled={actions.repoBusy || refreshing !== null || detailStatus.status !== 'ready'}
                   onRefActions={capabilities?.branchOps === true || capabilities?.tagOps === true
                     ? actions.onRefActions

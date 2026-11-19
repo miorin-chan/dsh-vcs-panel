@@ -236,6 +236,11 @@ export function createApi(sessionId, { fetchImpl = globalThis.fetch, base = '', 
       return post('/api/vcs.stage', { repo, scope, path, oldPath, fingerprint, lines })
     },
 
+    /** Undo or redo the entry currently shown in the working tree toolbar. */
+    stageHistory(repo, action, id) {
+      return post('/api/vcs.stage-history', { repo, action, id })
+    },
+
     /**
      * Local branches a switch can target, newest commit first.
      * @param {string} repo - repository root.

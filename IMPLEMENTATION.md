@@ -11,7 +11,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | 路由 | 查询参数 | 应答字段 |
 | --- | --- | --- |
 | `GET /api/vcs.repositories` | `sessionId` | `cwd`、`repositories[]`（`path`、`name`、`enclosing`、`vcs`、`capabilities`、`worktrees[]`：`path`、`name`、`head`、Git 的 `branch`）、`truncated`、`worktreesTruncated` |
-| `GET /api/vcs.status` | `sessionId`、`repo`、`worktree?` | `repo`、`vcs`、`capabilities`、`defaultNode`、`branch`、`workingCopy?`、`groups`、`total`、`truncated` |
+| `GET /api/vcs.status` | `sessionId`、`repo`、`worktree?` | `repo`、`vcs`、`capabilities`、`defaultNode`、`branch`、`workingCopy?`、`groups`、`total`、`truncated`、`stageHistory` |
 | `GET /api/vcs.branches` | `sessionId`、`repo` | `branches[]`（`name`、`current`）、`truncated`（仅 `capabilities.branchSwitch` 为真时可用） |
 | `GET /api/vcs.remotes` | `sessionId`、`repo` | `remotes[]`、`truncated`（`capabilities.tagOps` 或 `capabilities.branchOps` 为真时可用） |
 | `GET /api/vcs.untracked` | `sessionId`、`repo`、`worktree?`、`path`（`/` 结尾） | `path`、`entries[]`（`name`、`path`、`type`）、`truncated`（仅 `capabilities.untracked` 为真时可用） |
@@ -25,6 +25,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `POST /api/vcs.tag` | JSON 请求体 `{ sessionId, repo, action, tag, remote? }` | `delete` → `{ tag }`；`push` → `{ tag, remote, pushed }`（仅 `capabilities.tagOps` 为真时可用） |
 | `POST /api/vcs.commit-op` | JSON 请求体 `{ sessionId, repo, action, sha, name?, message?, mode?, checkout? }` | `tag` → `{ tag, sha }`；`branch` → `{ branch, sha, checkedOut?: true }`；`checkout` → `{ sha }`；`cherry-pick` / `revert` / `drop` / `rebase` → `{ sha, current }`；`merge` → `{ sha, current, result }`；`reset` → `{ sha, current, mode }`（仅 `capabilities.commitOps` 为真时可用） |
 | `POST /api/vcs.stage` | JSON 请求体 `{ sessionId, repo, scope, path, oldPath?, fingerprint?, lines? }` | `{ scope, path }`（仅 `capabilities.stageOps` 为真时可用） |
+| `POST /api/vcs.stage-history` | JSON 请求体 `{ sessionId, repo, action: 'undo' \| 'redo', id }` | `{ action, stageHistory }`（仅 `capabilities.stageOps` 为真时可用） |
 
 ### 输入校验与路径边界
 
@@ -39,7 +40,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
   状态与详情读取的 `worktree` 只接收一个目标，历史读取可接收多个无重复的绝对路径；每次根据 `repo` 重新校验。Git 工作区文件路径约束使用所选树的根。
   写请求仍只接受原仓库白名单，带 `worktree` 参数一律拒绝。
 - **路径与修订号净化**：`validateRelPath` 拒绝绝对路径、反斜杠、空段、`.`、`..`、`-` 前缀与控制字符，Git 侧再包 `:(literal)` pathspec，Jujutsu 侧用 `file:"..."` fileset。提交 ID 先做 7–64 位十六进制校验；Git 再经 `rev-parse --verify <sha>^{commit}` 解析，Jujutsu 仅接受 `@` 或十六进制 ID。
-- **写请求栅栏**：`vcs.sync`、`vcs.switch`、`vcs.branch`、`vcs.tag`、`vcs.commit-op` 与 `vcs.stage` 只接受 `POST`，`content-type` 必须是 `application/json`（跨站页面不经 CORS 预检发不出），`Sec-Fetch-Site` 存在且不是 `same-origin` / `none` 时返回 `403 forbidden`；请求体中的 `sessionId` 与 `repo` 再走与读取相同的会话与仓库白名单。切换的 `branch` 与分支操作的 `branch`、`name`、`local` 必须是字符串：拒绝空串、超过 255 字符、空白或控制字符、`-` 前缀。`vcs.branch` 的 `action` 必须是 `rename`、`delete`、`merge`、`rebase`、`push`、`checkout-remote`、`delete-remote`、`merge-remote` 或 `pull-remote` 之一；`name` 只用于 `rename`，`local` 只用于 `checkout-remote`，`force` 只用于 `delete` 且必须是布尔值。本地分支操作的目标必须命中该仓库的本地分支列表；重命名与远程检出的新名字还要通过 `git check-ref-format refs/heads/<name>`。远程分支操作的目标必须由后端按 `git remote` 的最长远程名切分，并命中一个真实、非符号引用的 `refs/remotes/<remote>/<branch>`；不支持 `<remote>/HEAD`。删除只发送 `refs/heads/<branch>` 且不带 `--force`；拉取只抓取命名的 `refs/heads/<branch>` 到对应的 `refs/remotes/<remote>/<branch>`。`vcs.tag` 的 `action` 必须是 `delete` 或 `push`；`tag` 拒绝空串、超过 255 字符、空白或控制字符与 `-` 前缀，再通过 `git check-ref-format refs/tags/<name>` 并确认该 ref 存在；`push` 的 `remote` 必须命中 `git remote` 的结果。`vcs.commit-op` 的 `action` 必须是 `tag`、`branch`、`checkout`、`cherry-pick`、`revert`、`drop`、`merge`、`rebase` 或 `reset`；`sha` 为 7–64 位十六进制；`tag` / `branch` 的 `name` 复用引用名校验；`branch` 的可选 `checkout` 必须是布尔值；`tag` 的 `message` 是长度不超过 4,000 的字符串；`reset` 的 `mode` 必须是 `soft`、`mixed` 或 `hard`。同一仓库根同时只允许一次写操作，第二次返回 `409 busy`；这些写互相排斥。
+- **写请求栅栏**：`vcs.sync`、`vcs.switch`、`vcs.branch`、`vcs.tag`、`vcs.commit-op` 、`vcs.stage` 与 `vcs.stage-history` 只接受 `POST`，`content-type` 必须是 `application/json`（跨站页面不经 CORS 预检发不出），`Sec-Fetch-Site` 存在且不是 `same-origin` / `none` 时返回 `403 forbidden`；请求体中的 `sessionId` 与 `repo` 再走与读取相同的会话与仓库白名单。切换的 `branch` 与分支操作的 `branch`、`name`、`local` 必须是字符串：拒绝空串、超过 255 字符、空白或控制字符、`-` 前缀。`vcs.branch` 的 `action` 必须是 `rename`、`delete`、`merge`、`rebase`、`push`、`checkout-remote`、`delete-remote`、`merge-remote` 或 `pull-remote` 之一；`name` 只用于 `rename`，`local` 只用于 `checkout-remote`，`force` 只用于 `delete` 且必须是布尔值。本地分支操作的目标必须命中该仓库的本地分支列表；重命名与远程检出的新名字还要通过 `git check-ref-format refs/heads/<name>`。远程分支操作的目标必须由后端按 `git remote` 的最长远程名切分，并命中一个真实、非符号引用的 `refs/remotes/<remote>/<branch>`；不支持 `<remote>/HEAD`。删除只发送 `refs/heads/<branch>` 且不带 `--force`；拉取只抓取命名的 `refs/heads/<branch>` 到对应的 `refs/remotes/<remote>/<branch>`。`vcs.tag` 的 `action` 必须是 `delete` 或 `push`；`tag` 拒绝空串、超过 255 字符、空白或控制字符与 `-` 前缀，再通过 `git check-ref-format refs/tags/<name>` 并确认该 ref 存在；`push` 的 `remote` 必须命中 `git remote` 的结果。`vcs.commit-op` 的 `action` 必须是 `tag`、`branch`、`checkout`、`cherry-pick`、`revert`、`drop`、`merge`、`rebase` 或 `reset`；`sha` 为 7–64 位十六进制；`tag` / `branch` 的 `name` 复用引用名校验；`branch` 的可选 `checkout` 必须是布尔值；`tag` 的 `message` 是长度不超过 4,000 的字符串；`reset` 的 `mode` 必须是 `soft`、`mixed` 或 `hard`。同一仓库根同时只允许一次写操作，第二次返回 `409 busy`；这些写互相排斥。
 
 失败统一返回 `{ error: { code, message } }`，不携带宿主绝对路径、原始命令或堆栈：
 
@@ -81,6 +82,9 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `stale-diff` | 409 | 暂存目标已变化，或逐行选择的指纹与当前 diff 不匹配 |
 | `staging-unsupported` | 409 | 当前目标或改动不支持请求的暂存操作 |
 | `staging-failed` | 409 | Git 未能完成暂存或取消暂存 |
+| `stage-history-stale` | 409 | 历史记录已变化，或索引条目、`HEAD`、工作树身份与预计状态不匹配 |
+| `stage-history-unavailable` | 409 | 当前没有可重放的记录，或仓库状态、对象或索引布局不支持事务 |
+| `stage-history-busy` | 409 | Git 索引锁已存在，或该仓库已有面板写操作 |
 
 写操作失败时，`stderr` 末尾三行去掉 URL 中的凭据后只写入 Host 日志（`VcsError.detail`），不进入应答。
 
@@ -137,9 +141,17 @@ Git 工作树预览保留 Git 的读取能力。单选其他工作树或多选�
 - `scope` 决定方向。`unstaged` 与 `untracked` 执行暂存，`staged` 执行取消暂存。`path` 与可选 `oldPath` 是仓库相对路径。省略 `lines` 表示整文件操作。
 - 支持逐行操作的 Git 工作区文本 diff 返回 `lineStaging: true` 和 `fingerprint`。Client 提交该指纹及非空的 `lines: [{ hunk, line }]`。两项索引均从零开始，分别指向已返回的 `hunks` 和对应 hunk 的 `lines`。增删行可独立选择，显示行号和左右布局不参与索引计算。
 - 整文件操作支持二进制、符号链接、模式变化、删除及经 Git 状态验证的重命名。逐行操作适用于受支持的普通文件文本 diff，包括部分新增或删除。重命名、复制、模式变化、符号链接、子模块、二进制、超限或冲突 diff 不声明 `lineStaging`。未跟踪文本需由 Host 核对 UTF-8 内容与 Git diff 一致，可执行位遵循 Git 的 `core.fileMode` 设置。
-- Host 在共享写锁内校验暂存目标。逐行操作重新读取文件 diff 并校验指纹和所选行，再以完整的 index 源 blob 构建补丁。源 blob 上限为 2 MiB，与 diff 输出和 Client 渲染上限分别校验。`git apply --cached` 在取得 index 锁后校验原文。整文件取消暂存在写入前再次核对受影响的 index 条目和 `HEAD`，该复核与 `git update-index` 取得 index 锁之间仍有并发窗口。Client 在操作成功或收到 `stale-diff` 时刷新工作区状态与 diff，并沿用阅读锚点恢复。
+- Host 在共享写锁内校验暂存目标。逐行操作重新读取文件 diff 并校验指纹和所选行，再以完整的 index 源 blob 构建补丁。源 blob 上限为 2 MiB，与 diff 输出和 Client 渲染上限分别校验。`git apply --cached` 在临时索引上校验原文。整文件与逐行写入共用同一 index 事务，在事务内核对受影响条目、`HEAD` 和索引锁。Client 在操作成功或收到 `stale-diff` 时刷新工作区状态与 diff，并沿用阅读锚点恢复。
 
-撤销与重做的后续设计见 [工作区撤销与重做](DESIGN.md#工作区撤销与重做后续设计)。
+### Git 索引撤销与重做
+
+默认 Git 工作树的 `GET /api/vcs.status` 附带 `stageHistory: { undo, redo }`。每个值为 `null` 或 `{ id, scope, path, lineCount? }`，说明对应方向的下一个操作。Client 提交方向与当前记录 `id`，Host 在共享写锁内核对记录，拒绝其他面板已推进的历史位置。操作完成后刷新状态与 diff；拒绝时保留历史位置与当前索引，面板显示具体原因。
+
+- 每个工作树最多保留 32 条，Host 内存预算约为 1 MiB。只保留受影响的语义条目及用于验证的 `HEAD` 和仓库标识。
+- Host 独占创建 Git 的 `index.lock` 后读取索引，将工作放在唯一的临时索引中，通过 `GIT_INDEX_FILE` 交给 Git。提交前再校验实际索引、锁和 `HEAD`，将锁原子重命名为索引。撤销和重做在锁内比较并更新目标条目，保留其他路径的索引改动。拆分索引在发布时可能转为完整索引，语义条目保持一致。Git 的索引锁约束索引写入，发布前另行复核引用和索引文件状态。
+- 快照或恢复规则覆盖普通索引条目，包含文件模式和对象 ID。触及特殊标志或子模块索引条目时建立历史边界。仓库处于合并等未完成状态时，仍可暂存无冲突文件，成功写入后清空原历史。当前事务支持本地 `.git` 目录和经 Git 双向登记的链接工作树。远程执行环境、任意分离的 Git 元数据目录以及含稀疏目录条目的索引无法使用此事务。
+
+撤销和重做的交互边界见 [工作区撤销与重做](DESIGN.md#工作区撤销与重做)。
 
 ## 核心数据形状
 

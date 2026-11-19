@@ -365,21 +365,27 @@ export function useRepoActions({
     restoreFocus(false)
   }, [api, capabilities, clearBranches, refresh, resetReadingForNewHead, restoreFocus, runRepoWrite, sessionId, sessionRef, setNotice, stateRef, t])
 
-  /** Update the working tree's index and reload both staging groups. */
-  const stage = useCallback(async target => {
+  /** Run any index action under the same guard and refresh both staging groups. */
+  const runStageWrite = useCallback(async (action, execute, successKey) => {
     const repo = writeRootRef.current
     if (capabilities?.stageOps !== true || repo === null || inFlightRef.current.has(repo)) return false
+    const needsRefresh = run => run.ok || ['stale-diff', 'stage-history-stale', 'stage-history-unavailable'].includes(run.error?.code)
     setNotice(null)
-    const result = await runRepoWrite(repo, 'stage', target.scope, () => api.stage(repo, target), run => {
+    const result = await runRepoWrite(repo, 'stage', action, () => execute(repo), run => {
       if (sessionRef.current !== sessionId || writeRootRef.current !== repo) return
-      if (run.ok || run.error?.code === 'stale-diff') refresh('stage')
-      const key = target.scope === 'staged' ? 'stage.unstaged' : 'stage.staged'
+      if (needsRefresh(run)) refresh('stage')
       setNotice(run.ok
-        ? { tone: 'info', text: t(key) }
+        ? { tone: 'info', text: t(successKey) }
         : { tone: 'error', text: errorMessage(t, run.error) })
     })
-    return result.ok || result.error?.code === 'stale-diff'
-  }, [api, capabilities, refresh, runRepoWrite, sessionId, sessionRef, setNotice, t])
+    return needsRefresh(result)
+  }, [capabilities, refresh, runRepoWrite, sessionId, sessionRef, setNotice, t])
+
+  const stage = useCallback(target => runStageWrite(target.scope, repo => api.stage(repo, target),
+    target.scope === 'staged' ? 'stage.unstaged' : 'stage.staged'), [api, runStageWrite])
+
+  const stageHistory = useCallback((action, id) => runStageWrite(action, repo => api.stageHistory(repo, action, id),
+    action === 'undo' ? 'stage.undone' : 'stage.redone'), [api, runStageWrite])
 
   /** Handle selecting an item from the shared actions menu. */
   const chooseMenuAction = useCallback(action => {
@@ -476,6 +482,7 @@ export function useRepoActions({
     resetActionsUi,
     sync,
     stage,
+    stageHistory,
     switchBranch,
     openBranchActions,
     openCommitActions,

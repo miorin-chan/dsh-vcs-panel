@@ -2490,7 +2490,7 @@ test('VcsView scopes in-flight writes per repository without locking another rep
   }
 })
 
-test('VcsView stages selected diff lines and unstages the file from the refreshed group', async () => {
+test('VcsView stages selected lines, replays the index action, and unstages the refreshed file', async () => {
   const harness = createHarness({ width: 1000 })
   const restore = harness.installGlobals()
   const fakeWin = installFakeWindow()
@@ -2500,6 +2500,10 @@ test('VcsView stages selected diff lines and unstages the file from the refreshe
   const fingerprint = 'a'.repeat(64)
   const sha = 'b'.repeat(40)
   let staged = false
+  let hasHistory = false
+  let blockUndo = false
+  const action = { id: 'action-1', scope: 'unstaged', path, lineCount: 1 }
+  const history = () => ({ undo: hasHistory && staged ? action : null, redo: hasHistory && !staged ? action : null })
   const writes = []
   const entry = { path, status: 'M', added: 1, deleted: 1 }
   const json = body => ({ ok: true, status: 200, async json() { return body } })
@@ -2510,7 +2514,7 @@ test('VcsView stages selected diff lines and unstages the file from the refreshe
         return json({ repositories: [{ path: repo, name: 'repo', enclosing: true, capabilities: GIT_CAPABILITIES }] })
       case '/api/vcs.status':
         return json({ capabilities: GIT_CAPABILITIES, defaultNode: 'worktree', branch: { name: 'main', oid: sha }, total: staged ? 2 : 1,
-          groups: { staged: staged ? [entry] : [], unstaged: [entry], untracked: [] } })
+          groups: { staged: staged ? [entry] : [], unstaged: [entry], untracked: [] }, stageHistory: history() })
       case '/api/vcs.log':
         return json({ commits: [{ sha, parents: [], refs: [], author: 'Ada', subject: 'base' }] })
       case '/api/vcs.diff':
@@ -2521,7 +2525,18 @@ test('VcsView stages selected diff lines and unstages the file from the refreshe
         assert.equal(init.method, 'POST')
         writes.push(write)
         staged = write.scope !== 'staged'
+        hasHistory = true
         return json({ scope: write.scope, path })
+      }
+      case '/api/vcs.stage-history': {
+        const write = JSON.parse(init.body)
+        assert.equal(init.method, 'POST')
+        writes.push(write)
+        if (blockUndo) {
+          return { ok: false, status: 409, async json() { return { error: { code: 'stage-history-stale' } } } }
+        }
+        staged = write.action === 'redo'
+        return json({ action: write.action, stageHistory: history() })
       }
       default: throw new Error(`unexpected route: ${parsed.pathname}`)
     }
@@ -2532,6 +2547,10 @@ test('VcsView stages selected diff lines and unstages the file from the refreshe
     await harness.settle()
     const body = harness.document.body
     const unstaged = () => body.querySelector('[data-file-key="unstaged|example.txt"]')
+    const undo = () => body.querySelector('[data-stage-history="undo"]')
+    const redo = () => body.querySelector('[data-stage-history="redo"]')
+    assert.equal(undo().attributes.get('aria-disabled'), 'true')
+    assert.equal(redo().attributes.get('aria-disabled'), 'true')
     unstaged().querySelector('.vcs-tree-file-head').props.onClick()
     for (const observer of harness.intersections) observer.trigger(() => true)
     await harness.settle()
@@ -2553,10 +2572,28 @@ test('VcsView stages selected diff lines and unstages the file from the refreshe
     await harness.settle()
     assert.deepEqual(writes, [{ sessionId: 'stage-session', repo, path, scope: 'unstaged', fingerprint, lines: [{ hunk: 0, line: 2 }] }])
     assert.equal(harness.document.activeElement, unstaged().querySelector('.vcs-tree-file-head'))
+    assert.match(undo().attributes.get('title'), /stage\.stageSelected.*example\.txt/u)
+    blockUndo = true
+    harness.keyClick(undo())
+    await harness.settle()
+    assert.match(textOf(body.querySelector('.vcs-notice')), /error\.stageHistoryStale/u)
+    assert.ok(body.querySelector('[data-file-key="staged|example.txt"]'))
+    assert.equal(harness.document.activeElement, undo())
+
+    blockUndo = false
+    harness.keyClick(undo())
+    await harness.settle()
+    assert.deepEqual(writes[2], { sessionId: 'stage-session', repo, action: 'undo', id: action.id })
+    assert.equal(undo().attributes.get('aria-disabled'), 'true')
+    assert.equal(body.querySelector('[data-file-key="staged|example.txt"]'), null)
+    harness.keyClick(redo())
+    await harness.settle()
+    assert.deepEqual(writes[3], { sessionId: 'stage-session', repo, action: 'redo', id: action.id })
+    assert.equal(redo().attributes.get('aria-disabled'), 'true')
     const stagedFile = body.querySelector('[data-file-key="staged|example.txt"]')
     stagedFile.querySelector('.vcs-stage-file').props.onClick()
     await harness.settle()
-    assert.deepEqual(writes[1], { sessionId: 'stage-session', repo, path, scope: 'staged' })
+    assert.deepEqual(writes[4], { sessionId: 'stage-session', repo, path, scope: 'staged' })
     assert.equal(body.querySelector('[data-file-key="staged|example.txt"]'), null)
   } finally {
     harness.unmount()

@@ -25,6 +25,46 @@ import {
 } from './detail.js'
 import { ChangeTree } from './ChangeTree.jsx'
 
+function StageHistoryButton({ action, entry, busy, onAction, t, locale }) {
+  const undo = action === 'undo'
+  const label = t(undo ? 'stage.undo' : 'stage.redo')
+  const available = typeof entry?.id === 'string' && typeof entry.path === 'string'
+  let title = t(undo ? 'stage.noUndo' : 'stage.noRedo')
+  if (available) {
+    const unstaged = entry.scope === 'staged'
+    const operation = Number.isSafeInteger(entry.lineCount)
+      ? t(unstaged ? 'stage.unstageSelected' : 'stage.stageSelected', { count: formatCount(entry.lineCount, locale) })
+      : t(unstaged ? 'stage.unstageFile' : 'stage.stageFile')
+    title = t(undo ? 'stage.undoTarget' : 'stage.redoTarget', { operation, path: entry.path })
+  }
+  return (
+    <span className="vcs-stage-history-control">
+      <button
+        type="button"
+        className="vcs-icon-button vcs-stage-history-button"
+        data-stage-history={action}
+        aria-label={label}
+        aria-description={title}
+        aria-disabled={busy || !available ? true : undefined}
+        title={title}
+        onClick={busy || !available ? undefined : event => {
+          event.stopPropagation()
+          event.currentTarget.focus({ preventScroll: true })
+          void onAction(action, entry.id)
+        }}
+      >
+        <svg className="vcs-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path
+            d={undo ? 'M6 3 2.5 6.5 6 10M3 6.5h6.5a4 4 0 0 1 4 4V13' : 'm10 3 3.5 3.5L10 10m3-3.5H6.5a4 4 0 0 0-4 4V13'}
+            stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+      <span className="vcs-stage-history-preview" aria-hidden="true">{title}</span>
+    </span>
+  )
+}
+
 /** Commit id with a copy action. */
 function ShaButton({ sha, t }) {
   const [copied, setCopied] = useState(false)
@@ -150,9 +190,10 @@ export function DetailPane({
   folds, onToggleFold, onSetFolds, split, wrap, onToggleSplit, onToggleWrap,
   singleColumn, onBack, onLeaveNav, onSelectCommit, isLoaded, onMissing, onSettled,
   revision, cache, commitCache, initialAnchor, onReading, control, capabilities, onRefActions, onStage, stageDisabled, t, locale,
-  worktree = null, workingCopies = [], snapshotError = null, showCurrentHead = true,
+  onStageHistory, worktree = null, workingCopies = [], snapshotError = null, showCurrentHead = true,
 }) {
   const isWorktree = worktree !== null
+  const stageHistory = isWorktree && onStageHistory !== undefined ? status?.stageHistory : undefined
   const copyLabels = workingCopies.map(copy => copy.label)
   const commitCacheKey = `${repo}|${node}|${revision}`
   const [commitState, setCommitState] = useState(() => {
@@ -319,7 +360,7 @@ export function DetailPane({
 
   return (
     <div className="vcs-detail" ref={rootRef}>
-      <div className="vcs-detail-toolbar">
+      <div className="vcs-detail-toolbar" data-stage-tools={stageHistory !== undefined ? '' : undefined}>
         {singleColumn ? <IconButton label={t('detail.back')} onClick={onBack}><BackIcon /></IconButton> : null}
         {isWorktree ? (
           <>
@@ -360,6 +401,21 @@ export function DetailPane({
           </>
         )}
         <span className="vcs-detail-spacer" />
+        {stageHistory !== undefined ? (
+          <span className="vcs-diff-tools">
+            {['undo', 'redo'].map(action => (
+              <StageHistoryButton
+                key={action}
+                action={action}
+                entry={stageHistory?.[action]}
+                busy={stageDisabled}
+                onAction={onStageHistory}
+                t={t}
+                locale={locale}
+              />
+            ))}
+          </span>
+        ) : null}
         <span className="vcs-diff-tools">
           <IconButton
             label={someUnfolded ? t('tree.collapseAll') : t('tree.expandAll')}

@@ -881,6 +881,8 @@
 /* Detail ------------------------------------------------------------------ */
 
 .vcs-detail {
+  container: vcs-detail / inline-size;
+  position: relative;
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -1395,6 +1397,48 @@
 .vcs-icon-button:disabled {
   cursor: default;
   opacity: 0.55;
+}
+
+.vcs-detail-toolbar[data-stage-tools] {
+  overflow: visible;
+}
+
+@container vcs-detail (max-width: 460px) {
+  .vcs-detail-toolbar[data-stage-tools] .vcs-detail-stat {
+    display: none;
+  }
+}
+
+.vcs-stage-history-control {
+  display: inline-flex;
+}
+
+.vcs-stage-history-preview {
+  display: none;
+  position: absolute;
+  box-sizing: border-box;
+  z-index: 5;
+  inset-block-start: 38px;
+  inset-inline-end: 8px;
+  max-width: calc(100% - 16px);
+  padding: 4px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 6px);
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  font-size: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.vcs-stage-history-button:focus-visible + .vcs-stage-history-preview {
+  display: block;
+}
+
+.vcs-stage-history-button[aria-disabled='true'] {
+  color: var(--dsw-alias-label-tertiary);
+  background: transparent;
+  cursor: default;
 }
 
 /* Busy: clicks wait for the work, the look stays as it was when clicked. */

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile, execFileSync } from 'node:child_process'
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, sep } from 'node:path'
 
@@ -86,18 +86,29 @@ function fixture(t, { unborn = false, objectFormat = 'sha1' } = {}) {
     assert.equal(response.status, 200, JSON.stringify(body))
     return body
   }
-  const stage = async (scope, target = {}, { headers = {}, expected = 200, query = '' } = {}) => {
-    const response = await handlers.stage(new Request(`http://localhost/api/vcs.stage${query}`, {
+  const post = async (handler, route, payload, { headers = {}, expected = 200, query = '' } = {}) => {
+    const response = await handler(new Request(`http://localhost/api/vcs.${route}${query}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
-      body: JSON.stringify({ ...identify, scope, ...target }),
+      body: JSON.stringify({ ...identify, ...payload }),
     }))
     const body = await response.json()
     assert.equal(response.status, expected, JSON.stringify(body))
     return body
   }
+  const status = async (target = {}) => {
+    const query = new URLSearchParams({ ...identify, ...target })
+    const response = await handlers.status(new Request(`http://localhost/api/vcs.status?${query}`))
+    const body = await response.json()
+    assert.equal(response.status, 200, JSON.stringify(body))
+    return body
+  }
   return {
-    git, root, path, original, write, read, diff, stage,
+    git, root, path, original, write, read, diff, status, ctx,
+    stage: (scope, target, options) => post(handlers.stage, 'stage', { scope, ...target }, options),
+    history: (action, id, target, options) => post(handlers.stageHistory, 'stage-history', { action, id, ...target }, options),
+    switchBranch: branch => post(handlers.switchBranch, 'switch', { branch }),
+    commitOp: (target, options) => post(handlers.commitOp, 'commit-op', target, options),
     beforeSpawn: hook => { beforeSpawn = hook },
     index: (name = path) => git('show', `:${name}`),
     indexNames: () => git('ls-files', '-z').split('\0').filter(Boolean),
@@ -300,39 +311,43 @@ test('metadata and conflicts are excluded from line staging, while symlinks can 
   assert.equal(f.git('ls-files', '-s'), conflictIndex)
 })
 
-test('line staging refuses an external index edit after fingerprint validation', async t => {
+test('line staging holds the real index lock through scratch patch application', async t => {
   const f = fixture(t)
   const working = `selected\n${f.original.join('')}`
-  const external = `${f.original.join('')}externally staged\n`
   f.write(f.path, working)
   const diff = await f.diff('unstaged')
-  f.beforeSpawn(({ argv }) => {
+  let attempts = 0
+  f.beforeSpawn(({ argv, env }) => {
     if (!argv.includes('apply')) return
-    f.write(f.path, external)
-    f.git('add', '--', f.path)
-    f.write(f.path, working)
+    attempts += 1
+    assert.notEqual(env.GIT_INDEX_FILE, join(f.root, '.git', 'index'))
+    assert.throws(() => f.git('add', '--', f.path), /index\.lock/u)
+    assert.equal(f.index(), f.original.join(''))
   })
-  const response = await f.stage('unstaged', {
-    fingerprint: diff.fingerprint, lines: select(diff, '+selected'),
-  }, { expected: 409 })
-  assert.equal(response.error.code, 'stale-diff')
-  assert.equal(f.index(), external)
+  await f.stage('unstaged', { fingerprint: diff.fingerprint, lines: select(diff, '+selected') })
+  assert.equal(attempts, 1)
+  assert.equal(f.index(), working)
   assert.equal(f.read(f.path), working)
+  assertIndexClean(f)
 })
 
-test('whole-file unstage checks its index entry again after reading the HEAD tree', async t => {
+test('whole-file unstage keeps external Git writers out while reading HEAD', async t => {
   const f = fixture(t)
   f.write(f.path, 'indexed\n')
   f.git('add', '--', f.path)
+  f.write(f.path, 'worktree\n')
+  let attempts = 0
   f.beforeSpawn(({ argv }) => {
     if (!argv.includes('ls-tree')) return
-    f.write(f.path, 'externally staged\n')
-    f.git('add', '--', f.path)
-    f.write(f.path, 'worktree\n')
+    attempts += 1
+    assert.throws(() => f.git('add', '--', f.path), /index\.lock/u)
+    assert.equal(f.index(), 'indexed\n')
   })
-  assert.equal((await f.stage('staged', {}, { expected: 409 })).error.code, 'stale-diff')
-  assert.equal(f.index(), 'externally staged\n')
+  await f.stage('staged')
+  assert.equal(attempts, 1)
+  assert.equal(f.index(), f.original.join(''))
   assert.equal(f.read(f.path), 'worktree\n')
+  assertIndexClean(f)
 })
 
 test('a staged rename permits line staging its separate worktree modification', async t => {
@@ -369,4 +384,320 @@ test('staging shares the repository write lock with other mutations', async t =>
   }
   await pending
   assert.equal(f.index(), 'first\n')
+})
+
+
+function assertIndexClean(f, dir = join(f.root, '.git')) {
+  assert(!readdirSync(dir).some(name => name === 'index.lock' || name.startsWith('dsh-vcs-index-')))
+}
+
+const EMPTY_HISTORY = { undo: null, redo: null }
+
+test('undo and redo only restore changed entries and use a new branch after staging', async t => {
+  const f = fixture(t)
+  const head = f.git('rev-parse', 'HEAD')
+  const work = `staged line\n${f.original.join('')}worktree line\n`
+  f.write(f.path, work)
+  const diff = await f.diff('unstaged')
+  await f.stage('unstaged', { fingerprint: diff.fingerprint, lines: select(diff, '+staged line') })
+  const { undo: first, redo } = (await f.status()).stageHistory
+  assert.equal(redo, null)
+  assert.deepEqual(first, { id: first.id, scope: 'unstaged', path: f.path, lineCount: 1 })
+  f.write('unrelated', 'external stage\n')
+  f.git('add', '--', 'unrelated')
+  f.git('update-index', '--assume-unchanged', '--', 'unrelated')
+  const unrelated = f.git('ls-files', '-v', '--stage', '--', 'unrelated')
+  let lockAttempts = 0
+  f.beforeSpawn(({ argv }) => {
+    if (!argv.includes('--index-info')) return
+    lockAttempts += 1
+    assert.throws(() => f.git('add', '--', f.path), /index\.lock/u)
+  })
+  assert.deepEqual(await f.history('undo', first.id), { action: 'undo', stageHistory: { undo: null, redo: first } })
+  assert.equal(f.index(), f.original.join(''))
+  assert.equal(f.read(f.path), work)
+  assert.equal(f.git('ls-files', '-v', '--stage', '--', 'unrelated'), unrelated)
+  assert.deepEqual(await f.history('redo', first.id), { action: 'redo', stageHistory: { undo: first, redo: null } })
+  assert.equal(f.index(), `staged line\n${f.original.join('')}`)
+  await f.history('undo', first.id)
+  assert.equal(lockAttempts, 3)
+  f.beforeSpawn(undefined)
+  assert.equal((await f.stage('staged', {}, { expected: 409 })).error.code, 'stale-diff')
+  assert.equal((await f.status()).stageHistory.redo.id, first.id)
+  await f.stage('unstaged')
+  const branch = (await f.status()).stageHistory
+  assert.notEqual(branch.undo.id, first.id)
+  assert.equal(branch.redo, null)
+  assert.equal((await f.history('redo', first.id, {}, { expected: 409 })).error.code, 'stage-history-unavailable')
+  assert.equal(f.index(), work)
+  assert.equal(f.read(f.path), work)
+  assert.equal(f.git('rev-parse', 'HEAD'), head)
+  assert.equal(f.git('ls-files', '-v', '--stage', '--', 'unrelated'), unrelated)
+  assertIndexClean(f)
+})
+
+test('stale affected paths keep the cursor and a successful stage starts a new chain', async t => {
+  const f = fixture(t)
+  f.write(f.path, 'panel\n')
+  await f.stage('unstaged')
+  const old = (await f.status()).stageHistory.undo
+  f.write(f.path, 'external staging\n')
+  f.git('add', '--', f.path)
+  const bytes = readFileSync(join(f.root, '.git', 'index'))
+  assert.equal((await f.history('undo', old.id, {}, { expected: 409 })).error.code, 'stage-history-stale')
+  assert.deepEqual(readFileSync(join(f.root, '.git', 'index')), bytes)
+  assert.equal((await f.status()).stageHistory.undo.id, old.id)
+  f.write('new', 'new panel change\n')
+  await f.stage('untracked', { path: 'new' })
+  const fresh = (await f.status()).stageHistory.undo
+  assert.deepEqual((await f.history('undo', fresh.id)).stageHistory, { undo: null, redo: fresh })
+  assert.equal(f.index(), 'external staging\n')
+  assert.equal(f.read('new'), 'new panel change\n')
+  assertIndexClean(f)
+})
+
+test('undo and redo restore both legs of a staged rename', async t => {
+  const f = fixture(t)
+  const path = 'renamed.txt'
+  f.git('mv', '--', f.path, path)
+  await f.stage('staged', { path, oldPath: f.path })
+  const entry = (await f.status()).stageHistory.undo
+  assert.deepEqual(f.indexNames(), [f.path])
+  await f.history('undo', entry.id)
+  assert.deepEqual(f.indexNames(), [path])
+  assert.equal(f.index(path), f.original.join(''))
+  assert.equal(f.read(path), f.original.join(''))
+  assert.throws(() => f.read(f.path), { code: 'ENOENT' })
+  await f.history('redo', entry.id)
+  assert.deepEqual(f.indexNames(), [f.path])
+  assertIndexClean(f)
+})
+
+test('replay in an unborn SHA-256 branch checks missing objects before publication', async t => {
+  const f = fixture(t, { unborn: true, objectFormat: 'sha256' })
+  f.write(f.path, 'new\n')
+  await f.stage('untracked')
+  const { undo } = (await f.status()).stageHistory
+  const oid = f.git('rev-parse', `:${f.path}`).trim()
+  const object = join(f.root, '.git', 'objects', oid.slice(0, 2), oid.slice(2))
+  await f.history('undo', undo.id)
+  assert.deepEqual(f.indexNames(), [])
+  const data = readFileSync(object)
+  rmSync(object)
+  assert.equal((await f.history('redo', undo.id, {}, { expected: 409 })).error.code, 'stage-history-unavailable')
+  assert.equal((await f.status()).stageHistory.redo.id, undo.id)
+  assert.deepEqual(f.indexNames(), [])
+  assert.equal(f.read(f.path), 'new\n')
+  writeFileSync(object, data)
+  await f.history('redo', undo.id)
+  assert.equal(f.index(), 'new\n')
+  assertIndexClean(f)
+})
+
+test('setup and write authorization, native lock contention, and operation state', async t => {
+  const f = fixture(t)
+  f.write(f.path, 'staged\n')
+  await f.stage('unstaged')
+  const { undo } = (await f.status()).stageHistory
+  assert.equal((await f.history('undo', undo.id, { worktree: f.root }, { expected: 403 })).error.code, 'forbidden')
+  assert.equal((await f.history('undo', undo.id, {}, { expected: 403, query: '?worktree=other' })).error.code, 'forbidden')
+  assert.equal((await f.history('undo', undo.id, {}, { headers: { 'sec-fetch-site': 'cross-site' }, expected: 403 })).error.code, 'forbidden')
+  assert.equal((await f.history('undo', undo.id, { repo: dirname(f.root) }, { expected: 400 })).error.code, 'not-a-repo')
+  assert.equal((await f.history('undo', undo.id, { sessionId: 'missing' }, { expected: 409 })).error.code, 'no-session')
+  assert.equal((await f.history('anything', undo.id, {}, { expected: 400 })).error.code, 'bad-request')
+  assert.equal((await f.history('undo', 'invalid', {}, { expected: 400 })).error.code, 'bad-request')
+  const lock = join(f.root, '.git', 'index.lock')
+  writeFileSync(lock, 'external writer')
+  assert.equal((await f.history('undo', undo.id, {}, { expected: 409 })).error.code, 'stage-history-busy')
+  assert.equal(readFileSync(lock, 'utf8'), 'external writer')
+  rmSync(lock)
+  const head = join(f.root, '.git', 'MERGE_HEAD')
+  writeFileSync(head, f.git('rev-parse', 'HEAD'))
+  assert.equal((await f.history('undo', undo.id, {}, { expected: 409 })).error.code, 'stage-history-unavailable')
+  rmSync(head)
+  assert.equal(f.index(), 'staged\n')
+  assert.equal((await f.status()).stageHistory.undo.id, undo.id)
+  await f.history('undo', undo.id)
+  assertIndexClean(f)
+})
+
+test('same-commit symbolic HEAD changes are stale and actual panel writes clear history', async t => {
+  const f = fixture(t)
+  const head = f.git('rev-parse', 'HEAD').trim()
+  f.git('branch', 'other')
+  f.write(f.path, 'staged\n')
+  await f.stage('unstaged')
+  const { undo } = (await f.status()).stageHistory
+  await f.switchBranch('main')
+  await f.commitOp({ action: 'tag', sha: head, name: 'only-a-tag' })
+  await f.commitOp({ action: 'branch', sha: head, name: 'only-a-branch' })
+  assert.equal((await f.status()).stageHistory.undo.id, undo.id)
+  f.git('symbolic-ref', 'HEAD', 'refs/heads/other')
+  assert.equal((await f.history('undo', undo.id, {}, { expected: 409 })).error.code, 'stage-history-stale')
+  assert.equal(f.index(), 'staged\n')
+  f.git('symbolic-ref', 'HEAD', 'refs/heads/main')
+  await f.switchBranch('other')
+  assert.deepEqual((await f.status()).stageHistory, EMPTY_HISTORY)
+  const unrelated = 'new'
+  f.write(unrelated, 'new\n')
+  await f.stage('untracked', { path: unrelated })
+  await f.commitOp({ action: 'reset', sha: head, mode: 'soft' })
+  assert((await f.status()).stageHistory.undo)
+  await f.commitOp({ action: 'reset', sha: head, mode: 'mixed' })
+  assert.deepEqual((await f.status()).stageHistory, EMPTY_HISTORY)
+  assert.equal(f.read(unrelated), 'new\n')
+})
+
+test('HEAD is rechecked after the scratch index is written and failures leave history retryable', async t => {
+  const f = fixture(t)
+  f.git('branch', 'other')
+  f.write(f.path, 'staged\n')
+  await f.stage('unstaged')
+  const { undo } = (await f.status()).stageHistory
+  const index = join(f.root, '.git', 'index')
+  const bytes = readFileSync(index)
+  f.beforeSpawn(({ argv }) => {
+    if (argv.includes('--index-info')) f.git('symbolic-ref', 'HEAD', 'refs/heads/other')
+  })
+  assert.equal((await f.history('undo', undo.id, {}, { expected: 409 })).error.code, 'stage-history-stale')
+  assert.deepEqual(readFileSync(index), bytes)
+  assert.equal((await f.status()).stageHistory.undo.id, undo.id)
+  f.beforeSpawn(undefined)
+  f.git('symbolic-ref', 'HEAD', 'refs/heads/main')
+  await f.history('undo', undo.id)
+  assertIndexClean(f)
+})
+
+test('a linked worktree uses its own reciprocal metadata and history is hidden in previews', async t => {
+  const f = fixture(t)
+  const linked = join(f.root, 'linked-checkout')
+  f.git('worktree', 'add', '-qb', 'linked', linked)
+  const originalSession = f.ctx.sessions.get
+  f.ctx.sessions.get = id => id === 'linked' ? { header: { cwd: linked } } : originalSession(id)
+  const target = { repo: linked, sessionId: 'linked' }
+  writeFileSync(join(linked, f.path), 'linked staged\n')
+  const mainIndex = readFileSync(join(f.root, '.git', 'index'))
+  await f.stage('unstaged', target)
+  const { undo } = (await f.status(target)).stageHistory
+  assert.deepEqual((await f.status()).stageHistory, EMPTY_HISTORY)
+  assert.deepEqual((await f.status({ worktree: linked })).stageHistory, EMPTY_HISTORY)
+  assert.equal((await f.history('undo', undo.id, { repo: linked }, { expected: 400 })).error.code, 'not-a-repo')
+  assert.deepEqual(readFileSync(join(f.root, '.git', 'index')), mainIndex)
+  await f.history('undo', undo.id, target)
+  assert.equal(f.git('-C', linked, 'show', `:${f.path}`), f.original.join(''))
+  assert.equal(readFileSync(join(linked, f.path), 'utf8'), 'linked staged\n')
+  assertIndexClean(f, join(f.root, '.git', 'worktrees', 'linked-checkout'))
+})
+
+
+test('redo rejects an externally staged replacement for its affected path', async t => {
+  const f = fixture(t)
+  f.write(f.path, 'panel\n')
+  await f.stage('unstaged')
+  const { undo } = (await f.status()).stageHistory
+  await f.history('undo', undo.id)
+  f.write(f.path, 'external index\n')
+  f.git('add', '--', f.path)
+  f.write(f.path, 'external worktree\n')
+  const index = join(f.root, '.git', 'index')
+  const bytes = readFileSync(index)
+  assert.equal((await f.history('redo', undo.id, {}, { expected: 409 })).error.code, 'stage-history-stale')
+  assert.deepEqual(readFileSync(index), bytes)
+  assert.deepEqual((await f.status()).stageHistory, { undo: null, redo: undo })
+  assert.equal(f.index(), 'external index\n')
+  assert.equal(f.read(f.path), 'external worktree\n')
+  assertIndexClean(f)
+})
+
+test('intent-to-add staging creates a history boundary and preserves unrelated flags', async t => {
+  const f = fixture(t)
+  f.write(f.path, 'first\n')
+  await f.stage('unstaged')
+  assert((await f.status()).stageHistory.undo)
+  f.write('intent', 'intent-to-add\n')
+  f.write('untouched', 'unrelated intent-to-add\n')
+  f.git('add', '-N', '--', 'intent', 'untouched')
+  const flags = f.git('ls-files', '--debug', '--', 'untouched')
+  await f.stage('unstaged', { path: 'intent' })
+  assert.deepEqual((await f.status()).stageHistory, EMPTY_HISTORY)
+  assert.equal(f.git('ls-files', '--debug', '--', 'untouched'), flags)
+  assert.equal(f.index('intent'), 'intent-to-add\n')
+  assertIndexClean(f)
+})
+
+test('unrelated merge conflicts allow ordinary staging and block history replay', async t => {
+  const f = fixture(t)
+  f.git('branch', 'other')
+  f.write(f.path, 'main\n')
+  f.git('commit', '-am', 'main change')
+  f.git('switch', 'other')
+  f.write(f.path, 'other\n')
+  f.git('commit', '-am', 'other change')
+  f.git('switch', 'main')
+  f.write('first', 'first staged\n')
+  await f.stage('untracked', { path: 'first' })
+  const { undo } = (await f.status()).stageHistory
+  f.git('reset', '--', 'first')
+  assert.throws(() => f.git('merge', 'other'))
+  const conflicts = f.git('ls-files', '-u')
+  assert(conflicts)
+  assert.equal((await f.history('undo', undo.id, {}, { expected: 409 })).error.code, 'stage-history-unavailable')
+  f.write('second', 'second staged\n')
+  await f.stage('untracked', { path: 'second' })
+  assert.equal(f.git('ls-files', '-u'), conflicts)
+  assert.deepEqual((await f.status()).stageHistory, EMPTY_HISTORY)
+  assert.equal(f.index('second'), 'second staged\n')
+  assertIndexClean(f)
+})
+
+test('staging and replay preserve the semantic entries of a split index', async t => {
+  const f = fixture(t)
+  f.git('config', 'core.splitIndex', 'true')
+  f.write('other', 'staged before split\n')
+  f.git('add', '--', 'other')
+  f.git('update-index', '--split-index', '--assume-unchanged', '--', 'other')
+  const other = f.git('ls-files', '-v', '--stage', '--', 'other')
+  f.write(f.path, 'panel\n')
+  await f.stage('unstaged')
+  const { undo } = (await f.status()).stageHistory
+  await f.history('undo', undo.id)
+  assert.equal(f.index(), f.original.join(''))
+  assert.equal(f.git('ls-files', '-v', '--stage', '--', 'other'), other)
+  assertIndexClean(f)
+})
+
+test('a gitfile cannot redirect a staging write into another checkout', async t => {
+  const f = fixture(t)
+  const nested = join(f.root, 'fake-checkout')
+  mkdirSync(nested)
+  writeFileSync(join(nested, '.git'), `gitdir: ${join(f.root, '.git')}\n`)
+  writeFileSync(join(nested, f.path), 'foreign staged\n')
+  const previousGet = f.ctx.sessions.get
+  f.ctx.sessions.get = id => id === 'other-session' ? { header: { cwd: nested } } : previousGet(id)
+  assert.equal((await f.stage('unstaged', { sessionId: 'other-session', repo: nested }, { expected: 409 })).error.code, 'stage-history-unavailable')
+  assert.equal(f.index(), f.original.join(''))
+  assertIndexClean(f)
+})
+
+
+test('publication refuses a direct index replacement made despite Git’s native lock', async t => {
+  const f = fixture(t)
+  f.write(f.path, 'panel\n')
+  await f.stage('unstaged')
+  const { undo } = (await f.status()).stageHistory
+  const index = join(f.root, '.git', 'index')
+  const alternate = join(f.root, '.git', 'alternate-index')
+  writeFileSync(alternate, readFileSync(index))
+  f.write(f.path, 'direct replacement\n')
+  execFileSync('git', ['add', '--', f.path], { cwd: f.root, env: { ...env, GIT_INDEX_FILE: alternate } })
+  const replacement = readFileSync(alternate)
+  f.beforeSpawn(({ argv }) => {
+    if (argv.includes('--index-info')) renameSync(alternate, index)
+  })
+  assert.equal((await f.history('undo', undo.id, {}, { expected: 409 })).error.code, 'stage-history-stale')
+  assert.deepEqual(readFileSync(index), replacement)
+  assert.equal((await f.status()).stageHistory.undo.id, undo.id)
+  assert.equal(f.index(), 'direct replacement\n')
+  assert.equal(f.read(f.path), 'direct replacement\n')
+  assertIndexClean(f)
 })
