@@ -21,6 +21,7 @@ import {
   diffTargets, mergedWorktreeGroups, rowAt, streamSections, worktreeGroups,
 } from '../src/client/detail/detail.js'
 import { createQueue } from '../src/client/detail/queue.js'
+import { counterpartKey, isStageable, mergedStageState, STAGE, stageFiles, UNSTAGE } from '../src/client/detail/stage.js'
 import { graphInput, nodeAt, rowOf, worktreeSummary } from '../src/client/history/timeline.js'
 import { attachWorkingCopies, checkedWorktrees, preferredViewNode, sharedRefs, toggleWorktree } from '../src/client/worktrees.js'
 import { ApiError, createApi, queryString } from '../src/client/api.js'
@@ -301,6 +302,47 @@ test('buildRows compresses a chain of single-child directories into one row', ()
   assert.equal(rows[0].key, dirKey('commit', 'src/client/detail'))
   assert.equal(rows[1].depth, 1)
   assert.equal(rows[3].depth, 0)
+})
+
+test('group and directory rows carry the entries one staging write names', () => {
+  const entries = [
+    { path: 'src/a.js', status: 'M', added: 1, deleted: 0 },
+    { path: 'src/lib/b.js', status: 'R', origPath: 'src/b.js', added: 0, deleted: 0 },
+    { path: 'src/notes/', status: 'U', untracked: true, directory: true },
+    { path: 'src/conflict.js', status: 'U', conflict: true },
+  ]
+  const notes = dirKey('unstaged', 'src/notes/')
+  const rows = buildRows('unstaged', entries, {
+    dirs: { [notes]: true },
+    dirChildren: { [notes]: [
+      { name: 'inner', path: 'src/notes/inner', type: 'directory' },
+      { name: 'x.txt', path: 'src/notes/x.txt', type: 'file' },
+    ] },
+  }, { header: true })
+  const row = name => rows.find(item => item.name === name)
+  assert.deepEqual(rows[0].entries, entries, 'a group row stands for its whole group')
+  assert.deepEqual(row('src').entries.map(entry => entry.path), ['src/a.js', 'src/lib/b.js', 'src/notes/', 'src/conflict.js'])
+  assert.deepEqual(row('notes').entries, [entries[2]], 'an untracked directory stands for itself, not its loaded children')
+  assert.deepEqual(stageFiles('unstaged', row('src').entries, STAGE), [
+    { path: 'src/a.js' }, { path: 'src/lib/b.js', oldPath: 'src/b.js' }, { path: 'src/notes/' },
+  ], 'the conflict stays out of the write')
+  assert.deepEqual(stageFiles('unstaged', row('src').entries, UNSTAGE), [], 'rows under Unstaged only stage')
+  assert.deepEqual(stageFiles('unstaged', row('inner').entries, STAGE), [{ path: 'src/notes/inner/' }])
+  assert.equal(isStageable({ path: 'n.txt', status: 'U', untracked: true }), true)
+  assert.equal(isStageable(entries[3]), false)
+
+  const merged = mergedWorktreeGroups([
+    { id: 'staged', entries: [{ path: 'a.js', status: 'M' }, { path: 'only-staged.js', status: 'A' }] },
+    { id: 'unstaged', entries: [{ path: 'a.js', status: 'M' }, { path: 'n/', status: 'U', untracked: true, directory: true }] },
+  ])[0].entries
+  assert.deepEqual(stageFiles('merged', merged, STAGE), [{ path: 'a.js' }, { path: 'n/' }])
+  assert.deepEqual(stageFiles('merged', merged, UNSTAGE), [{ path: 'a.js' }, { path: 'only-staged.js' }])
+  assert.equal(mergedStageState(merged), 'mixed')
+  assert.equal(mergedStageState(merged.filter(entry => entry.path === 'only-staged.js')), true)
+  assert.equal(mergedStageState(merged.filter(entry => entry.path === 'n/')), false)
+  assert.equal(counterpartKey('staged|src'), 'unstaged|src')
+  assert.equal(counterpartKey('unstaged|'), 'staged|')
+  assert.equal(counterpartKey('merged-dir|src'), undefined)
 })
 
 test('buildRows expands untracked directories only after their children load', () => {

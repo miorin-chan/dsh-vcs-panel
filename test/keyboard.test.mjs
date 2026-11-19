@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url'
 
 import { createApi } from '../src/client/api.js'
 import { buildNodeRows } from '../src/client/detail/tree.js'
-import { budgetFolds, streamSections } from '../src/client/detail/detail.js'
+import { budgetFolds, mergedWorktreeGroups, streamSections } from '../src/client/detail/detail.js'
 import { GIT_CAPABILITIES, GIT_WORKTREE_CAPABILITIES, JUJUTSU_CAPABILITIES } from '../lib/vcs/capabilities.js'
 
 const require = createRequire(import.meta.url)
@@ -2573,7 +2573,10 @@ test('VcsView stages a line directly, displays mixed file state, and replays the
     for (const observer of harness.intersections) observer.trigger(() => true)
     await harness.settle()
     const stagingBox = () => unstaged().querySelector('.vcs-stage-file')
-    assert.equal(stagingBox().attributes.get('aria-checked'), 'false')
+    assert.equal(stagingBox().attributes.get('role'), undefined, 'separate groups state the index side, so a file has a command')
+    assert.equal(stagingBox().attributes.get('data-stage-direction'), 'stage')
+    assert.equal(stagingBox().attributes.get('data-partial'), undefined)
+    assert.equal(stagingBox().props.tabIndex, -1, 'the tree keeps one Tab stop; s and u reach the command')
     const lines = unstaged().querySelectorAll('[data-stage-line]')
     assert.equal(lines.length, 2, 'each changed line has a direct action and context has none')
     assert.equal(lines[1].attributes.get('role'), 'checkbox')
@@ -2588,7 +2591,7 @@ test('VcsView stages a line directly, displays mixed file state, and replays the
     const remaining = unstaged().querySelectorAll('[data-stage-line]')
     assert.equal(remaining.length, 1)
     assert.equal(harness.document.activeElement, remaining[0], 'focus moves to the nearest remaining change')
-    assert.equal(stagingBox().attributes.get('aria-checked'), 'mixed')
+    assert.equal(stagingBox().attributes.get('data-partial'), '')
     assert.match(stagingBox().attributes.get('title'), /stage\.stageRemainingFileChanges/u)
     assert.match(undo().attributes.get('title'), /stage\.stageLine.*example\.txt/u)
     blockUndo = true
@@ -2610,7 +2613,8 @@ test('VcsView stages a line directly, displays mixed file state, and replays the
     assert.equal(redo().attributes.get('aria-disabled'), 'true')
     const stagedFile = body.querySelector('[data-file-key="staged|example.txt"]')
     const stagedBox = stagedFile.querySelector('.vcs-stage-file')
-    assert.equal(stagedBox.attributes.get('aria-checked'), 'mixed')
+    assert.equal(stagedBox.attributes.get('data-stage-direction'), 'unstage')
+    assert.equal(stagedBox.attributes.get('data-partial'), '')
     assert.match(stagedBox.attributes.get('title'), /stage\.unstageAllFileChanges/u)
     harness.mouseClick(stagedFile.querySelector('.vcs-tree-file-head'))
     for (const observer of harness.intersections) observer.trigger(() => true)
@@ -2679,6 +2683,103 @@ test('VcsView stages a line directly, displays mixed file state, and replays the
     harness.unmount()
     globalThis.fetch = savedFetch
     fakeWin.restore()
+    restore()
+  }
+})
+
+test('ChangeTree stages a group, a folder, or a file from its gutter and with s and u', async () => {
+  const harness = createHarness()
+  const restore = harness.installGlobals()
+  try {
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const writes = []
+    const onStage = async target => { writes.push(target); return true }
+    const mount = (groups, { writable = true, stageDisabled = false } = {}) => {
+      harness.mount(harness.react.createElement(ChangeTree, {
+        api: { async diff(_repo, target) { return { kind: 'text', path: target.path, before: true, after: true, hunks: [] } } },
+        repo: '/repo', rev: null, rows: buildNodeRows(groups), budget: new Map(), folds: {}, split: false, wrap: false,
+        revision: 0, cache: new Map(), initialAnchor: null, onReading() {}, onToggleRow() {}, onBulkFold() {}, onLeave() {},
+        control: { current: null }, onStage: writable ? onStage : undefined, partiallyStaged: new Set(['src/a.js']),
+        stageDisabled, t, locale: 'en-US',
+      }))
+      return harness.settle()
+    }
+    const separate = [
+      { id: 'staged', header: true, entries: [{ path: 'src/a.js', status: 'R', origPath: 'src/old.js', added: 1, deleted: 0 }] },
+      { id: 'unstaged', header: true, entries: [
+        { path: 'src/a.js', status: 'M', added: 1, deleted: 0 },
+        { path: 'src/conflict.js', status: 'U', conflict: true },
+        { path: 'notes/', status: 'U', untracked: true, directory: true },
+      ] },
+    ]
+    const tree = () => harness.document.body.querySelector('.vcs-tree')
+    const head = key => tree().querySelector(`[data-row-key="${key}"]`)
+    const control = key => {
+      const wrap = head(key).parentElement
+      return wrap.querySelector('[data-stage-direction]') ?? wrap.querySelector('[role="checkbox"]')
+    }
+    const press = async (key, letter) => {
+      harness.mouseClick(head(key))
+      const result = harness.keyDown(head(key), letter)
+      await harness.settle()
+      return result
+    }
+
+    await mount(separate)
+    assert.equal(control('staged|').attributes.get('data-stage-direction'), 'unstage')
+    assert.equal(control('staged|').attributes.get('title'), 'stage.unstageAll')
+    assert.equal(control('unstaged|src').attributes.get('title'), 'stage.stageFolder · src/')
+    assert.equal(head('staged|').attributes.get('aria-keyshortcuts'), 'u')
+    assert.equal(head('unstaged|src').attributes.get('aria-keyshortcuts'), 's')
+    assert.equal(control('unstaged|src/a.js').attributes.get('data-partial'), '')
+    assert.equal(head('unstaged|src/a.js').querySelector('.vcs-chevron'), null, 'a file shows its status in the chevron slot')
+    assert.ok(head('unstaged|src').querySelector('.vcs-chevron'))
+    assert.equal(control('unstaged|src/conflict.js'), null, 'a conflict is resolved elsewhere')
+    assert.equal(head('unstaged|src/conflict.js').attributes.get('aria-keyshortcuts'), undefined)
+
+    harness.mouseClick(control('unstaged|'))
+    await harness.settle()
+    assert.deepEqual(writes.at(-1), { scope: 'unstaged', files: [{ path: 'src/a.js' }, { path: 'notes/' }] })
+    assert.equal(harness.document.activeElement, head('unstaged|'), 'a row command leaves focus on its row')
+    assert.equal((await press('unstaged|src', 's')).prevented, true)
+    assert.deepEqual(writes.at(-1), { scope: 'unstaged', files: [{ path: 'src/a.js' }] })
+    assert.equal((await press('staged|src', 'u')).prevented, true)
+    assert.deepEqual(writes.at(-1), { scope: 'staged', files: [{ path: 'src/a.js', oldPath: 'src/old.js' }] })
+    await press('unstaged|notes', 's')
+    assert.deepEqual(writes.at(-1), { scope: 'unstaged', files: [{ path: 'notes/' }] })
+    await press('unstaged|src/a.js', 's')
+    assert.deepEqual(writes.at(-1), { scope: 'unstaged', path: 'src/a.js' })
+    const count = writes.length
+    assert.equal((await press('unstaged|src', 'u')).prevented, false, 'rows under Unstaged only stage')
+    assert.equal((await press('staged|src/a.js', 's')).prevented, false, 'rows under Staged only unstage')
+    assert.equal((await press('unstaged|src/conflict.js', 's')).prevented, false)
+    assert.equal(writes.length, count)
+
+    await mount(mergedWorktreeGroups(separate))
+    assert.equal(control('merged-dir|src').attributes.get('aria-checked'), 'mixed', 'the conflict does not count')
+    assert.equal(control('merged-dir|src').props.tabIndex, -1)
+    assert.equal(control('unstaged|notes').attributes.get('aria-checked'), 'false')
+    harness.mouseClick(control('merged-dir|src'))
+    await harness.settle()
+    assert.deepEqual(writes.at(-1), { scope: 'unstaged', files: [{ path: 'src/a.js' }] })
+    await press('merged-dir|src', 'u')
+    assert.deepEqual(writes.at(-1), { scope: 'staged', files: [{ path: 'src/a.js', oldPath: 'src/old.js' }] })
+    await press('merged|src/a.js', 'u')
+    assert.deepEqual(writes.at(-1), { scope: 'staged', path: 'src/a.js', oldPath: 'src/old.js' })
+    await press('merged|src/a.js', 's')
+    assert.deepEqual(writes.at(-1), { scope: 'unstaged', path: 'src/a.js' })
+
+    const before = writes.length
+    await mount(separate, { stageDisabled: true })
+    assert.equal((await press('unstaged|src', 's')).prevented, true, 'a busy index swallows the key')
+    harness.mouseClick(control('unstaged|'))
+    await harness.settle()
+    assert.equal(writes.length, before)
+    await mount([{ id: 'commit', header: false, entries: [{ path: 'src/a.js', status: 'M' }] }], { writable: false })
+    assert.equal(tree().querySelector('.vcs-stage-gutter'), null, 'a commit has nothing to stage')
+    assert.equal((await press('commit|src/a.js', 's')).prevented, false)
+  } finally {
+    harness.unmount()
     restore()
   }
 })

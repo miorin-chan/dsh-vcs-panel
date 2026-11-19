@@ -29,8 +29,10 @@ import {
   MAX_PARALLEL, changedLines, diffTargets, estimateHeight, isFolded, rowAt,
 } from './detail.js'
 import { createQueue } from './queue.js'
+import { StageAction } from './StageAction.js'
 import { StageCheckbox } from './StageCheckbox.js'
 import { FileStageMenu } from './FileStageMenu.jsx'
+import { counterpartKey, isStageable, mergedStageState, STAGE, stageFiles, UNSTAGE } from './stage.js'
 import { rowBodyId } from './tree.js'
 
 /** Distance beyond the viewport at which a file starts loading. */
@@ -44,6 +46,9 @@ const ROW_HEIGHT = 28
 
 /** Indentation per tree level, in CSS pixels. */
 const INDENT = 14
+
+/** Width of the staging gutter at the left edge of a working-tree tree, in CSS pixels. */
+const GUTTER_WIDTH = 22
 
 /** The identity of one comparison request. */
 function targetKey(target) {
@@ -202,6 +207,10 @@ export function ChangeTree({
 
   const navRows = useMemo(() => rows.filter(row => row.kind !== 'loading'), [rows])
   const grouped = useMemo(() => rows.some(row => row.kind === 'group'), [rows])
+  // A working tree that can be staged draws a gutter; merged rows keep it to
+  // show their staged state even while writes are unavailable.
+  const gutter = onStage !== undefined || rows.some(row => row.group === 'merged')
+  const stagingRef = useRef(() => null)
   const navIndexByKey = useMemo(() => {
     const index = new Map()
     navRows.forEach((row, at) => index.set(row.key, at))
@@ -229,13 +238,12 @@ export function ChangeTree({
   const flowTop = useCallback(element => {
     const root = scrollRef.current
     if (element === null || element === undefined || root === null) return 0
-    // Group and file headers stick while scrolling, shifting their own
-    // `offsetTop`; their static wrapper holds the layout position in the tree.
+    // Group and file heads stick while scrolling, shifting their own
+    // `offsetTop`; the static container around each head holds its layout
+    // position in the tree.
     let node = element
-    if (node.classList?.contains('vcs-tree-file-head')) {
+    if (node.classList?.contains('vcs-tree-file-head') || node.classList?.contains('vcs-tree-group-head')) {
       node = node.parentElement?.parentElement ?? node
-    } else if (node.classList?.contains('vcs-tree-group-head')) {
-      node = node.parentElement ?? node
     }
     let top = 0
     while (node !== null && node !== undefined && node !== root) {
@@ -774,6 +782,16 @@ export function ChangeTree({
       }
       return true
     }
+    // `s` stages and `u` unstages the row under the cursor; hunks keep their own controls.
+    if (!fromOutside && cursorRef.current.hunk < 0 && (event.key === 's' || event.key === 'u') && unmodified(event)) {
+      const current = navRows[Math.max(0, Math.min(cursorRef.current.row, navRows.length - 1))]
+      const staging = current === undefined ? null : stagingRef.current(current)
+      const run = event.key === 's' ? staging?.stage : staging?.unstage
+      if (run === undefined) return false
+      event.preventDefault()
+      if (!stageDisabled) void run()
+      return true
+    }
     const row = rowStep(event)
     if (row !== 0) {
       event.preventDefault()
@@ -851,7 +869,7 @@ export function ChangeTree({
     return false
   }, [
     back, focusRowElement, focusStop, forward, hunkOffsets, isExpanded, isRowFolded, moveRow, moveStop,
-    navRows, onLeave, report, setCursorAt, syncCursorToScroll, toggle,
+    navRows, onLeave, report, setCursorAt, stageDisabled, syncCursorToScroll, toggle,
   ])
 
   const onKeyDown = event => {
@@ -894,7 +912,8 @@ export function ChangeTree({
     refreshAnchor.current = {
       key,
       alternate: staging?.alternate,
-      focused: staging !== null && sectionEls.current.get(key)?.contains(root.ownerDocument.activeElement),
+      focused: staging !== null
+        && (sectionEls.current.get(key) ?? rowEls.current.get(key)?.parentElement)?.contains(root.ownerDocument.activeElement),
       offset: element === undefined ? 0 : Math.max(0, root.scrollTop - flowTop(element)),
       rows,
     }
@@ -1047,7 +1066,113 @@ export function ChangeTree({
     toggle(row, expanded)
   }
 
-  const indentOf = depth => `${8 + (depth + (grouped ? 1 : 0)) * INDENT}px`
+  /**
+   * Run one staging write from a row, keeping the row as the reading anchor
+   * across the refresh. A row command also takes focus, so the next key acts
+   * from the row; a line or hunk keeps focus on its own control.
+   */
+  const runStage = async (row, target, alternate, { focusRow = false } = {}) => {
+    const source = { key: row.key, alternate }
+    stageSource.current = source
+    const index = navIndexByKey.get(row.key)
+    if (index !== undefined) setCursorAt(index)
+    if (focusRow) focusRowElement(row.key)
+    const accepted = await onStage(target)
+    if (!accepted && stageSource.current === source) stageSource.current = null
+    return accepted
+  }
+
+  /**
+   * One row's staging: the writes `s` and `u` run, and the gutter control.
+   * Separate groups give each row one direction; merged rows have both.
+   */
+  const rowStaging = row => {
+    if (!gutter) return null
+    const merged = row.group === 'merged'
+    if (row.kind === 'file') {
+      const targets = diffTargets(row.group, row.entry, rev)
+      const stagedTarget = targets.find(target => target.scope === 'staged')
+      const unstagedTarget = targets.find(target => target.scope !== 'staged')
+      const primary = unstagedTarget ?? stagedTarget
+      const mixed = row.entry.partiallyStaged === true || partiallyStaged?.has(row.entry.path) === true
+      const unstaging = primary.scope === 'staged' && (!merged || !mixed)
+      const conflict = !isStageable(row.entry)
+      const writable = onStage !== undefined && !conflict
+      const alternate = merged ? undefined : counterpartKey(row.key)
+      const write = target => (writable && target !== undefined
+        ? () => runStage(row, target, alternate, { focusRow: true })
+        : undefined)
+      const label = t(mixed
+        ? (unstaging ? 'stage.unstageAllFileChanges' : 'stage.stageRemainingFileChanges')
+        : (unstaging ? 'stage.unstageFile' : 'stage.stageFile'))
+      return {
+        merged, mixed, conflict, label: `${label} · ${row.entry.path}`, unstaging,
+        stagedWrite: write(stagedTarget),
+        primaryWrite: write(primary),
+        stage: merged ? write(unstagedTarget) : (unstaging ? undefined : write(primary)),
+        unstage: merged ? write(stagedTarget) : (unstaging ? write(primary) : undefined),
+        disabled: stageDisabled || !writable || (merged && mixed && unstagedTarget === undefined),
+      }
+    }
+    if (row.kind !== 'dir' && row.kind !== 'group') return null
+    const entries = row.entries ?? []
+    const write = direction => {
+      const files = stageFiles(row.group, entries, direction)
+      if (onStage === undefined || files.length === 0) return undefined
+      const scope = direction === STAGE ? 'unstaged' : 'staged'
+      return () => runStage(row, { scope, files }, merged ? undefined : counterpartKey(row.key), { focusRow: true })
+    }
+    const stage = write(STAGE)
+    const unstage = write(UNSTAGE)
+    const state = merged ? mergedStageState(entries) : undefined
+    const unstaging = merged ? state === true : row.group === 'staged'
+    const key = row.kind === 'group'
+      ? (unstaging ? 'stage.unstageAll' : 'stage.stageAll')
+      : (unstaging ? 'stage.unstageFolder' : 'stage.stageFolder')
+    const target = row.kind === 'group' ? '' : ` · ${row.path}`
+    return {
+      merged, state, unstaging, stage, unstage, label: `${t(key)}${target}`,
+      disabled: stageDisabled || (unstaging ? unstage : stage) === undefined,
+    }
+  }
+  stagingRef.current = rowStaging
+
+  /** The keys a row's staging answers to, for assistive technology. */
+  const stageKeys = staging => [staging?.stage === undefined ? null : 's', staging?.unstage === undefined ? null : 'u']
+    .filter(key => key !== null).join(' ') || undefined
+
+  /** The gutter cell of one row: a command under separate groups, a tri-state mark when merged. */
+  const renderGutter = (row, staging) => {
+    if (!gutter) return null
+    let control = null
+    if (staging !== null && !(row.kind === 'file' && staging.conflict)) {
+      const className = row.kind === 'file' ? 'vcs-stage-file' : 'vcs-stage-folder'
+      control = staging.merged
+        ? (
+          <StageCheckbox
+            className={className}
+            checked={row.kind === 'file' ? (staging.mixed ? 'mixed' : staging.unstaging) : staging.state}
+            disabled={staging.disabled}
+            label={staging.label}
+            tabIndex={-1}
+            onToggle={() => { void (row.kind === 'file' ? staging.primaryWrite : (staging.unstaging ? staging.unstage : staging.stage))?.() }}
+          />
+        )
+        : (
+          <StageAction
+            className={className}
+            direction={staging.unstaging ? UNSTAGE : STAGE}
+            partial={row.kind === 'file' && staging.mixed}
+            disabled={staging.disabled}
+            label={staging.label}
+            onRun={() => (staging.unstaging ? staging.unstage : staging.stage)?.()}
+          />
+        )
+    }
+    return <span className="vcs-stage-gutter">{control}</span>
+  }
+
+  const indentOf = depth => `${(gutter ? 6 : 8) + (depth + (grouped ? 1 : 0)) * INDENT}px`
   const totalStat = (added, deleted) => (
     <span className="vcs-tree-stat">
       {added > 0 ? <span className="vcs-add">+{formatCount(added, locale)}</span> : null}
@@ -1076,7 +1201,7 @@ export function ChangeTree({
       className="vcs-tree-row vcs-tree-loading vcs-skeleton"
       role="status"
       aria-busy="true"
-      style={{ paddingLeft: indentOf(row.depth) }}
+      style={{ paddingLeft: gutter ? `calc(${GUTTER_WIDTH}px + ${indentOf(row.depth)})` : indentOf(row.depth) }}
     >
       <span className="vcs-sr-only">{t('changes.loadingDirectory')}</span>
       <span className="vcs-skeleton-shape vcs-skeleton-glyph" />
@@ -1085,54 +1210,64 @@ export function ChangeTree({
   )
   const renderGroup = (row, children) => {
     const bodyId = rowBodyId(row.key)
+    const staging = rowStaging(row)
     return (
       <div key={row.key} className="vcs-tree-group">
-        <button
-          type="button"
-          className="vcs-tree-row vcs-tree-group-head"
-          aria-expanded={row.expanded}
-          aria-controls={bodyId}
-          aria-current={readingKey === row.key ? 'location' : undefined}
-          style={{ paddingLeft: '8px' }}
-          {...rowProps(row)}
-          onClick={() => { activateRow(row, row.expanded) }}
-        >
-          <Chevron open={row.expanded} />
-          <span className="vcs-tree-group-name">{t(`changes.${row.group}`)}</span>
-          <span className="vcs-tree-spacer" />
-          <span className="vcs-tree-stat vcs-dim">{t('detail.fileCount', { count: formatCount(row.count, locale) })}</span>
-          {totalStat(row.added, row.deleted)}
-        </button>
+        <div className="vcs-tree-head vcs-tree-group-head-wrap">
+          {renderGutter(row, staging)}
+          <button
+            type="button"
+            className="vcs-tree-row vcs-tree-group-head"
+            aria-expanded={row.expanded}
+            aria-controls={bodyId}
+            aria-current={readingKey === row.key ? 'location' : undefined}
+            aria-keyshortcuts={stageKeys(staging)}
+            style={{ paddingLeft: gutter ? '6px' : '8px' }}
+            {...rowProps(row)}
+            onClick={() => { activateRow(row, row.expanded) }}
+          >
+            <Chevron open={row.expanded} />
+            <span className="vcs-tree-group-name">{t(`changes.${row.group}`)}</span>
+            <span className="vcs-tree-spacer" />
+            <span className="vcs-tree-stat vcs-dim">{t('detail.fileCount', { count: formatCount(row.count, locale) })}</span>
+            {totalStat(row.added, row.deleted)}
+          </button>
+        </div>
         <div className="vcs-tree-group-body" id={bodyId}>{children}</div>
       </div>
     )
   }
   const renderDir = (row, children) => {
     const bodyId = rowBodyId(row.key)
+    const staging = rowStaging(row)
     return (
       <div key={row.key} className="vcs-tree-dir">
-        <button
-          type="button"
-          className="vcs-tree-row vcs-tree-dir-head"
-          aria-expanded={row.expanded}
-          aria-controls={bodyId}
-          aria-current={readingKey === row.key ? 'location' : undefined}
-          title={row.path}
-          style={{ paddingLeft: indentOf(row.depth) }}
-          {...rowProps(row)}
-          onClick={() => { activateRow(row, row.expanded) }}
-        >
-          <Chevron open={row.expanded} />
-          {row.loadable
-            ? (
-              <>
-                <span className="vcs-status vcs-status-untracked" aria-hidden="true">U</span>
-                <span className="vcs-sr-only">{t('status.untracked')}</span>
-              </>
-            )
-            : null}
-          <span className="vcs-tree-dir-name">{row.name}</span>
-        </button>
+        <div className="vcs-tree-head vcs-tree-dir-head-wrap">
+          {renderGutter(row, staging)}
+          <button
+            type="button"
+            className="vcs-tree-row vcs-tree-dir-head"
+            aria-expanded={row.expanded}
+            aria-controls={bodyId}
+            aria-current={readingKey === row.key ? 'location' : undefined}
+            aria-keyshortcuts={stageKeys(staging)}
+            title={row.path}
+            style={{ paddingLeft: indentOf(row.depth) }}
+            {...rowProps(row)}
+            onClick={() => { activateRow(row, row.expanded) }}
+          >
+            <Chevron open={row.expanded} />
+            {row.loadable
+              ? (
+                <>
+                  <span className="vcs-status vcs-status-untracked" aria-hidden="true">U</span>
+                  <span className="vcs-sr-only">{t('status.untracked')}</span>
+                </>
+              )
+              : null}
+            <span className="vcs-tree-dir-name">{row.name}</span>
+          </button>
+        </div>
         <div className="vcs-tree-dir-body" id={bodyId}>{children}</div>
       </div>
     )
@@ -1143,28 +1278,10 @@ export function ChangeTree({
     const parts = splitPath(row.entry.path)
     const bodyId = rowBodyId(row.key)
     const statusClass = row.entry.untracked === true ? 'vcs-status-untracked' : `vcs-status-${row.entry.status}`
-    const merged = row.group === 'merged'
-    const targets = diffTargets(row.group, row.entry, rev)
-    const stagedTarget = targets.find(target => target.scope === 'staged')
-    const unstagedTarget = targets.find(target => target.scope !== 'staged')
-    const primary = unstagedTarget ?? stagedTarget
-    const mixed = row.entry.partiallyStaged === true || partiallyStaged?.has(row.entry.path) === true
-    const unstaging = primary.scope === 'staged' && (!merged || !mixed)
-    const conflict = row.entry.untracked !== true && (row.entry.status === 'U' || row.entry.conflict === true)
-    const stage = onStage === undefined || conflict ? undefined : async target => {
-      const alternate = merged ? undefined : `${unstaging ? 'unstaged' : 'staged'}|${row.entry.path}`
-      const source = { key: row.key, alternate }
-      stageSource.current = source
-      const index = navIndexByKey.get(row.key)
-      if (index !== undefined) setCursorAt(index)
-      const accepted = await onStage(target)
-      if (!accepted && stageSource.current === source) stageSource.current = null
-      return accepted
-    }
-    const showStage = stage !== undefined || (merged && !conflict)
-    const stageLabel = t(mixed
-      ? (unstaging ? 'stage.unstageAllFileChanges' : 'stage.stageRemainingFileChanges')
-      : (unstaging ? 'stage.unstageFile' : 'stage.stageFile'))
+    const staging = rowStaging(row)
+    // The file stage the row body writes: lines and hunks act on their own comparison.
+    const stage = onStage === undefined || staging === null || staging.conflict ? undefined
+      : target => runStage(row, target, staging.merged ? undefined : counterpartKey(row.key))
     return (
       <section
         key={row.key}
@@ -1172,29 +1289,20 @@ export function ChangeTree({
         data-file-key={row.key}
         ref={bindSection(row.key)}
       >
-        <div className="vcs-tree-file-head-wrap" data-open={expanded ? 'true' : undefined}
-          style={{ paddingInlineStart: showStage ? indentOf(row.depth) : undefined }}>
-          {!showStage ? null : (
-            <StageCheckbox
-              className="vcs-stage-file"
-              checked={mixed ? 'mixed' : unstaging}
-              disabled={stageDisabled || stage === undefined || (merged && mixed && unstagedTarget === undefined)}
-              label={`${stageLabel} · ${row.entry.path}`}
-              onToggle={() => { void stage?.(primary) }}
-            />
-          )}
+        <div className="vcs-tree-head vcs-tree-file-head-wrap" data-open={expanded ? 'true' : undefined}>
+          {renderGutter(row, staging)}
           <button
             type="button"
             className="vcs-tree-row vcs-tree-file-head"
             aria-expanded={expanded}
             aria-controls={bodyId}
             aria-current={readingKey === row.key ? 'location' : undefined}
+            aria-keyshortcuts={stageKeys(staging)}
             title={row.entry.origPath === undefined ? row.path : `${row.entry.origPath} → ${row.path}`}
-            style={{ paddingLeft: showStage ? 0 : indentOf(row.depth) }}
+            style={{ paddingLeft: indentOf(row.depth) }}
             {...rowProps(row)}
             onClick={() => { activateRow(row, expanded) }}
           >
-            <Chevron open={expanded} />
             <span className={`vcs-status ${statusClass}`} aria-hidden="true">{row.entry.status}</span>
             <span className="vcs-sr-only">{t(statusKey(row.entry.status, row.entry.untracked === true))}</span>
             <span className="vcs-tree-file-name">
@@ -1206,10 +1314,10 @@ export function ChangeTree({
             </span>
             {fileStat(row.entry)}
           </button>
-          {merged && mixed && stage !== undefined && stagedTarget !== undefined ? (
+          {staging?.merged && staging.mixed && staging.stagedWrite !== undefined ? (
             <FileStageMenu path={row.entry.path} disabled={stageDisabled} t={t} onUnstage={() => {
               focusRowElement(row.key)
-              void stage(stagedTarget)
+              void staging.stagedWrite()
             }} />
           ) : null}
         </div>

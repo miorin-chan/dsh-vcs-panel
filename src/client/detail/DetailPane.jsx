@@ -36,8 +36,11 @@ function StageHistoryButton({ action, entry, busy, onAction, t, locale }) {
     if (entry.lineCount === 1) operation = t(unstaged ? 'stage.unstageLine' : 'stage.stageLine')
     else if (Number.isSafeInteger(entry.lineCount)) {
       operation = t(unstaged ? 'stage.unstageSelected' : 'stage.stageSelected', { count: formatCount(entry.lineCount, locale) })
+    } else if (Number.isSafeInteger(entry.fileCount)) {
+      operation = t(unstaged ? 'stage.unstageFiles' : 'stage.stageFiles', { count: formatCount(entry.fileCount, locale) })
     }
-    const target = t(undo ? 'stage.undoTarget' : 'stage.redoTarget', { operation, path: entry.path })
+    const path = entry.path === '' ? t('stage.repositoryRoot') : entry.path
+    const target = t(undo ? 'stage.undoTarget' : 'stage.redoTarget', { operation, path })
     title = busy ? `${t('stage.historyBusy')} ${target}` : target
   }
   return (

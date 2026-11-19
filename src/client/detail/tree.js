@@ -111,7 +111,7 @@ function insertAt(node, segments, entry, path) {
   const name = segments[segments.length - 1]
   const full = parent === '' ? name : `${parent}/${name}`
   if (entry.directory) {
-    childDir(node, name, full, true)
+    childDir(node, name, full, true).entry = entry
     return
   }
   node.children.set(name, { type: 'file', name, path: entry.path, entry })
@@ -165,6 +165,21 @@ function buildTree(group, entries, state) {
     }
   }
   return root
+}
+
+/**
+ * The entries a directory row stands for when it is staged as a whole: an
+ * untracked directory Git reported whole is one entry, and any other directory
+ * collects the entries below it.
+ * @param {object} node - the directory node.
+ * @returns {object[]} the entries below the node.
+ */
+function entriesBelow(node) {
+  if (node.loadable) {
+    const path = node.entry?.path ?? `${node.path}/`
+    return [node.entry ?? { path, directory: true, status: 'U', untracked: true }]
+  }
+  return [...node.children.values()].flatMap(child => (child.type === 'file' ? [child.entry] : entriesBelow(child)))
 }
 
 /**
@@ -224,6 +239,7 @@ function flatten(node, depth, group, state, rows) {
       path: `${last.path}/`,
       loadable: last.loadable,
       expanded,
+      entries: entriesBelow(last),
     })
     if (!expanded) continue
     if (last.loadable && state.dirChildren?.[key] === undefined) {
@@ -245,6 +261,7 @@ function groupRow(group, entries, state) {
     key,
     depth: 0,
     expanded: state.collapsed?.[key] !== true,
+    entries,
     ...summarizeEntries(entries),
   }
 }

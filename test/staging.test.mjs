@@ -473,6 +473,98 @@ test('undo and redo restore both legs of a staged rename', async t => {
   assertIndexClean(f)
 })
 
+test('a folder or group write stages tracked, deleted, and untracked files in one undoable step', async t => {
+  const f = fixture(t)
+  const files = (...paths) => ({ path: undefined, files: paths.map(path => ({ path })) })
+  mkdirSync(join(f.root, 'src'))
+  f.write('src/a.txt', 'a\n')
+  f.write('src/b.txt', 'b\n')
+  f.write('.gitignore', '*.log\n')
+  f.git('add', '--', 'src', '.gitignore')
+  f.git('commit', '-qm', 'Folder')
+  const head = f.git('ls-files', '--stage')
+  f.write(f.path, 'outside the folder\n')
+  f.write('src/a.txt', 'a changed\n')
+  rmSync(join(f.root, 'src/b.txt'))
+  f.write('src/new.txt', 'new\n')
+  mkdirSync(join(f.root, 'notes/deep'), { recursive: true })
+  f.write('notes/x.txt', 'x\n')
+  f.write('notes/deep/y.txt', 'y\n')
+  f.write('notes/skip.log', 'ignored\n')
+
+  assert.deepEqual(await f.stage('unstaged', files('src/a.txt', 'src/b.txt', 'src/new.txt')),
+    { scope: 'unstaged', path: 'src/', fileCount: 3 })
+  assert.equal(f.index('src/a.txt'), 'a changed\n')
+  assert.equal(f.index('src/new.txt'), 'new\n')
+  assert.ok(!f.indexNames().includes('src/b.txt'))
+  assert.equal(f.index(), f.original.join(''), 'files outside the request keep their index entries')
+  assert.deepEqual(await f.stage('unstaged', files('notes/')), { scope: 'unstaged', path: 'notes/', fileCount: 2 })
+  assert.deepEqual(f.indexNames().filter(name => name.startsWith('notes/')), ['notes/deep/y.txt', 'notes/x.txt'])
+  assert.equal(f.read('notes/skip.log'), 'ignored\n')
+
+  const { undo: folder } = (await f.status()).stageHistory
+  assert.deepEqual(folder, { id: folder.id, scope: 'unstaged', path: 'notes/', fileCount: 2 })
+  await f.history('undo', folder.id)
+  assert.ok(!f.indexNames().some(name => name.startsWith('notes/')), 'one undo removes every file of the folder')
+  const { undo: group } = (await f.status()).stageHistory
+  await f.history('undo', group.id)
+  assert.equal(f.git('ls-files', '--stage'), head)
+  await f.history('redo', group.id)
+  await f.history('redo', folder.id)
+
+  assert.deepEqual(await f.stage('staged', files('notes/deep/y.txt', 'notes/x.txt', 'src/a.txt', 'src/b.txt', 'src/new.txt')),
+    { scope: 'staged', path: '', fileCount: 5 })
+  assert.equal(f.git('ls-files', '--stage'), head)
+  assert.equal(f.read('src/a.txt'), 'a changed\n')
+  assert.equal(f.read('notes/deep/y.txt'), 'y\n')
+  assert.deepEqual(await f.stage('unstaged', files('src/new.txt')), { scope: 'unstaged', path: 'src/new.txt' })
+  assertIndexClean(f)
+})
+
+test('folder and group writes reject malformed, stale, and unsupported files without changing the index', async t => {
+  const f = fixture(t)
+  const write = (scope, list, options) => f.stage(scope, { path: undefined, files: list }, options)
+  const renamed = 'renamed.txt'
+  f.git('mv', '--', f.path, renamed)
+  f.write('other.txt', 'other\n')
+  const index = f.git('ls-files', '--stage')
+  const rejected = async (scope, list, code, status, extra = {}) => {
+    const body = await f.stage(scope, { path: undefined, files: list, ...extra }, { expected: status })
+    assert.equal(body.error.code, code, JSON.stringify({ scope, list, extra }))
+    assert.equal(f.git('ls-files', '--stage'), index)
+  }
+  for (const [scope, list, extra] of [
+    ['untracked', [{ path: 'other.txt' }]],
+    ['unstaged', []],
+    ['unstaged', 'other.txt'],
+    ['unstaged', [{ path: 'other.txt' }], { path: 'other.txt' }],
+    ['unstaged', [{ path: 'other.txt' }], { lines: [{ hunk: 0, line: 0 }] }],
+    ['unstaged', [{ path: 'other.txt' }, { path: 'other.txt' }]],
+    ['unstaged', [{ path: '../other.txt' }]],
+    ['unstaged', [{ path: '/' }]],
+    ['staged', [{ path: 'notes/' }]],
+    ['staged', [{ path: renamed, oldPath: renamed }]],
+    ['unstaged', [{ path: 'notes/', oldPath: 'other.txt' }]],
+    ['unstaged', Array.from({ length: 1001 }, (_, i) => ({ path: `f${i}` }))],
+  ]) await rejected(scope, list, 'bad-request', 400, extra)
+
+  await rejected('unstaged', [{ path: 'other.txt' }, { path: 'missing.txt' }], 'stale-diff', 409)
+  await rejected('staged', [{ path: 'other.txt' }], 'stale-diff', 409)
+  await rejected('staged', [{ path: renamed, oldPath: 'other.txt' }], 'stale-diff', 409)
+  mkdirSync(join(f.root, 'empty'))
+  f.write('empty/.keep.log', '')
+  f.write('.gitignore', '*.log\n')
+  await rejected('unstaged', [{ path: 'empty/' }], 'stale-diff', 409)
+  mkdirSync(join(f.root, 'nested'))
+  execFileSync('git', ['init', '-q'], { cwd: join(f.root, 'nested'), env })
+  f.write('nested/inner.txt', 'inner\n')
+  await rejected('unstaged', [{ path: 'nested/' }], 'staging-unsupported', 409)
+
+  await write('staged', [{ path: renamed, oldPath: f.path }])
+  assert.deepEqual(f.indexNames(), [f.path], 'unstaging a rename restores both of its paths')
+  assertIndexClean(f)
+})
+
 test('replay in an unborn SHA-256 branch checks missing objects before publication', async t => {
   const f = fixture(t, { unborn: true, objectFormat: 'sha256' })
   f.write(f.path, 'new\n')
@@ -643,6 +735,10 @@ test('unrelated merge conflicts allow ordinary staging and block history replay'
   assert(conflicts)
   assert.equal((await f.history('undo', undo.id, {}, { expected: 409 })).error.code, 'stage-history-unavailable')
   f.write('second', 'second staged\n')
+  f.write('third', 'third\n')
+  const batch = { path: undefined, files: [{ path: 'third' }, { path: f.path }] }
+  assert.equal((await f.stage('unstaged', batch, { expected: 409 })).error.code, 'staging-unsupported')
+  assert.equal(f.git('ls-files', '-u'), conflicts, 'a conflicted file blocks the whole folder write')
   await f.stage('untracked', { path: 'second' })
   assert.equal(f.git('ls-files', '-u'), conflicts)
   assert.deepEqual((await f.status()).stageHistory, EMPTY_HISTORY)

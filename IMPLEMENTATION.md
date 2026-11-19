@@ -24,7 +24,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `POST /api/vcs.branch` | JSON 请求体 `{ sessionId, repo, action, branch, name?, local?, force? }` | 本地：`rename` → `{ from, branch }`；`delete` → `{ branch }`；`merge` → `{ branch, current, result }`；`rebase` → `{ branch, current }`；`push` → `{ branch, upstream, pushed }`。远程：`checkout-remote` → `{ branch, local }`；`delete-remote` → `{ branch }`；`merge-remote` / `pull-remote` → `{ branch, current, result }`（仅 `capabilities.branchOps` 为真时可用） |
 | `POST /api/vcs.tag` | JSON 请求体 `{ sessionId, repo, action, tag, remote? }` | `delete` → `{ tag }`；`push` → `{ tag, remote, pushed }`（仅 `capabilities.tagOps` 为真时可用） |
 | `POST /api/vcs.commit-op` | JSON 请求体 `{ sessionId, repo, action, sha, name?, message?, mode?, checkout? }` | `tag` → `{ tag, sha }`；`branch` → `{ branch, sha, checkedOut?: true }`；`checkout` → `{ sha }`；`cherry-pick` / `revert` / `drop` / `rebase` → `{ sha, current }`；`merge` → `{ sha, current, result }`；`reset` → `{ sha, current, mode }`（仅 `capabilities.commitOps` 为真时可用） |
-| `POST /api/vcs.stage` | JSON 请求体 `{ sessionId, repo, scope, path, oldPath?, fingerprint?, lines? }` | `{ scope, path }`（仅 `capabilities.stageOps` 为真时可用） |
+| `POST /api/vcs.stage` | JSON 请求体 `{ sessionId, repo, scope, path, oldPath?, fingerprint?, lines? }`，或目录与分组的 `{ sessionId, repo, scope, files }` | `{ scope, path, fileCount? }`（仅 `capabilities.stageOps` 为真时可用） |
 | `POST /api/vcs.stage-history` | JSON 请求体 `{ sessionId, repo, action: 'undo' \| 'redo', id }` | `{ action, stageHistory }`（仅 `capabilities.stageOps` 为真时可用） |
 
 ### 输入校验与路径边界
@@ -139,6 +139,12 @@ Git 工作树预览保留 Git 的读取能力。单选其他工作树或多选�
 `stageOps` 声明整文件暂存与取消暂存能力。写入沿用同步、切换等仓库操作的目标范围，只接受授权的仓库入口（默认工作树），并与其他仓库写入共用写锁。Client 仅在单选该 Git 工作树时开放操作。整文件与逐行操作的写入目标均为 Git index。
 
 - `scope` 决定方向。`unstaged` 与 `untracked` 执行暂存，`staged` 执行取消暂存。`path` 与可选 `oldPath` 是仓库相对路径。省略 `lines` 表示整文件操作。
+- 目录与分组操作以 `files` 代替 `path`、`oldPath`、`fingerprint` 与 `lines`，`scope` 只能是 `unstaged`（暂存）或 `staged`（取消暂存）。
+  `files` 列出 1 到 1,000 项（两个状态分组上限之和），每项为 `{ path, oldPath? }`，路径不得重复；以 `/` 结尾的 `path` 表示整体暂存的未跟踪目录，只用于 `unstaged` 且不带 `oldPath`。
+  Host 用一次 `git status` 核对已跟踪的改动，用一次 `git ls-files --others --exclude-standard` 展开未跟踪文件与目录，
+  任一项已不再是该方向的改动时返回 `stale-diff`，冲突文件与嵌套仓库返回 `staging-unsupported`，index 保持不变。
+  全部文件在同一个 index 事务内写入，暂存路径经 `git update-index --stdin` 传入，不受命令行长度限制。
+  只解析出一个文件时应答与整文件操作相同；多于一个时 `path` 是这些文件的共同父目录（带结尾 `/`，仓库根为空串），`fileCount` 是文件数，重命名计一个文件。
 - Git 状态在截断文件分组前为同时有已暂存和未暂存改动的文件标记 `partiallyStaged: true`，供文件复选框显示混合状态。
 - 合并视图按路径组织工作树文件。Git 文本比较的 `indexOid` 标识共享的 index 版本。两侧版本匹配时，Client 用 index 行位置对齐 hunk，共用上下文，并保留每行的源 scope 和 hunk 索引。重叠区域保留带标签的源 hunk。版本无法对齐或比较无法组合时，文件仍只有一个入口，展开后显示各自的比较结果。
 - 支持逐行操作的 Git 工作区文本 diff 返回 `lineStaging: true` 和 `fingerprint`。点按增删行前的复选框时，Client 提交该指纹及只含该行的 `lines: [{ hunk, line }]`。Host 也接受包含多行的请求。两项索引均从零开始，分别指向响应中的 `hunks` 和对应 hunk 的 `lines`，与界面行号和布局无关。
@@ -147,7 +153,7 @@ Git 工作树预览保留 Git 的读取能力。单选其他工作树或多选�
 
 ### Git 索引撤销与重做
 
-默认 Git 工作树的 `GET /api/vcs.status` 附带 `stageHistory: { undo, redo }`。每个值为 `null` 或 `{ id, scope, path, lineCount? }`，说明对应方向的下一个操作。Client 提交方向与当前记录 `id`，Host 在共享写锁内核对记录，拒绝其他面板已推进的历史位置。操作完成后刷新状态与 diff；拒绝时保留历史位置与当前索引，面板显示具体原因。
+默认 Git 工作树的 `GET /api/vcs.status` 附带 `stageHistory: { undo, redo }`。每个值为 `null` 或 `{ id, scope, path, lineCount?, fileCount? }`，说明对应方向的下一个操作；目录与分组操作的 `path` 与 `fileCount` 与其应答一致。Client 提交方向与当前记录 `id`，Host 在共享写锁内核对记录，拒绝其他面板已推进的历史位置。操作完成后刷新状态与 diff；拒绝时保留历史位置与当前索引，面板显示具体原因。
 
 - 每个工作树最多保留 32 条，Host 内存预算约为 1 MiB。只保留受影响的语义条目及用于验证的 `HEAD` 和仓库标识。
 - Host 独占创建 Git 的 `index.lock` 后读取索引，将工作放在唯一的临时索引中，通过 `GIT_INDEX_FILE` 交给 Git。提交前再校验实际索引、锁和 `HEAD`，将锁原子重命名为索引。撤销和重做在锁内比较并更新目标条目，保留其他路径的索引改动。拆分索引在发布时可能转为完整索引，语义条目保持一致。Git 的索引锁约束索引写入，发布前另行复核引用和索引文件状态。

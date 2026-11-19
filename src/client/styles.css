@@ -1106,7 +1106,19 @@
   white-space: nowrap;
 }
 
-.vcs-tree-group-head {
+/* A row and its staging gutter share one head; the group head sticks above
+   the files of its group. */
+.vcs-tree-head {
+  display: flex;
+  align-items: center;
+}
+
+.vcs-tree-head > .vcs-tree-row {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.vcs-tree-group-head-wrap {
   position: sticky;
   top: 0;
   z-index: 3;
@@ -1131,17 +1143,109 @@
    layout, so a folded list reads as one list and every row keeps the shared
    height. */
 .vcs-tree-file-head-wrap {
-  display: flex;
-  align-items: center;
   position: sticky;
   top: 0;
   z-index: 2;
   background: var(--dsw-alias-bg-base);
 }
 
-.vcs-tree-file-head {
-  flex: 1 1 auto;
-  min-width: 0;
+/* A file takes the chevron's slot with its status letter, so file and folder
+   names at one depth line up; the open head's band shows the expansion. */
+.vcs-tree-file-head > .vcs-status {
+  width: 11px;
+}
+
+/* The staging gutter is one column outside the indentation. The groups name
+   the state, so a command appears on the row being pointed at or focused, and
+   a partly staged file keeps a half-filled mark until then. */
+.vcs-stage-gutter {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: var(--vcs-row-height);
+}
+
+.vcs-stage-gutter + .vcs-tree-row::before {
+  inset-inline-start: 0;
+}
+
+/* The whole gutter cell takes the click; the hover square stays small. */
+.vcs-stage-action {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.vcs-stage-action::before {
+  position: absolute;
+  inset: calc(50% - 9px) calc(50% - 9px);
+  border-radius: 4px;
+  content: '';
+}
+
+.vcs-stage-action > * {
+  position: relative;
+  grid-area: 1 / 1;
+}
+
+.vcs-stage-icon {
+  width: 12px;
+  height: 12px;
+  opacity: 0;
+}
+
+.vcs-stage-partial {
+  box-sizing: border-box;
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+}
+
+.vcs-tree-head:hover .vcs-stage-icon,
+.vcs-tree-head:focus-within .vcs-stage-icon {
+  opacity: 1;
+}
+
+.vcs-tree-head:hover .vcs-stage-partial,
+.vcs-tree-head:focus-within .vcs-stage-partial {
+  opacity: 0;
+}
+
+.vcs-stage-action:hover:not([aria-disabled='true']) {
+  color: var(--dsw-alias-label-primary);
+}
+
+.vcs-stage-action:hover:not([aria-disabled='true'])::before {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.vcs-stage-action[aria-disabled='true'] {
+  cursor: default;
+}
+
+.vcs-tree-head .vcs-stage-action[aria-disabled='true'] .vcs-stage-icon {
+  opacity: 0.35;
+}
+
+/* Without hover, the commands stay visible. */
+@media (hover: none) {
+  .vcs-stage-icon {
+    opacity: 1;
+  }
+
+  .vcs-stage-partial {
+    opacity: 0;
+  }
 }
 
 /* File and diff rows share the same checkbox mark and state styling. */
@@ -1183,11 +1287,13 @@
   border-radius: 3px;
 }
 
+/* A checked mark is a tint with a drawn mark, so a column of staged lines
+   stays quieter than the code beside it. */
 .vcs-stage-checkbox[aria-checked='true'] .vcs-stage-mark,
 .vcs-stage-checkbox[aria-checked='mixed'] .vcs-stage-mark {
   border-color: var(--dsw-alias-brand-primary);
-  background: var(--dsw-alias-brand-primary);
-  color: var(--dsw-alias-bg-base);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent);
+  color: var(--dsw-alias-brand-primary);
 }
 
 .vcs-stage-checkbox[aria-checked='true'] .vcs-stage-mark::after {
@@ -1208,10 +1314,8 @@
   content: '';
 }
 
-.vcs-stage-file {
-  flex: none;
+.vcs-stage-gutter > .vcs-stage-checkbox {
   height: 24px;
-  margin-inline-end: 2px;
 }
 
 .vcs-file-stage-menu {

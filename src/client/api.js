@@ -231,9 +231,9 @@ export function createApi(sessionId, { fetchImpl = globalThis.fetch, base = '', 
       return post('/api/vcs.sync', { repo })
     },
 
-    /** Stage or unstage a file, or the selected lines of a specific diff. */
-    stage(repo, { scope, path, oldPath, fingerprint, lines }) {
-      return post('/api/vcs.stage', { repo, scope, path, oldPath, fingerprint, lines })
+    /** Stage or unstage a file, the selected lines of a specific diff, or the files of a group or folder. */
+    stage(repo, { scope, path, oldPath, fingerprint, lines, files }) {
+      return post('/api/vcs.stage', { repo, scope, path, oldPath, fingerprint, lines, files })
     },
 
     /** Undo or redo the entry currently shown in the working tree toolbar. */
