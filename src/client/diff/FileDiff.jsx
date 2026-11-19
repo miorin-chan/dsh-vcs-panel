@@ -140,8 +140,9 @@ function DiffText({ text, spans }) {
 }
 
 /** A hunk's header line. */
-function hunkHeader(hunk) {
-  return `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`
+function hunkHeader(hunk, t) {
+  const range = `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`
+  return hunk.side === undefined ? range : `${t(`changes.${hunk.side}`)}  ${range}`
 }
 
 /**
@@ -184,8 +185,8 @@ function cellClass(cell) {
  * runs under the other and both sides show the same rows and columns of text.
  * Every line is one fixed-height row, which keeps the sides aligned.
  */
-function SplitColumns({ hunks, highlights, stageControl }) {
-  const paired = useMemo(() => hunks.map(hunk => ({ header: hunkHeader(hunk), rows: splitRows(hunk) })), [hunks])
+function SplitColumns({ hunks, highlights, stageControl, t }) {
+  const paired = useMemo(() => hunks.map(hunk => ({ header: hunkHeader(hunk, t), rows: splitRows(hunk) })), [hunks, t])
   const columns = useRef({ left: null, right: null })
   const offsets = useRef({ left: { scrollLeft: 0, scrollTop: 0 }, right: { scrollLeft: 0, scrollTop: 0 } })
   const follow = side => event => {
@@ -233,30 +234,31 @@ function lineNumber(number) {
 /**
  * The hunks of a text comparison with their line numbers, unified or side by side.
  */
-function TextDiff({ diff, split, wrap, onStageLines, stageScope, stageDisabled, t, locale }) {
+function TextDiff({ diff, split, wrap, onStageLines, stageScope, stageDisabled, stageSources, showStageState, t, locale }) {
   const note = noteOf(diff)
   const { hunks, truncated } = useMemo(() => renderedHunks(diff.hunks), [diff.hunks])
   const highlights = useMemo(() => hunks.map(hunk => hunkHighlights(hunk, diff.path)), [hunks, diff.path])
   const [active, setActive] = useState(null)
   const bodyRef = useRef(null)
   const stageFocus = useRef(null)
-  const canStage = !truncated && diff.lineStaging === true
-    && typeof diff.fingerprint === 'string' && typeof onStageLines === 'function'
-  const unstage = stageScope === 'staged'
-  const action = t(unstage ? 'stage.unstageLine' : 'stage.stageLine')
+  const canStage = showStageState || (!truncated && diff.lineStaging === true
+    && typeof diff.fingerprint === 'string' && typeof onStageLines === 'function')
   const stageTargets = useMemo(() => canStage ? hunks.map((hunk, position) => {
     const targets = new Map()
     hunkRows(hunk).forEach((row, line) => {
       if (row.kind === 'context') return
+      const origin = hunk.origins?.[line] ?? { side: stageScope, hunk: position, line }
+      const checked = origin.side === 'staged'
+      const action = t(checked ? 'stage.unstageLine' : 'stage.stageLine')
       const added = row.kind === 'add'
       const number = added ? row.new : row.old
       const description = t(added ? 'stage.addedLine' : 'stage.deletedLine', { number: formatCount(number, locale) })
-      targets.set(`${row.kind}:${number}`, { line, key: `${position}:${line}`, label: `${action} · ${description}` })
+      targets.set(`${row.kind}:${number}`, { origin, checked, key: `${position}:${line}`, label: `${action} · ${description}` })
     })
     return targets
-  }) : [], [action, canStage, hunks, locale, t])
+  }) : [], [canStage, hunks, locale, stageScope, t])
   const firstLine = stageTargets.find(targets => targets.size > 0)?.values().next().value.key
-  const activeLine = active?.fingerprint === diff.fingerprint && active?.split === split && active?.wrap === wrap
+  const activeLine = active?.diff === diff && active?.split === split && active?.wrap === wrap
     ? active.key : firstLine
   // Patch order stays consistent across unified and both split layouts.
   const controls = () => Array.from(bodyRef.current.querySelectorAll('[data-stage-line]'))
@@ -280,15 +282,18 @@ function TextDiff({ diff, split, wrap, onStageLines, stageScope, stageDisabled, 
     if (!canStage) return null
     const target = stageTargets[hunk].get(`${kind}:${number}`)
     if (target === undefined) return h('span', { 'aria-hidden': 'true' })
-    const { line, key, label } = target
+    const { origin, checked, key, label } = target
+    const source = stageSources?.[origin.side]
+    const apply = stageSources === undefined ? onStageLines : source?.onStageLines
+    const fingerprint = stageSources === undefined && diff.lineStaging === true ? diff.fingerprint : source?.fingerprint
     return h(StageCheckbox, {
       className: 'vcs-stage-line',
-      checked: unstage,
+      checked,
       label,
-      disabled: stageDisabled,
+      disabled: stageDisabled || truncated || typeof apply !== 'function' || typeof fingerprint !== 'string',
       'data-stage-line': key,
       tabIndex: key === activeLine ? 0 : -1,
-      onFocus: () => { setActive({ fingerprint: diff.fingerprint, split, wrap, key }) },
+      onFocus: () => { setActive({ diff, split, wrap, key }) },
       onKeyDown: event => {
         if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
         if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
@@ -301,7 +306,7 @@ function TextDiff({ diff, split, wrap, onStageLines, stageScope, stageDisabled, 
       onToggle: async button => {
         const pending = { button, diff, index: controls().indexOf(button) }
         stageFocus.current = pending
-        if (!await onStageLines(diff.fingerprint, [{ hunk, line }]) && stageFocus.current === pending) {
+        if (!await apply(fingerprint, [{ hunk: origin.hunk, line: origin.line }]) && stageFocus.current === pending) {
           stageFocus.current = null
         }
       },
@@ -323,7 +328,7 @@ function TextDiff({ diff, split, wrap, onStageLines, stageScope, stageDisabled, 
       t('diff.truncated', { count: formatCount(MAX_RENDERED_LINES, locale) })))
   }
   if (split && !wrap) {
-    children.push(h(SplitColumns, { key: 'columns', hunks, highlights, stageControl }))
+    children.push(h(SplitColumns, { key: 'columns', hunks, highlights, stageControl, t }))
   } else {
     hunks.forEach((hunk, position) => {
       const highlighted = highlights[position]
@@ -361,7 +366,7 @@ function TextDiff({ diff, split, wrap, onStageLines, stageScope, stageDisabled, 
           spans: row.kind === 'add' ? highlighted?.new?.get(row.new) : highlighted?.old?.get(row.old),
         })))
       children.push(h('section', { key: position, className: 'vcs-diff-hunk' },
-        h('div', { className: 'vcs-diff-hunk-header', 'data-diff-hunk-header': '', tabIndex: -1 }, hunkHeader(hunk)),
+        h('div', { className: 'vcs-diff-hunk-header', 'data-diff-hunk-header': '', tabIndex: -1 }, hunkHeader(hunk, t)),
         rows))
     })
   }
@@ -416,7 +421,7 @@ function diffSkeleton(label) {
  * @param {{ state: '*' | 'loading' | 'missing' | 'error' | object | undefined, split: boolean, wrap: boolean, retry: Function, t: Function, locale?: string }} props - comparison state, layout choices, retry action, and localized copy.
  * @returns {object} the comparison or its loading, unavailable, or error state.
  */
-export function FileDiff({ state, split, wrap, retry, onStageLines, stageScope, stageDisabled, t, locale }) {
+export function FileDiff({ state, split, wrap, retry, onStageLines, stageScope, stageDisabled, stageSources, showStageState, t, locale }) {
   let content
   if (state === undefined || state === 'loading') {
     content = diffSkeleton(t('diff.loading'))
@@ -436,7 +441,7 @@ export function FileDiff({ state, split, wrap, retry, onStageLines, stageScope, 
     content = h('p', { className: 'vcs-diff-status' }, t('diff.oversized'))
   } else {
     const oneSided = isOneSided(state)
-    content = h(TextDiff, { diff: state, split: split && !oneSided, wrap, onStageLines, stageScope, stageDisabled, t, locale })
+    content = h(TextDiff, { diff: state, split: split && !oneSided, wrap, onStageLines, stageScope, stageDisabled, stageSources, showStageState, t, locale })
   }
   return h('div', { className: 'vcs-diff-root' }, content)
 }

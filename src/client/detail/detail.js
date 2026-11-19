@@ -50,6 +50,45 @@ export function worktreeGroups(status) {
   ].filter(group => group.entries.length > 0)
 }
 
+/** One Git row per path, with the original entries for its two comparisons. */
+export function mergedWorktreeGroups(groups) {
+  const files = new Map()
+  const directories = []
+  for (const group of groups) {
+    for (const entry of group.entries) {
+      if (entry.directory === true) {
+        directories.push(entry)
+        continue
+      }
+      const sources = files.get(entry.path) ?? {}
+      sources[group.id] = entry
+      files.set(entry.path, sources)
+    }
+  }
+  const entries = [...files.values()].map(sources => {
+    const { staged, unstaged } = sources
+    return {
+      ...staged, ...unstaged, sources,
+      origPath: staged?.origPath ?? unstaged?.origPath,
+      added: (staged?.added ?? 0) + (unstaged?.added ?? 0),
+      deleted: (staged?.deleted ?? 0) + (unstaged?.deleted ?? 0),
+      binary: staged?.binary === true || unstaged?.binary === true,
+    }
+  })
+  entries.push(...directories)
+  return entries.length === 0 ? [] : [{ id: 'merged', entries, header: false }]
+}
+
+/** Preserve each comparison's scope and rename path in either layout. */
+export function diffTargets(group, entry, rev) {
+  if (group !== 'merged') return [diffTarget(group, entry, rev)]
+  if (entry.sources === undefined) return [diffTarget('unstaged', entry, rev)]
+  return ['staged', 'unstaged'].flatMap(side => {
+    const source = entry.sources[side]
+    return source === undefined ? [] : [diffTarget(side, source, rev)]
+  })
+}
+
 /**
  * File groups of one commit.
  * @param {{ files?: object[] } | null} commit - the commit detail.
@@ -91,7 +130,7 @@ export function sectionsFromRows(rows, rev) {
       key: row.key,
       group: row.group,
       entry: row.entry,
-      target: diffTarget(row.group, row.entry, rev),
+      target: diffTargets(row.group, row.entry, rev)[0],
     })
   }
   return sections

@@ -16,19 +16,21 @@
  */
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { FileDiff, isValidDiff } from '../diff/FileDiff.jsx'
+import { FileDiff, isValidDiff, MAX_RENDERED_LINES } from '../diff/FileDiff.jsx'
+import { mergeDiffs } from '../diff/merge.js'
 import { formatCount, lineCounts, splitPath, statusKey } from '../format.js'
 import {
   BACK, DOWN, findAncestor, FORWARD, hasAttr, hasClass, isDiscreteActionButton, isEditableTarget,
-  isNavigationStop, movement, rowStep, unmodified, UP,
+  isNavigationStop, isOverlayOrMenuTarget, movement, rowStep, unmodified, UP,
 } from '../keys.js'
 import { Chevron } from '../ui.jsx'
 import { Bar, barWidth } from '../skeleton.jsx'
 import {
-  MAX_PARALLEL, changedLines, diffTarget, estimateHeight, isFolded, rowAt,
+  MAX_PARALLEL, changedLines, diffTargets, estimateHeight, isFolded, rowAt,
 } from './detail.js'
 import { createQueue } from './queue.js'
 import { StageCheckbox } from './StageCheckbox.js'
+import { FileStageMenu } from './FileStageMenu.jsx'
 import { rowBodyId } from './tree.js'
 
 /** Distance beyond the viewport at which a file starts loading. */
@@ -94,22 +96,36 @@ const FileBody = memo(function FileBody({
 }) {
   const [answer, setAnswer] = useState(null)
   const [attempt, setAttempt] = useState(0)
-  const target = useMemo(() => diffTarget(group, entry, rev), [group, entry, rev])
-  const currentTargetKey = targetKey(target)
+  const targets = diffTargets(group, entry, rev)
+  const targetsKey = targets.map(targetKey).join('\0')
 
   useEffect(() => {
     if (folded || !near) return undefined
-    if (answer !== null
-      && answer.revision === revision
-      && answer.attempt === attempt
-      && answer.targetKey === currentTargetKey) return undefined
-    // The previous answer stays on screen until the new one arrives.
-    return request(target, revision, result => {
-      setAnswer({ ...result, revision, attempt, targetKey: currentTargetKey })
-    })
-    // `answer` and `target` are keyed by `revision`, `attempt`, and `currentTargetKey`.
+    if (answer !== null && answer.revision === revision && answer.attempt === attempt && answer.targetsKey === targetsKey) {
+      return undefined
+    }
+    // Apply both answers together so a refresh cannot mix different revisions.
+    const results = new Map()
+    const cancel = targets.map(target => request(target, revision, result => {
+      results.set(target.scope, { ...result, target })
+      if (results.size === targets.length) {
+        setAnswer({ results: targets.map(source => results.get(source.scope)), revision, attempt, targetsKey })
+      }
+    }))
+    return () => { for (const stop of cancel) stop?.() }
+    // `answer` and `targets` are keyed by `revision`, `attempt`, and `targetsKey`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folded, near, revision, attempt, request, currentTargetKey])
+  }, [folded, near, revision, attempt, request, targetsKey])
+
+  const combined = useMemo(() => {
+    const [staged, unstaged] = answer?.results ?? []
+    if (group !== 'merged' || staged?.diff?.kind !== 'text' || unstaged?.diff?.kind !== 'text'
+      || staged.diff.indexOid === undefined || staged.diff.indexOid !== unstaged.diff.indexOid
+      || staged.diff.hunks.length === 0 || unstaged.diff.hunks.length === 0 || staged.diff.coarse || unstaged.diff.coarse) return null
+    const diff = mergeDiffs(staged.diff, unstaged.diff)
+    const length = diff.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0)
+    return length <= MAX_RENDERED_LINES ? diff : null
+  }, [answer, group])
 
   if (folded) {
     if (foldReason === undefined) return null
@@ -122,20 +138,38 @@ const FileBody = memo(function FileBody({
       </div>
     )
   }
-  const state = answer.status === 'ready' ? answer.diff : answer.status
-  return (
+  const busy = stageDisabled || answer.targetsKey !== targetsKey || answer.revision !== revision
+  const retry = () => { setAttempt(value => value + 1) }
+  const stageLines = target => onStage === undefined ? undefined : (fingerprint, lines) => onStage({ ...target, fingerprint, lines })
+  if (combined !== null) {
+    const stageSources = Object.fromEntries(answer.results.map(({ target, diff }) => [target.scope, {
+      fingerprint: diff.lineStaging === true ? diff.fingerprint : undefined,
+      onStageLines: stageLines(target),
+    }]))
+    return <FileDiff state={combined} split={split} wrap={wrap} retry={retry} stageSources={stageSources}
+      stageDisabled={busy} showStageState={true} t={t} locale={locale} />
+  }
+  const renderDiff = ({ status, diff, target }) => (
     <FileDiff
-      state={state}
+      state={status === 'ready' ? diff : status}
       split={split}
       wrap={wrap}
-      retry={() => { setAttempt(value => value + 1) }}
-      onStageLines={onStage === undefined ? undefined : (fingerprint, lines) => onStage({ ...target, fingerprint, lines })}
+      retry={retry}
+      onStageLines={stageLines(target)}
       stageScope={target.scope}
-      stageDisabled={stageDisabled || answer.targetKey !== currentTargetKey || answer.revision !== revision}
+      stageDisabled={busy}
+      showStageState={group === 'merged'}
       t={t}
       locale={locale}
     />
   )
+  if (answer.results.length === 1) return renderDiff(answer.results[0])
+  return answer.results.map(result => (
+    <div className="vcs-diff-source" key={result.target.scope}>
+      <div className="vcs-diff-source-label">{t(result.target.scope === 'staged' ? 'changes.staged' : 'changes.unstaged')}</div>
+      {renderDiff(result)}
+    </div>
+  ))
 })
 
 /**
@@ -372,7 +406,9 @@ export function ChangeTree({
     const key = keys[index]
     readingRef.current = key
     setReadingKey(previous => (previous === key ? previous : key))
-    onReading({ key, offset: Math.max(0, root.scrollTop - tops[index]) })
+    const anchor = { key, offset: Math.max(0, root.scrollTop - tops[index]) }
+    onReading(anchor)
+    return anchor
   }, [flowTop, navRows, onReading])
 
   /** Align one row below the sticky rows, but only when it is out of view. */
@@ -718,7 +754,7 @@ export function ChangeTree({
   }
 
   const runKeyDown = useCallback((event, { fromOutside = false } = {}) => {
-    if (isEditableTarget(event.target)) return false
+    if (isEditableTarget(event.target) || isOverlayOrMenuTarget(event.target, scrollRef.current)) return false
     if (event.isComposing === true) return false
     if ((event.key === 'Enter' || event.key === ' ') && !fromOutside && isDiscreteActionButton(event.target, scrollRef.current)) {
       return false
@@ -966,6 +1002,12 @@ export function ChangeTree({
   /** Expose the tree's focus, keyboard, and bulk-fold hooks to the detail pane. */
   useLayoutEffect(() => {
     control.current = {
+      readingAnchor() {
+        const anchor = report()
+        if (anchor !== undefined) return anchor
+        const row = navRows[cursorRef.current.row]
+        return row === undefined ? null : { key: row.key, offset: 0 }
+      },
       focusReading() {
         if (navRows.length === 0) return false
         const row = Math.max(0, Math.min(cursorRef.current.row, navRows.length - 1))
@@ -988,7 +1030,7 @@ export function ChangeTree({
       },
     }
     return () => { control.current = null }
-  }, [control, focusStop, navRows.length, onBulkFold, preserve, restoreFocus, runKeyDown])
+  }, [control, focusStop, navRows.length, onBulkFold, preserve, report, restoreFocus, runKeyDown])
 
   /** The click handler every row shares: move the cursor, focus it, and flip the row. */
   const activateRow = (row, expanded) => {
@@ -1094,18 +1136,25 @@ export function ChangeTree({
     const parts = splitPath(row.entry.path)
     const bodyId = rowBodyId(row.key)
     const statusClass = row.entry.untracked === true ? 'vcs-status-untracked' : `vcs-status-${row.entry.status}`
-    const unstaging = row.group === 'staged'
-    const stage = onStage === undefined || (row.entry.untracked !== true && (row.entry.status === 'U' || row.entry.conflict === true))
-      ? undefined : async target => {
-        const source = { key: row.key, alternate: `${unstaging ? 'unstaged' : 'staged'}|${row.entry.path}` }
-        stageSource.current = source
-        const index = navIndexByKey.get(row.key)
-        if (index !== undefined) setCursorAt(index)
-        const accepted = await onStage(target)
-        if (!accepted && stageSource.current === source) stageSource.current = null
-        return accepted
-      }
+    const merged = row.group === 'merged'
+    const targets = diffTargets(row.group, row.entry, rev)
+    const stagedTarget = targets.find(target => target.scope === 'staged')
+    const unstagedTarget = targets.find(target => target.scope !== 'staged')
+    const primary = unstagedTarget ?? stagedTarget
     const mixed = row.entry.partiallyStaged === true || partiallyStaged?.has(row.entry.path) === true
+    const unstaging = primary.scope === 'staged' && (!merged || !mixed)
+    const conflict = row.entry.untracked !== true && (row.entry.status === 'U' || row.entry.conflict === true)
+    const stage = onStage === undefined || conflict ? undefined : async target => {
+      const alternate = merged ? undefined : `${unstaging ? 'unstaged' : 'staged'}|${row.entry.path}`
+      const source = { key: row.key, alternate }
+      stageSource.current = source
+      const index = navIndexByKey.get(row.key)
+      if (index !== undefined) setCursorAt(index)
+      const accepted = await onStage(target)
+      if (!accepted && stageSource.current === source) stageSource.current = null
+      return accepted
+    }
+    const showStage = stage !== undefined || (merged && !conflict)
     const stageLabel = t(mixed
       ? (unstaging ? 'stage.unstageAllFileChanges' : 'stage.stageRemainingFileChanges')
       : (unstaging ? 'stage.unstageFile' : 'stage.stageFile'))
@@ -1117,14 +1166,14 @@ export function ChangeTree({
         ref={bindSection(row.key)}
       >
         <div className="vcs-tree-file-head-wrap" data-open={expanded ? 'true' : undefined}
-          style={{ paddingInlineStart: stage === undefined ? undefined : indentOf(row.depth) }}>
-          {stage === undefined ? null : (
+          style={{ paddingInlineStart: showStage ? indentOf(row.depth) : undefined }}>
+          {!showStage ? null : (
             <StageCheckbox
               className="vcs-stage-file"
               checked={mixed ? 'mixed' : unstaging}
-              disabled={stageDisabled}
+              disabled={stageDisabled || stage === undefined || (merged && mixed && unstagedTarget === undefined)}
               label={`${stageLabel} · ${row.entry.path}`}
-              onToggle={() => { void stage(diffTarget(row.group, row.entry, rev)) }}
+              onToggle={() => { void stage?.(primary) }}
             />
           )}
           <button
@@ -1134,7 +1183,7 @@ export function ChangeTree({
             aria-controls={bodyId}
             aria-current={readingKey === row.key ? 'location' : undefined}
             title={row.entry.origPath === undefined ? row.path : `${row.entry.origPath} → ${row.path}`}
-            style={{ paddingLeft: stage === undefined ? indentOf(row.depth) : 0 }}
+            style={{ paddingLeft: showStage ? 0 : indentOf(row.depth) }}
             {...rowProps(row)}
             onClick={() => { activateRow(row, expanded) }}
           >
@@ -1150,6 +1199,12 @@ export function ChangeTree({
             </span>
             {fileStat(row.entry)}
           </button>
+          {merged && mixed && stage !== undefined && stagedTarget !== undefined ? (
+            <FileStageMenu path={row.entry.path} disabled={stageDisabled} t={t} onUnstage={() => {
+              focusRowElement(row.key)
+              void stage(stagedTarget)
+            }} />
+          ) : null}
         </div>
         <div className="vcs-tree-file-body" id={bodyId} ref={bindBody(row.key)}>
           <FileBody

@@ -314,6 +314,19 @@ export function CompareSplitIcon() {
   )
 }
 
+/** A list shown in one block or in two blocks by index state. */
+export function StagingLayoutIcon({ merged }) {
+  return (
+    <svg className="vcs-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true" stroke="currentColor" strokeWidth="1.1">
+      {merged ? <rect x="2" y="2" width="12" height="12" rx="1.5" /> : <>
+        <rect x="2" y="1.5" width="12" height="5.25" rx="1.25" />
+        <rect x="2" y="9.25" width="12" height="5.25" rx="1.25" />
+      </>}
+      <path d={merged ? 'M5 5h6M5 8h6M5 11h6' : 'M5 4.1h6M5 11.9h6'} strokeLinecap="round" />
+    </svg>
+  )
+}
+
 /**
  * A pane with a narrow column on its left: the timeline beside the changes.
  * The column is filled while the timeline stands beside the changes and left

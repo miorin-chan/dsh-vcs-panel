@@ -1384,6 +1384,11 @@ export function VcsView({
                   wrap={state.wrap}
                   onToggleSplit={split => { update({ split }) }}
                   onToggleWrap={wrap => { update({ wrap }) }}
+                  mergeStaging={state.mergeStaging}
+                  onToggleStageLayout={(mergeStaging, anchor, folds) => {
+                    anchorRef.current = anchor
+                    update({ mergeStaging, anchor, folds })
+                  }}
                   singleColumn={singleColumn}
                   onBack={leaveDetail}
                   onLeaveNav={leaveDetail}

@@ -140,6 +140,7 @@ Git 工作树预览保留 Git 的读取能力。单选其他工作树或多选�
 
 - `scope` 决定方向。`unstaged` 与 `untracked` 执行暂存，`staged` 执行取消暂存。`path` 与可选 `oldPath` 是仓库相对路径。省略 `lines` 表示整文件操作。
 - Git 状态在截断文件分组前为同时有已暂存和未暂存改动的文件标记 `partiallyStaged: true`，供文件复选框显示混合状态。
+- 合并视图按路径组织工作树文件。Git 文本比较的 `indexOid` 标识共享的 index 版本。两侧版本匹配时，Client 用 index 行位置对齐 hunk，共用上下文，并保留每行的源 scope 和 hunk 索引。重叠区域保留带标签的源 hunk。版本无法对齐或比较无法组合时，文件仍只有一个入口，展开后显示各自的比较结果。
 - 支持逐行操作的 Git 工作区文本 diff 返回 `lineStaging: true` 和 `fingerprint`。点按增删行前的复选框时，Client 提交该指纹及只含该行的 `lines: [{ hunk, line }]`。Host 也接受包含多行的请求。两项索引均从零开始，分别指向响应中的 `hunks` 和对应 hunk 的 `lines`，与界面行号和布局无关。
 - 整文件操作支持二进制、符号链接、模式变化、删除及经 Git 状态验证的重命名。逐行操作适用于受支持的普通文件文本 diff，包括部分新增或删除。重命名、复制、模式变化、符号链接、子模块、二进制、超限或冲突 diff 不声明 `lineStaging`。未跟踪文本需由 Host 核对 UTF-8 内容与 Git diff 一致，可执行位遵循 Git 的 `core.fileMode` 设置。
 - Host 在共享写锁内校验暂存目标。逐行操作重新读取文件 diff 并校验指纹和所选行，再以完整的 index 源 blob 构建补丁。源 blob 上限为 2 MiB，与 diff 输出和 Client 渲染上限分别校验。`git apply --cached` 在临时索引上校验原文。整文件与逐行写入共用同一 index 事务，在事务内核对受影响条目、`HEAD` 和索引锁。Client 在操作成功或收到 `stale-diff` 时刷新工作区状态与 diff，并沿用阅读锚点恢复。

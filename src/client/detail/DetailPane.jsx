@@ -15,13 +15,13 @@ import { messageBody } from '../history/commits.js'
 import { worktreeSummary } from '../history/timeline.js'
 import {
   BackIcon, BranchIcon, Button, CheckIcon, CompareSplitIcon, CopyIcon, FoldIcon, IconButton,
-  NowrapIcon, RefBadge, WorkingCopyBadge, WrapIcon,
+  NowrapIcon, RefBadge, StagingLayoutIcon, WorkingCopyBadge, WrapIcon,
 } from '../ui.jsx'
 import { MetaSkeleton, TreeSkeleton } from '../skeleton.jsx'
-import { buildNodeRows } from './tree.js'
+import { buildNodeRows, summarizeEntries } from './tree.js'
 import {
   SPLIT_MIN_WIDTH, allFileFolds, budgetFolds, commitGroups, commitSummary, comparisonBase,
-  expandedFileFolds, hasUnfoldedFile, streamSections, worktreeGroups,
+  expandedFileFolds, hasUnfoldedFile, mergedWorktreeGroups, streamSections, worktreeGroups,
 } from './detail.js'
 import { ChangeTree } from './ChangeTree.jsx'
 
@@ -190,11 +190,14 @@ export function DetailPane({
   api, repo, node, summary, status, statusState, statusError,
   dirChildren, loadingDirs, dirs, collapsed, onToggleDir,
   folds, onToggleFold, onSetFolds, split, wrap, onToggleSplit, onToggleWrap,
+  mergeStaging = false, onToggleStageLayout,
   singleColumn, onBack, onLeaveNav, onSelectCommit, isLoaded, onMissing, onSettled,
   revision, cache, commitCache, initialAnchor, onReading, control, capabilities, onRefActions, onStage, stageDisabled, t, locale,
   onStageHistory, worktree = null, workingCopies = [], snapshotError = null, showCurrentHead = true,
 }) {
   const isWorktree = worktree !== null
+  const canMergeStaging = isWorktree && capabilities?.staging === true
+  const merged = canMergeStaging && mergeStaging
   const stageHistory = isWorktree && onStageHistory !== undefined ? status?.stageHistory : undefined
   const copyLabels = workingCopies.map(copy => copy.label)
   const commitCacheKey = `${repo}|${node}|${revision}`
@@ -250,16 +253,18 @@ export function DetailPane({
     return () => { observer.disconnect() }
   }, [])
 
-  const groups = useMemo(
+  const sourceGroups = useMemo(
     () => (isWorktree ? worktreeGroups(status) : commitGroups(commitState.commit)),
     [commitState.commit, isWorktree, status],
   )
+  const mergedGroups = useMemo(() => canMergeStaging ? mergedWorktreeGroups(sourceGroups) : [], [canMergeStaging, sourceGroups])
+  const groups = merged ? mergedGroups : sourceGroups
   // A running Host may still serve the previous status shape during a Client reload.
   const partiallyStaged = useMemo(() => {
-    const staged = new Set(groups.find(group => group.id === 'staged')?.entries.map(entry => entry.path))
-    const unstaged = groups.find(group => group.id === 'unstaged')?.entries ?? []
+    const staged = new Set(sourceGroups.find(group => group.id === 'staged')?.entries.map(entry => entry.path))
+    const unstaged = sourceGroups.find(group => group.id === 'unstaged')?.entries ?? []
     return new Set(unstaged.filter(entry => staged.has(entry.path)).map(entry => entry.path))
-  }, [groups])
+  }, [sourceGroups])
   // Use the id of the files we are showing even if a snapshot is in flight.
   const rev = isWorktree ? null : (commitState.commit?.sha ?? node)
   // The expand action follows the fully expanded order, so collapsing a
@@ -294,6 +299,29 @@ export function DetailPane({
     const mode = someUnfolded ? 'collapse' : 'expand'
     if (treeControl.current !== null) treeControl.current.bulkFold(mode)
     else bulkFold(mode)
+  }
+
+  const toggleStageLayout = () => {
+    const anchor = treeControl.current?.readingAnchor() ?? null
+    const nextSections = streamSections(merged ? sourceGroups : mergedGroups, dirChildren, rev)
+    const open = new Set(allSections.filter(section => folds[section.key] === false).map(section => section.entry.path))
+    const nextFolds = { ...folds }
+    for (const section of nextSections) {
+      if (open.has(section.entry.path)) nextFolds[section.key] = false
+    }
+    let nextAnchor = null
+    if (anchor !== null) {
+      const path = anchor.key.slice(anchor.key.indexOf('|') + 1)
+      const matches = nextSections.filter(section => section.entry.path === path)
+      const target = matches.find(section => section.group === 'unstaged') ?? matches[0]
+      if (target !== undefined) nextAnchor = { key: target.key, offset: 0 }
+      else if (path !== '') {
+        const group = merged ? 'unstaged' : 'merged-dir'
+        const key = anchor.key.startsWith('unstaged|') && dirs[anchor.key] === true ? anchor.key : `${group}|${path}`
+        nextAnchor = { key, offset: 0 }
+      }
+    }
+    onToggleStageLayout(!merged, nextAnchor, nextFolds)
   }
 
   const settled = isWorktree
@@ -352,7 +380,10 @@ export function DetailPane({
 
   const refs = summary?.refs ?? commitState.commit?.refs ?? []
   const displayedRefs = showCurrentHead ? refs : sharedRefs(refs)
-  const summaryCounts = isWorktree ? worktreeSummary(status) : null
+  const mergedCounts = merged ? summarizeEntries(mergedGroups[0]?.entries ?? []) : null
+  const summaryCounts = mergedCounts === null
+    ? (isWorktree ? worktreeSummary(status) : null)
+    : { ...mergedCounts, changed: mergedCounts.count }
   const commitCounts = isWorktree || commitState.commit === null ? null : commitSummary(commitState.commit.files)
   const commitSource = commitState.commit ?? summary ?? null
   const base = isWorktree || commitSource === null ? null : comparisonBase(commitSource, capabilities)
@@ -425,6 +456,17 @@ export function DetailPane({
           </span>
         ) : null}
         <span className="vcs-diff-tools">
+          {canMergeStaging && onToggleStageLayout !== undefined ? (
+            <IconButton
+              label={t('changes.mergeStaging')}
+              title={t(merged ? 'changes.showSeparateStaging' : 'changes.showMergedStaging')}
+              pressed={merged}
+              onClick={toggleStageLayout}
+              className="vcs-diff-tool vcs-stage-layout"
+            >
+              <StagingLayoutIcon merged={merged} />
+            </IconButton>
+          ) : null}
           <IconButton
             label={someUnfolded ? t('tree.collapseAll') : t('tree.expandAll')}
             title={someUnfolded ? t('tree.collapseAllHint') : t('tree.expandAllHint')}
@@ -454,6 +496,7 @@ export function DetailPane({
         </span>
       </div>
       <ChangeTree
+        key={merged ? 'merged' : 'separate'}
         api={api}
         repo={repo}
         rev={rev}

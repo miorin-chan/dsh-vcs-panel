@@ -913,7 +913,8 @@ test('diff reports an unstaged text change', async () => {
     }),
   )
   assert.equal(status, 200)
-  const { fingerprint, ...comparison } = body
+  const { fingerprint, indexOid, ...comparison } = body
+  assert.match(indexOid, /^[\da-f]{40}$/u)
   assert.match(fingerprint, /^[\da-f]{64}$/u)
   assert.deepEqual(comparison, {
     kind: 'text',
@@ -967,7 +968,8 @@ test('diff reports a staged new file', async () => {
     }),
   )
   assert.equal(status, 200)
-  const { fingerprint, ...comparison } = body
+  const { fingerprint, indexOid, ...comparison } = body
+  assert.match(indexOid, /^[\da-f]{40}$/u)
   assert.match(fingerprint, /^[\da-f]{64}$/u)
   assert.deepEqual(comparison, {
     kind: 'text',
@@ -1016,6 +1018,8 @@ test('diff shows both sides of the same file without mixing them', async () => {
     }),
   )
   assert.equal(unstaged.status, 200)
+  assert.match(staged.body.indexOid, /^[\da-f]{40}$/u)
+  assert.equal(unstaged.body.indexOid, staged.body.indexOid)
   assert.deepEqual(unstaged.body.hunks, [{
     oldStart: 1,
     oldLines: 2,
@@ -1023,6 +1027,19 @@ test('diff shows both sides of the same file without mixing them', async () => {
     newLines: 3,
     lines: [' both', ' staged', '+worktree'],
   }])
+})
+
+test('staged diff preserves a deletion when the worktree replaces the file with a directory', async t => {
+  const { source, repo, handlers } = linkedWorktreeFixture(t)
+  git(source, ['rm', '-q', '--', 'tracked.txt'])
+  mkdirSync(join(source, 'tracked.txt'))
+  writeFileSync(join(source, 'tracked.txt', 'new'), 'replacement\n')
+  const { status, body } = await call(handlers.diff, route('/api/vcs.diff', { ...repo, scope: 'staged', path: 'tracked.txt' }))
+  assert.equal(status, 200)
+  assert.equal(body.before, true)
+  assert.equal(body.after, false)
+  assert.equal(body.indexOid, '0'.repeat(40))
+  assert.deepEqual(body.hunks[0].lines, ['-base'])
 })
 
 test('diff reports an untracked text file as one all-additions hunk', async () => {

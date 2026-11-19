@@ -2518,11 +2518,13 @@ test('VcsView stages a line directly, displays mixed file state, and replays the
       case '/api/vcs.log':
         return json({ commits: [{ sha, parents: [], refs: [], author: 'Ada', subject: 'base' }] })
       case '/api/vcs.diff':
-        return json({ kind: 'text', path, before: true, after: true, lineStaging: true,
+        return json({ kind: 'text', path, before: true, after: true, lineStaging: true, indexOid: sha,
           fingerprint: staged ? 'c'.repeat(64) : fingerprint,
-          hunks: [{ oldStart: 1, newStart: 1, oldLines: 2, newLines: 2,
+          hunks: [{ oldStart: 1, newStart: 1,
             lines: !staged ? [' shared', '-before', '+after']
-              : parsed.searchParams.get('scope') === 'staged' ? [' shared', '+after'] : [' shared', '-before'] }] })
+              : parsed.searchParams.get('scope') === 'staged' ? [' shared', ' before', '+after'] : [' shared', '-before', ' after'],
+            oldLines: staged && parsed.searchParams.get('scope') !== 'staged' ? 3 : 2,
+            newLines: staged && parsed.searchParams.get('scope') === 'staged' ? 3 : 2 }] })
       case '/api/vcs.stage': {
         const write = JSON.parse(init.body)
         assert.equal(init.method, 'POST')
@@ -2605,6 +2607,44 @@ test('VcsView stages a line directly, displays mixed file state, and replays the
     await harness.settle()
     assert.deepEqual(writes[4], { sessionId: 'stage-session', repo, path, scope: 'staged' })
     assert.equal(body.querySelector('[data-file-key="staged|example.txt"]'), null)
+
+    const layout = body.querySelector('.vcs-stage-layout')
+    assert.equal(layout.attributes.get('aria-pressed'), 'false')
+    harness.mouseClick(layout)
+    for (const observer of harness.intersections) observer.trigger(() => true)
+    await harness.settle()
+    const merged = () => body.querySelector('[data-file-key="merged|example.txt"]')
+    const stageLine = () => merged().querySelector('[data-stage-line="0:2"]')
+    assert.equal(layout.attributes.get('aria-pressed'), 'true')
+    assert.equal(unstaged(), null)
+    assert.equal(merged().querySelector('.vcs-tree-file-head').attributes.get('aria-expanded'), 'true')
+    harness.keyClick(stageLine(), ' ')
+    await harness.settle()
+    assert.deepEqual(writes[5], { sessionId: 'stage-session', repo, path, scope: 'unstaged', fingerprint, lines: [{ hunk: 0, line: 2 }] })
+    assert.equal(merged().querySelector('.vcs-stage-file').attributes.get('aria-checked'), 'mixed')
+    assert.equal(merged().querySelectorAll('[data-review-view]').length, 1)
+    assert.equal(stageLine().attributes.get('aria-checked'), 'true')
+    assert.ok(harness.document.activeElement === stageLine(), `focus stayed on ${harness.document.activeElement?.props['aria-label']}`)
+    harness.keyClick(stageLine(), ' ')
+    await harness.settle()
+    assert.deepEqual(writes[6], { sessionId: 'stage-session', repo, path, scope: 'staged', fingerprint: 'c'.repeat(64), lines: [{ hunk: 0, line: 2 }] })
+    harness.keyClick(stageLine(), ' ')
+    await harness.settle()
+    const menuTrigger = merged().querySelector('[aria-haspopup="menu"]')
+    harness.keyClick(menuTrigger)
+    await harness.settle()
+    const unstageFile = merged().querySelector('[role="menuitem"]')
+    assert.ok(unstageFile, 'the mixed file menu opens')
+    assert.ok(harness.document.activeElement === unstageFile, `expected menu item focus, got ${harness.document.activeElement?.props.className}`)
+    harness.keyClick(unstageFile)
+    await harness.settle()
+    assert.deepEqual(writes[8], { sessionId: 'stage-session', repo, path, scope: 'staged' })
+    assert.equal(merged().querySelector('.vcs-stage-file').attributes.get('aria-checked'), 'false')
+    harness.keyClick(layout)
+    await harness.settle()
+    assert.equal(layout.attributes.get('aria-pressed'), 'false')
+    assert.equal(merged(), null)
+    assert.equal(unstaged().querySelector('.vcs-tree-file-head').attributes.get('aria-expanded'), 'true')
   } finally {
     harness.unmount()
     globalThis.fetch = savedFetch

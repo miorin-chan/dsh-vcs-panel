@@ -8,8 +8,8 @@
  * renderer, the keyboard and the reading anchor walk the same list.
  */
 
-/** Keys of rows the current model can persist: staged, unstaged, or commit. */
-const ROW_KEY = /^(?:staged|unstaged|commit)\|/u
+/** Keys of rows the current layouts can persist. */
+const ROW_KEY = /^(?:staged|unstaged|merged|merged-dir|commit)\|/u
 
 /**
  * The key of one tree row: a group key, a directory path without a trailing
@@ -82,13 +82,14 @@ function makeDir(name, path, loadable) {
 
 /** Find or create a directory child. */
 function childDir(node, name, path, loadable = false) {
-  const existing = node.children.get(name)
+  const key = `${name}/`
+  const existing = node.children.get(key)
   if (existing !== undefined && existing.type === 'dir') {
     if (loadable) existing.loadable = true
     return existing
   }
   const created = makeDir(name, path, loadable)
-  node.children.set(name, created)
+  node.children.set(key, created)
   return created
 }
 
@@ -136,20 +137,21 @@ function buildTree(group, entries, state) {
     if (segments.length === 0) continue
     insertAt(root, segments, entry, '')
   }
+  const directoryGroup = group === 'merged' ? 'unstaged' : group
   for (const [key, children] of Object.entries(state.dirChildren ?? {})) {
-    if (!key.startsWith(`${group}|`)) continue
-    const path = key.slice(group.length + 1)
+    if (!key.startsWith(`${directoryGroup}|`)) continue
+    const path = key.slice(directoryGroup.length + 1)
     const segments = segmentsOf(path)
     let node = root
     for (const segment of segments) {
-      const next = node.children.get(segment)
+      const next = node.children.get(`${segment}/`)
       if (next === undefined || next.type !== 'dir') {
         node = undefined
         break
       }
       node = next
     }
-    if (node === undefined) continue
+    if (node?.loadable !== true) continue
     for (const child of children) {
       const rel = child.path.startsWith(`${path}/`) ? child.path.slice(path.length + 1) : child.name
       insertAt(node, segmentsOf(rel), {
@@ -208,7 +210,8 @@ function flatten(node, depth, group, state, rows) {
       continue
     }
     const { node: last, name } = chainOf(child)
-    const key = dirKey(group, last.path)
+    const directoryGroup = group === 'merged' ? (last.loadable ? 'unstaged' : 'merged-dir') : group
+    const key = dirKey(directoryGroup, last.path)
     const expanded = last.loadable
       ? state.dirs?.[key] === true
       : state.collapsed?.[key] !== true

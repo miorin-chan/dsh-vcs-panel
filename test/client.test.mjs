@@ -18,7 +18,7 @@ import {
 import {
   FOLD_LINES, SPLIT_MIN_WIDTH, STREAM_BUDGET, allFileFolds, budgetFolds, changedLines, commitGroups,
   commitSummary, comparisonBase, diffTarget, estimateHeight, expandedFileFolds, hasUnfoldedFile, isFolded,
-  rowAt, streamSections, worktreeGroups,
+  diffTargets, mergedWorktreeGroups, rowAt, streamSections, worktreeGroups,
 } from '../src/client/detail/detail.js'
 import { createQueue } from '../src/client/detail/queue.js'
 import { graphInput, nodeAt, rowOf, worktreeSummary } from '../src/client/history/timeline.js'
@@ -185,7 +185,8 @@ test('formatCount follows the supplied locale', () => {
 
 test('loadState and saveState round-trip through sessionStorage', () => {
   const storage = fakeStorage()
-  const stored = { ...defaultState(), repo: '/r', node: WORKTREE, nodeChosen: true, timelineScroll: 9, anchor: { key: 'staged|a', offset: 4 } }
+  const stored = { ...defaultState(), repo: '/r', node: WORKTREE, nodeChosen: true, timelineScroll: 9,
+    mergeStaging: true, anchor: { key: 'merged|a', offset: 4 }, folds: { 'merged|a': false } }
   saveState('session-1', stored, storage)
   assert.equal(storage.map.has(storageKey('session-1')), true)
   assert.deepEqual(loadState('session-1', storage), stored)
@@ -1126,6 +1127,25 @@ test('the working tree has staged and unstaged groups, with untracked files merg
   assert.equal(commitGroups({ files: [{ path: 'x' }] })[0].header, false, 'commits draw no group row')
   assert.deepEqual(commitGroups({ files: [] }), [])
   assert.deepEqual(commitGroups(null), [])
+})
+
+test('merged worktree keeps both file sources and same-name untracked directories', () => {
+  const groups = worktreeGroups({ groups: {
+    staged: [{ path: 'shared', status: 'R', origPath: 'old' }, { path: 'replace', status: 'D' }],
+    unstaged: [{ path: 'shared', status: 'M' }],
+    untracked: [{ path: 'replace/', status: 'U', directory: true, untracked: true }],
+  } })
+  const rows = buildNodeRows(mergedWorktreeGroups(groups), {
+    dirs: { 'unstaged|replace': true },
+    dirChildren: { 'unstaged|replace': [{ name: 'new', path: 'replace/new', type: 'file' }] },
+  })
+  assert.deepEqual(rows.map(row => row.key), ['unstaged|replace', 'merged|replace/new', 'merged|replace', 'merged|shared'])
+  const shared = rows.at(-1)
+  assert.deepEqual(diffTargets(shared.group, shared.entry, null), [
+    { scope: 'staged', path: 'shared', oldPath: 'old' }, { scope: 'unstaged', path: 'shared' },
+  ])
+  const child = rows[1]
+  assert.deepEqual(diffTargets(child.group, child.entry, null), [{ scope: 'untracked', path: 'replace/new' }])
 })
 
 test('streamSections follow the fully expanded row order, not the current folds', () => {
