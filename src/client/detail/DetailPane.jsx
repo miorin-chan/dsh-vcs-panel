@@ -32,9 +32,11 @@ function StageHistoryButton({ action, entry, busy, onAction, t, locale }) {
   let title = t(undo ? 'stage.noUndo' : 'stage.noRedo')
   if (available) {
     const unstaged = entry.scope === 'staged'
-    const operation = Number.isSafeInteger(entry.lineCount)
-      ? t(unstaged ? 'stage.unstageSelected' : 'stage.stageSelected', { count: formatCount(entry.lineCount, locale) })
-      : t(unstaged ? 'stage.unstageFile' : 'stage.stageFile')
+    let operation = t(unstaged ? 'stage.unstageFile' : 'stage.stageFile')
+    if (entry.lineCount === 1) operation = t(unstaged ? 'stage.unstageLine' : 'stage.stageLine')
+    else if (Number.isSafeInteger(entry.lineCount)) {
+      operation = t(unstaged ? 'stage.unstageSelected' : 'stage.stageSelected', { count: formatCount(entry.lineCount, locale) })
+    }
     title = t(undo ? 'stage.undoTarget' : 'stage.redoTarget', { operation, path: entry.path })
   }
   return (
@@ -252,6 +254,12 @@ export function DetailPane({
     () => (isWorktree ? worktreeGroups(status) : commitGroups(commitState.commit)),
     [commitState.commit, isWorktree, status],
   )
+  // A running Host may still serve the previous status shape during a Client reload.
+  const partiallyStaged = useMemo(() => {
+    const staged = new Set(groups.find(group => group.id === 'staged')?.entries.map(entry => entry.path))
+    const unstaged = groups.find(group => group.id === 'unstaged')?.entries ?? []
+    return new Set(unstaged.filter(entry => staged.has(entry.path)).map(entry => entry.path))
+  }, [groups])
   // Use the id of the files we are showing even if a snapshot is in flight.
   const rev = isWorktree ? null : (commitState.commit?.sha ?? node)
   // The expand action follows the fully expanded order, so collapsing a
@@ -462,6 +470,7 @@ export function DetailPane({
         onBulkFold={bulkFold}
         onLeave={onLeaveNav}
         control={treeControl}
+        partiallyStaged={partiallyStaged}
         onStage={isWorktree ? onStage : undefined}
         stageDisabled={stageDisabled}
         before={before}

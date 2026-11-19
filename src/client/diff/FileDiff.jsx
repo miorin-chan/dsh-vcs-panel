@@ -15,12 +15,16 @@
  * JSX syntax so `node --test` can import the exported pure helpers directly.
  */
 
-import { createElement as h, Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { createElement as h, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { StageCheckbox } from '../detail/StageCheckbox.js'
 import { formatCount } from '../format.js'
+import { findAncestor, hasAttr } from '../keys.js'
 import { highlightLines } from './highlight.js'
 
 /** Maximum rendered lines per comparison. */
 export const MAX_RENDERED_LINES = 5000
+
+const comparePatchPosition = new Intl.Collator('en', { numeric: true }).compare
 
 /**
  * Number a hunk's lines: context lines count on both sides, deletions on the
@@ -180,7 +184,7 @@ function cellClass(cell) {
  * runs under the other and both sides show the same rows and columns of text.
  * Every line is one fixed-height row, which keeps the sides aligned.
  */
-function SplitColumns({ hunks, highlights, lineNumber }) {
+function SplitColumns({ hunks, highlights, stageControl }) {
   const paired = useMemo(() => hunks.map(hunk => ({ header: hunkHeader(hunk), rows: splitRows(hunk) })), [hunks])
   const columns = useRef({ left: null, right: null })
   const offsets = useRef({ left: { scrollLeft: 0, scrollTop: 0 }, right: { scrollLeft: 0, scrollTop: 0 } })
@@ -215,10 +219,15 @@ function SplitColumns({ hunks, highlights, lineNumber }) {
           className: `vcs-diff-side-line ${cell === undefined ? 'vcs-diff-empty' : `vcs-diff-${cell.kind}`}`,
           'data-diff-line': splitRowKind(row),
         },
-        lineNumber(position, cell?.kind, cell?.no),
+        stageControl(position, cell?.kind, cell?.no),
+        lineNumber(cell?.no),
         h(DiffText, { text: cell?.text ?? '', spans }))
       })))))
   )
+}
+
+function lineNumber(number) {
+  return h('span', { className: 'vcs-diff-number' }, number ?? '')
 }
 
 /**
@@ -228,71 +237,75 @@ function TextDiff({ diff, split, wrap, onStageLines, stageScope, stageDisabled, 
   const note = noteOf(diff)
   const { hunks, truncated } = useMemo(() => renderedHunks(diff.hunks), [diff.hunks])
   const highlights = useMemo(() => hunks.map(hunk => hunkHighlights(hunk, diff.path)), [hunks, diff.path])
-  const [selection, setSelection] = useState(null)
+  const [active, setActive] = useState(null)
+  const bodyRef = useRef(null)
+  const stageFocus = useRef(null)
   const canStage = !truncated && diff.lineStaging === true
     && typeof diff.fingerprint === 'string' && typeof onStageLines === 'function'
-  const draft = canStage && selection?.fingerprint === diff.fingerprint ? selection : null
-  const selected = draft?.lines ?? null
-  const selectorRef = useRef(null)
-  const bodyRef = useRef(null)
-  useEffect(() => { setSelection(null) }, [diff.fingerprint])
   const unstage = stageScope === 'staged'
-  const selectLabel = t(unstage ? 'stage.selectToUnstage' : 'stage.selectToStage')
-  const lineIndexes = useMemo(() => hunks.map(hunk => {
-    const indexes = new Map()
-    hunkRows(hunk).forEach((row, index) => {
-      if (row.kind === 'add') indexes.set(`add:${row.new}`, index)
-      if (row.kind === 'del') indexes.set(`del:${row.old}`, index)
+  const action = t(unstage ? 'stage.unstageLine' : 'stage.stageLine')
+  const stageTargets = useMemo(() => canStage ? hunks.map((hunk, position) => {
+    const targets = new Map()
+    hunkRows(hunk).forEach((row, line) => {
+      if (row.kind === 'context') return
+      const added = row.kind === 'add'
+      const number = added ? row.new : row.old
+      const description = t(added ? 'stage.addedLine' : 'stage.deletedLine', { number: formatCount(number, locale) })
+      targets.set(`${row.kind}:${number}`, { line, key: `${position}:${line}`, label: `${action} · ${description}` })
     })
-    return indexes
-  }), [hunks])
-  const firstHunk = lineIndexes.findIndex(indexes => indexes.size > 0)
-  const firstLine = firstHunk < 0 ? null : `${firstHunk}:${lineIndexes[firstHunk].values().next().value}`
-  const closeSelection = () => {
-    selectorRef.current?.focus({ preventScroll: true })
-    setSelection(null)
-  }
-  const lineNumber = (hunk, kind, number) => {
-    const line = selected === null ? undefined : lineIndexes[hunk].get(`${kind}:${number}`)
-    if (line === undefined) return h('span', { className: 'vcs-diff-number' }, number ?? '')
-    const key = `${hunk}:${line}`
-    return h('button', {
-      type: 'button',
-      className: 'vcs-diff-number vcs-stage-line',
-      'aria-label': t(kind === 'add' ? 'stage.addedLine' : 'stage.deletedLine', { number: formatCount(number, locale) }),
-      'aria-pressed': selected.has(key),
-      'data-stage-line': key,
+    return targets
+  }) : [], [action, canStage, hunks, locale, t])
+  const firstLine = stageTargets.find(targets => targets.size > 0)?.values().next().value.key
+  const activeLine = active?.fingerprint === diff.fingerprint && active?.split === split && active?.wrap === wrap
+    ? active.key : firstLine
+  // Patch order stays consistent across unified and both split layouts.
+  const controls = () => Array.from(bodyRef.current.querySelectorAll('[data-stage-line]'))
+    .sort((left, right) => comparePatchPosition(left.dataset.stageLine, right.dataset.stageLine))
+
+  useLayoutEffect(() => {
+    const pending = stageFocus.current
+    if (pending === null || pending.diff === diff) return
+    stageFocus.current = null
+    const element = bodyRef.current
+    const doc = element.ownerDocument
+    if (doc.activeElement !== pending.button && doc.activeElement !== doc.body) return
+    const buttons = controls()
+    const file = findAncestor(element, null, node => hasAttr(node, 'data-file-key'))
+    const fallback = file?.querySelector('.vcs-tree-file-head')
+    const next = buttons[Math.min(pending.index, buttons.length - 1)] ?? fallback
+    next?.focus({ preventScroll: true })
+  }, [diff])
+
+  const stageControl = (hunk, kind, number) => {
+    if (!canStage) return null
+    const target = stageTargets[hunk].get(`${kind}:${number}`)
+    if (target === undefined) return h('span', { 'aria-hidden': 'true' })
+    const { line, key, label } = target
+    return h(StageCheckbox, {
+      className: 'vcs-stage-line',
+      checked: unstage,
+      label,
       disabled: stageDisabled,
-      tabIndex: key === draft.active ? 0 : -1,
-      onFocus: () => {
-        setSelection(previous => previous === null || previous.active === key ? previous : { ...previous, active: key })
-      },
+      'data-stage-line': key,
+      tabIndex: key === activeLine ? 0 : -1,
+      onFocus: () => { setActive({ fingerprint: diff.fingerprint, split, wrap, key }) },
       onKeyDown: event => {
-        if (event.key === 'Escape') {
-          event.preventDefault()
-          event.stopPropagation()
-          closeSelection()
-          return
-        }
         if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
         if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
         event.preventDefault()
         event.stopPropagation()
-        const buttons = Array.from(bodyRef.current.querySelectorAll('[data-stage-line]'))
+        const buttons = controls()
         const next = buttons.indexOf(event.currentTarget) + (event.key === 'ArrowDown' ? 1 : -1)
         buttons[next]?.focus()
       },
-      onClick: event => {
-        event.stopPropagation()
-        event.currentTarget.focus({ preventScroll: true })
-        setSelection(previous => {
-          const lines = new Map(previous.lines)
-          if (lines.has(key)) lines.delete(key)
-          else lines.set(key, { hunk, line })
-          return { ...previous, lines, active: key }
-        })
+      onToggle: async button => {
+        const pending = { button, diff, index: controls().indexOf(button) }
+        stageFocus.current = pending
+        if (!await onStageLines(diff.fingerprint, [{ hunk, line }]) && stageFocus.current === pending) {
+          stageFocus.current = null
+        }
       },
-    }, number)
+    })
   }
   const children = []
   if (note !== undefined) {
@@ -310,7 +323,7 @@ function TextDiff({ diff, split, wrap, onStageLines, stageScope, stageDisabled, 
       t('diff.truncated', { count: formatCount(MAX_RENDERED_LINES, locale) })))
   }
   if (split && !wrap) {
-    children.push(h(SplitColumns, { key: 'columns', hunks, highlights, lineNumber }))
+    children.push(h(SplitColumns, { key: 'columns', hunks, highlights, stageControl }))
   } else {
     hunks.forEach((hunk, position) => {
       const highlighted = highlights[position]
@@ -321,13 +334,15 @@ function TextDiff({ diff, split, wrap, onStageLines, stageScope, stageDisabled, 
           'data-diff-line': splitRowKind(row),
         },
         h('span', { className: cellClass(row.left) },
-          lineNumber(position, row.left?.kind, row.left?.no),
+          stageControl(position, row.left?.kind, row.left?.no),
+          lineNumber(row.left?.no),
           h(DiffText, {
             text: row.left?.text ?? '',
             spans: row.left === undefined ? undefined : highlighted?.old?.get(row.left.no),
           })),
         h('span', { className: cellClass(row.right) },
-          lineNumber(position, row.right?.kind, row.right?.no),
+          stageControl(position, row.right?.kind, row.right?.no),
+          lineNumber(row.right?.no),
           h(DiffText, {
             text: row.right?.text ?? '',
             spans: row.right === undefined ? undefined : highlighted?.new?.get(row.right.no),
@@ -337,8 +352,9 @@ function TextDiff({ diff, split, wrap, onStageLines, stageScope, stageDisabled, 
           className: `vcs-diff-line vcs-diff-${row.kind}`,
           'data-diff-line': row.kind,
         },
-        lineNumber(position, row.kind, row.old),
-        lineNumber(position, row.kind, row.new),
+        stageControl(position, row.kind, row.kind === 'add' ? row.new : row.old),
+        lineNumber(row.old),
+        lineNumber(row.new),
         h('span', { className: 'vcs-diff-sign' }, row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '),
         h(DiffText, {
           text: row.text,
@@ -349,38 +365,13 @@ function TextDiff({ diff, split, wrap, onStageLines, stageScope, stageDisabled, 
         rows))
     })
   }
-  const body = h('div', {
+  return h('div', {
     className: 'vcs-diff-body',
     ref: bodyRef,
     'data-review-view': split ? 'split' : 'unified',
     'data-review-wrap': wrap || undefined,
+    'data-line-staging': canStage || undefined,
   }, children)
-  return h(Fragment, null,
-    canStage && h('div', { className: 'vcs-stage-toolbar' },
-      h('button', {
-        type: 'button',
-        className: 'vcs-button',
-        'aria-pressed': selected !== null,
-        disabled: stageDisabled,
-        ref: selectorRef,
-        onClick: event => {
-          event.stopPropagation()
-          event.currentTarget.focus({ preventScroll: true })
-          setSelection(selected === null ? { fingerprint: diff.fingerprint, lines: new Map(), active: firstLine } : null)
-        },
-      }, selectLabel),
-      selected !== null && h('button', {
-        type: 'button',
-        className: 'vcs-button',
-        disabled: stageDisabled || selected.size === 0,
-        onClick: async () => {
-          if (await onStageLines(diff.fingerprint, [...selected.values()])) {
-            setSelection(previous => previous === draft ? null : previous)
-          }
-        },
-      }, t(unstage ? 'stage.unstageSelected' : 'stage.stageSelected', { count: formatCount(selected.size, locale) })),
-      selected !== null && h('span', { className: 'vcs-stage-hint' }, t('stage.selectHint'))),
-    body)
 }
 
 /**

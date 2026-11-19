@@ -28,6 +28,7 @@ import {
   MAX_PARALLEL, changedLines, diffTarget, estimateHeight, isFolded, rowAt,
 } from './detail.js'
 import { createQueue } from './queue.js'
+import { StageCheckbox } from './StageCheckbox.js'
 import { rowBodyId } from './tree.js'
 
 /** Distance beyond the viewport at which a file starts loading. */
@@ -143,7 +144,7 @@ const FileBody = memo(function FileBody({
  */
 export function ChangeTree({
   api, repo, rev, rows, budget, folds, split, wrap, revision, cache,
-  initialAnchor, onReading, onToggleRow, onBulkFold, onLeave, control, before = null, onStage, stageDisabled, t, locale,
+  initialAnchor, onReading, onToggleRow, onBulkFold, onLeave, control, before = null, onStage, partiallyStaged, stageDisabled, t, locale,
 }) {
   const scrollRef = useRef(null)
   const rowEls = useRef(new Map())
@@ -857,7 +858,7 @@ export function ChangeTree({
     refreshAnchor.current = {
       key,
       alternate: staging?.alternate,
-      focused: staging !== null && root.ownerDocument.activeElement === element,
+      focused: staging !== null && sectionEls.current.get(key)?.contains(root.ownerDocument.activeElement),
       offset: element === undefined ? 0 : Math.max(0, root.scrollTop - flowTop(element)),
       rows,
     }
@@ -1100,12 +1101,14 @@ export function ChangeTree({
         stageSource.current = source
         const index = navIndexByKey.get(row.key)
         if (index !== undefined) setCursorAt(index)
-        focusRowElement(row.key)
         const accepted = await onStage(target)
         if (!accepted && stageSource.current === source) stageSource.current = null
         return accepted
       }
-    const stageLabel = t(unstaging ? 'stage.unstageFile' : 'stage.stageFile')
+    const mixed = row.entry.partiallyStaged === true || partiallyStaged?.has(row.entry.path) === true
+    const stageLabel = t(mixed
+      ? (unstaging ? 'stage.unstageAllFileChanges' : 'stage.stageRemainingFileChanges')
+      : (unstaging ? 'stage.unstageFile' : 'stage.stageFile'))
     return (
       <section
         key={row.key}
@@ -1113,7 +1116,17 @@ export function ChangeTree({
         data-file-key={row.key}
         ref={bindSection(row.key)}
       >
-        <div className="vcs-tree-file-head-wrap" data-open={expanded ? 'true' : undefined}>
+        <div className="vcs-tree-file-head-wrap" data-open={expanded ? 'true' : undefined}
+          style={{ paddingInlineStart: stage === undefined ? undefined : indentOf(row.depth) }}>
+          {stage === undefined ? null : (
+            <StageCheckbox
+              className="vcs-stage-file"
+              checked={mixed ? 'mixed' : unstaging}
+              disabled={stageDisabled}
+              label={`${stageLabel} · ${row.entry.path}`}
+              onToggle={() => { void stage(diffTarget(row.group, row.entry, rev)) }}
+            />
+          )}
           <button
             type="button"
             className="vcs-tree-row vcs-tree-file-head"
@@ -1121,7 +1134,7 @@ export function ChangeTree({
             aria-controls={bodyId}
             aria-current={readingKey === row.key ? 'location' : undefined}
             title={row.entry.origPath === undefined ? row.path : `${row.entry.origPath} → ${row.path}`}
-            style={{ paddingLeft: indentOf(row.depth) }}
+            style={{ paddingLeft: stage === undefined ? indentOf(row.depth) : 0 }}
             {...rowProps(row)}
             onClick={() => { activateRow(row, expanded) }}
           >
@@ -1137,19 +1150,6 @@ export function ChangeTree({
             </span>
             {fileStat(row.entry)}
           </button>
-          {stage === undefined ? null : (
-            <button
-              type="button"
-              className="vcs-button vcs-stage-file"
-              disabled={stageDisabled}
-              aria-label={`${stageLabel} · ${row.entry.path}`}
-              title={stageLabel}
-              onClick={() => { void stage(diffTarget(row.group, row.entry, rev)) }}
-            >
-              <span className="vcs-stage-file-icon" aria-hidden="true">{unstaging ? '−' : '+'}</span>
-              <span className="vcs-stage-file-label">{stageLabel}</span>
-            </button>
-          )}
         </div>
         <div className="vcs-tree-file-body" id={bodyId} ref={bindBody(row.key)}>
           <FileBody

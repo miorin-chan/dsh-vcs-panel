@@ -2490,7 +2490,7 @@ test('VcsView scopes in-flight writes per repository without locking another rep
   }
 })
 
-test('VcsView stages selected lines, replays the index action, and unstages the refreshed file', async () => {
+test('VcsView stages a line directly, displays mixed file state, and replays the index action', async () => {
   const harness = createHarness({ width: 1000 })
   const restore = harness.installGlobals()
   const fakeWin = installFakeWindow()
@@ -2518,8 +2518,11 @@ test('VcsView stages selected lines, replays the index action, and unstages the 
       case '/api/vcs.log':
         return json({ commits: [{ sha, parents: [], refs: [], author: 'Ada', subject: 'base' }] })
       case '/api/vcs.diff':
-        return json({ kind: 'text', path, before: true, after: true, lineStaging: true, fingerprint,
-          hunks: [{ oldStart: 1, newStart: 1, oldLines: 2, newLines: 2, lines: [' shared', '-before', '+after'] }] })
+        return json({ kind: 'text', path, before: true, after: true, lineStaging: true,
+          fingerprint: staged ? 'c'.repeat(64) : fingerprint,
+          hunks: [{ oldStart: 1, newStart: 1, oldLines: 2, newLines: 2,
+            lines: !staged ? [' shared', '-before', '+after']
+              : parsed.searchParams.get('scope') === 'staged' ? [' shared', '+after'] : [' shared', '-before'] }] })
       case '/api/vcs.stage': {
         const write = JSON.parse(init.body)
         assert.equal(init.method, 'POST')
@@ -2554,25 +2557,25 @@ test('VcsView stages selected lines, replays the index action, and unstages the 
     unstaged().querySelector('.vcs-tree-file-head').props.onClick()
     for (const observer of harness.intersections) observer.trigger(() => true)
     await harness.settle()
-    const toolbar = () => unstaged().querySelector('.vcs-stage-toolbar')
-    assert.equal(unstaged().querySelectorAll('[data-stage-line]').length, 0)
-    assert.ok(toolbar(), `staging toolbar is visible in the opened diff: ${textOf(unstaged())}`)
-    harness.mouseClick(toolbar().querySelector('.vcs-button'))
-    await harness.settle()
+    const stagingBox = () => unstaged().querySelector('.vcs-stage-file')
+    assert.equal(stagingBox().attributes.get('aria-checked'), 'false')
     const lines = unstaged().querySelectorAll('[data-stage-line]')
-    assert.equal(lines.length, 2, 'context is excluded from the picker')
+    assert.equal(lines.length, 2, 'each changed line has a direct action and context has none')
+    assert.equal(lines[1].attributes.get('role'), 'checkbox')
+    assert.equal(lines[1].attributes.get('aria-checked'), 'false')
     assert.equal(lines.filter(line => line.props.tabIndex === 0).length, 1)
     lines[0].focus()
     harness.keyDown(lines[0], 'ArrowDown')
     assert.equal(harness.document.activeElement, lines[1])
     harness.keyClick(lines[1], ' ')
     await harness.settle()
-    assert.equal(lines[1].attributes.get('aria-pressed'), 'true')
-    harness.keyClick(toolbar().querySelectorAll('.vcs-button')[1])
-    await harness.settle()
     assert.deepEqual(writes, [{ sessionId: 'stage-session', repo, path, scope: 'unstaged', fingerprint, lines: [{ hunk: 0, line: 2 }] }])
-    assert.equal(harness.document.activeElement, unstaged().querySelector('.vcs-tree-file-head'))
-    assert.match(undo().attributes.get('title'), /stage\.stageSelected.*example\.txt/u)
+    const remaining = unstaged().querySelectorAll('[data-stage-line]')
+    assert.equal(remaining.length, 1)
+    assert.equal(harness.document.activeElement, remaining[0], 'focus moves to the nearest remaining change')
+    assert.equal(stagingBox().attributes.get('aria-checked'), 'mixed')
+    assert.match(stagingBox().attributes.get('title'), /stage\.stageRemainingFileChanges/u)
+    assert.match(undo().attributes.get('title'), /stage\.stageLine.*example\.txt/u)
     blockUndo = true
     harness.keyClick(undo())
     await harness.settle()
@@ -2591,7 +2594,14 @@ test('VcsView stages selected lines, replays the index action, and unstages the 
     assert.deepEqual(writes[3], { sessionId: 'stage-session', repo, action: 'redo', id: action.id })
     assert.equal(redo().attributes.get('aria-disabled'), 'true')
     const stagedFile = body.querySelector('[data-file-key="staged|example.txt"]')
-    stagedFile.querySelector('.vcs-stage-file').props.onClick()
+    const stagedBox = stagedFile.querySelector('.vcs-stage-file')
+    assert.equal(stagedBox.attributes.get('aria-checked'), 'mixed')
+    assert.match(stagedBox.attributes.get('title'), /stage\.unstageAllFileChanges/u)
+    harness.mouseClick(stagedFile.querySelector('.vcs-tree-file-head'))
+    for (const observer of harness.intersections) observer.trigger(() => true)
+    await harness.settle()
+    assert.equal(stagedFile.querySelector('[data-stage-line]').attributes.get('aria-checked'), 'true')
+    harness.mouseClick(stagedBox)
     await harness.settle()
     assert.deepEqual(writes[4], { sessionId: 'stage-session', repo, path, scope: 'staged' })
     assert.equal(body.querySelector('[data-file-key="staged|example.txt"]'), null)
@@ -2600,6 +2610,51 @@ test('VcsView stages selected lines, replays the index action, and unstages the 
     globalThis.fetch = savedFetch
     fakeWin.restore()
     restore()
+  }
+})
+
+test('FileDiff split layouts stage the exact side and suppress disabled actions', async () => {
+  for (const wrap of [false, true]) {
+    const harness = createHarness({ width: 1000 })
+    const restore = harness.installGlobals()
+    try {
+      const { FileDiff } = await loadClientModule('src/client/diff/FileDiff.jsx', harness)
+      const writes = []
+      const state = {
+        kind: 'text', path: 'example.txt', before: true, after: true, lineStaging: true,
+        fingerprint: 'a'.repeat(64),
+        hunks: [{ oldStart: 3, newStart: 8, oldLines: 3, newLines: 2,
+          lines: [' shared', '-first', '-second', '+replacement'] }],
+      }
+      const render = stageDisabled => harness.mount(harness.react.createElement(FileDiff, {
+        state, split: true, wrap, stageScope: 'staged', stageDisabled, t,
+        onStageLines(fingerprint, lines) { writes.push({ fingerprint, lines }); return true },
+      }))
+      render(false)
+      await harness.settle()
+      const body = harness.document.body
+      const deleted = body.querySelector('[data-stage-line="0:2"]')
+      const added = body.querySelector('[data-stage-line="0:3"]')
+      assert.equal(body.querySelectorAll('[data-stage-line]').length, 3)
+      assert.equal(deleted.attributes.get('aria-checked'), 'true')
+      assert.equal(added.attributes.get('aria-checked'), 'true')
+      deleted.focus()
+      harness.keyDown(deleted, 'ArrowDown')
+      assert.equal(harness.document.activeElement, added)
+      harness.mouseClick(deleted)
+      harness.keyClick(added, ' ')
+      assert.deepEqual(writes, [2, 3].map(line => ({ fingerprint: state.fingerprint, lines: [{ hunk: 0, line }] })))
+
+      render(true)
+      await harness.settle()
+      const disabled = body.querySelector('[data-stage-line="0:3"]')
+      assert.equal(disabled.attributes.get('aria-disabled'), 'true')
+      harness.mouseClick(disabled)
+      assert.equal(writes.length, 2)
+    } finally {
+      harness.unmount()
+      restore()
+    }
   }
 })
 

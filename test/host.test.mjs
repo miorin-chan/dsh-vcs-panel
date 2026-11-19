@@ -775,12 +775,12 @@ test('status reports branch facts and all three groups with counts', async () =>
     behind: 0,
   })
   assert.deepEqual(body.groups.staged, [
-    { path: 'both.txt', status: 'M', added: 1, deleted: 0 },
+    { path: 'both.txt', status: 'M', added: 1, deleted: 0, partiallyStaged: true },
     { path: 'moved.txt', status: 'R', origPath: 'untouched.txt', added: 0, deleted: 0 },
     { path: 'staged.txt', status: 'A', added: 1, deleted: 0 },
   ])
   assert.deepEqual(body.groups.unstaged, [
-    { path: 'both.txt', status: 'M', added: 1, deleted: 0 },
+    { path: 'both.txt', status: 'M', added: 1, deleted: 0, partiallyStaged: true },
     { path: 'image.bin', status: 'M', added: 0, deleted: 0, binary: true },
     { path: 'tracked.txt', status: 'M', added: 1, deleted: 1 },
   ])

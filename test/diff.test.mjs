@@ -24,6 +24,7 @@ export function createElement(type, props, ...children) {
 }
 export const Fragment = Symbol('Fragment')
 export function useEffect() {}
+export function useLayoutEffect() {}
 export function useMemo(factory) { return factory() }
 export function useRef(value) { return { current: value } }
 export function useState(value) { return [value, () => {}] }

@@ -137,14 +137,14 @@ test('buildStatusGroups splits sides, marks conflict and untracked directories, 
   const grouped = buildStatusGroups(entries, stagedCounts, unstagedCounts)
   assert.deepEqual(grouped.groups.staged, [
     { path: 'staged.txt', status: 'M', added: 3, deleted: 1 },
-    { path: 'both.txt', status: 'M', added: 5, deleted: 0 },
-    { path: 'renamed.txt', status: 'R', origPath: 'old-name.txt', added: 0, deleted: 0 },
+    { path: 'both.txt', status: 'M', added: 5, deleted: 0, partiallyStaged: true },
+    { path: 'renamed.txt', status: 'R', origPath: 'old-name.txt', added: 0, deleted: 0, partiallyStaged: true },
     { path: 'conflict.txt', status: 'U', added: 0, deleted: 0 },
   ])
   assert.deepEqual(grouped.groups.unstaged, [
     { path: 'unstaged.txt', status: 'M', added: 0, deleted: 0, binary: true },
-    { path: 'both.txt', status: 'M', added: 2, deleted: 2 },
-    { path: 'renamed.txt', status: 'M', added: 1, deleted: 1 },
+    { path: 'both.txt', status: 'M', added: 2, deleted: 2, partiallyStaged: true },
+    { path: 'renamed.txt', status: 'M', added: 1, deleted: 1, partiallyStaged: true },
     { path: 'conflict.txt', status: 'U', added: 0, deleted: 0 },
   ])
   assert.deepEqual(grouped.groups.untracked, [
@@ -157,10 +157,11 @@ test('buildStatusGroups splits sides, marks conflict and untracked directories, 
   const many = Array.from({ length: STATUS_GROUP_MAX + 1 }, (_, index) => ({
     path: `file-${index}.txt`,
     index: 'M',
-    worktree: null,
+    worktree: index === STATUS_GROUP_MAX ? 'M' : null,
   }))
   const capped = buildStatusGroups(many, new Map(), new Map())
   assert.equal(capped.groups.staged.length, STATUS_GROUP_MAX)
+  assert.equal(capped.groups.unstaged[0].partiallyStaged, true)
   assert.equal(capped.truncated, true)
   assert.equal(capped.total, STATUS_GROUP_MAX + 1)
 })

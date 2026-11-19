@@ -1144,32 +1144,74 @@
   min-width: 0;
 }
 
-.vcs-tree-file-head-wrap > .vcs-stage-file {
+/* File and diff rows share the same checkbox mark and state styling. */
+.vcs-stage-checkbox {
+  display: inline-grid;
+  place-items: center;
+  box-sizing: border-box;
+  min-width: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.vcs-stage-checkbox:hover:not([aria-disabled='true']) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.vcs-stage-checkbox:focus-visible {
+  outline: 1px solid var(--dsw-alias-label-primary);
+  outline-offset: -1px;
+}
+
+.vcs-stage-checkbox[aria-disabled='true'] {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.vcs-stage-mark {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 13px;
+  height: 13px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+}
+
+.vcs-stage-checkbox[aria-checked='true'] .vcs-stage-mark,
+.vcs-stage-checkbox[aria-checked='mixed'] .vcs-stage-mark {
+  border-color: var(--dsw-alias-brand-primary);
+  background: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-bg-base);
+}
+
+.vcs-stage-checkbox[aria-checked='true'] .vcs-stage-mark::after {
+  box-sizing: border-box;
+  width: 4px;
+  height: 7px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  content: '';
+  transform: translateY(-1px) rotate(45deg);
+}
+
+.vcs-stage-checkbox[aria-checked='mixed'] .vcs-stage-mark::after {
+  width: 7px;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+  content: '';
+}
+
+.vcs-stage-file {
   flex: none;
-  height: calc(var(--vcs-row-height) - 6px);
-  padding-inline: 6px;
-  margin-inline-end: 8px;
-  max-width: 38%;
-}
-
-.vcs-stage-file-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.vcs-stage-file-icon {
-  font-size: 16px;
-  line-height: 1;
-}
-
-@container vcs-change-tree (max-width: 360px) {
-  .vcs-stage-file-label {
-    display: none;
-  }
-  .vcs-tree-file-head-wrap > .vcs-stage-file {
-    width: 24px;
-    padding-inline: 0;
-  }
+  height: 24px;
+  margin-inline-end: 2px;
 }
 
 .vcs-tree-file-head-wrap[data-open] {
