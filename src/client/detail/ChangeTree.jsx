@@ -89,7 +89,7 @@ function ancestorKeys(key) {
  */
 const FileBody = memo(function FileBody({
   group, entry, rev, near, folded, foldReason, request, revision,
-  split, wrap, t, locale,
+  split, wrap, onStage, stageDisabled, t, locale,
 }) {
   const [answer, setAnswer] = useState(null)
   const [attempt, setAttempt] = useState(0)
@@ -128,6 +128,9 @@ const FileBody = memo(function FileBody({
       split={split}
       wrap={wrap}
       retry={() => { setAttempt(value => value + 1) }}
+      onStageLines={onStage === undefined ? undefined : (fingerprint, lines) => onStage({ ...target, fingerprint, lines })}
+      stageScope={target.scope}
+      stageDisabled={stageDisabled || answer.targetKey !== currentTargetKey || answer.revision !== revision}
       t={t}
       locale={locale}
     />
@@ -140,7 +143,7 @@ const FileBody = memo(function FileBody({
  */
 export function ChangeTree({
   api, repo, rev, rows, budget, folds, split, wrap, revision, cache,
-  initialAnchor, onReading, onToggleRow, onBulkFold, onLeave, control, before = null, t, locale,
+  initialAnchor, onReading, onToggleRow, onBulkFold, onLeave, control, before = null, onStage, stageDisabled, t, locale,
 }) {
   const scrollRef = useRef(null)
   const rowEls = useRef(new Map())
@@ -151,6 +154,7 @@ export function ChangeTree({
   const pendingPreserve = useRef(null)
   const pendingAlign = useRef(null)
   const refreshAnchor = useRef(null)
+  const stageSource = useRef(null)
   const restoredRef = useRef(false)
   const lastInputRef = useRef('scroll')
   const queue = useMemo(() => createQueue(MAX_PARALLEL), [])
@@ -845,11 +849,15 @@ export function ChangeTree({
   useEffect(() => {
     if (!restoredRef.current) return
     const root = scrollRef.current
-    const key = readingRef.current
+    const staging = stageSource.current
+    stageSource.current = null
+    const key = staging?.key ?? readingRef.current
     if (root === null || key === null) return
     const element = rowEls.current.get(key)
     refreshAnchor.current = {
       key,
+      alternate: staging?.alternate,
+      focused: staging !== null && root.ownerDocument.activeElement === element,
       offset: element === undefined ? 0 : Math.max(0, root.scrollTop - flowTop(element)),
       rows,
     }
@@ -861,8 +869,8 @@ export function ChangeTree({
     refreshAnchor.current = null
     const root = scrollRef.current
     if (root === null) return
-    const index = indexOfKey(pending.key)
-    const row = index < 0 ? undefined : navRows[index]
+    const index = navIndexByKey.get(pending.key) ?? navIndexByKey.get(pending.alternate) ?? indexOfKey(pending.key)
+    const row = navRows[index < 0 && pending.focused ? 0 : index]
     const element = row === undefined ? undefined : rowEls.current.get(row.key)
     if (element !== undefined) {
       root.scrollTop = Math.max(0, flowTop(element) + (row.key === pending.key ? pending.offset : 0))
@@ -871,7 +879,12 @@ export function ChangeTree({
     const line = root.scrollTop + (grouped ? ROW_HEIGHT : 0) + ROW_HEIGHT
     const hunk = row === undefined ? -1 : hunkAtLine(row, line)
     setCursorAt(index >= 0 ? index : 0, hunk)
-  }, [flowTop, grouped, hunkAtLine, indexOfKey, navRows, report, rows, setCursorAt])
+    const doc = root.ownerDocument
+    if (pending.focused && doc.activeElement === doc.body) {
+      if (row !== undefined) focusRowElement(row.key)
+      else root.focus({ preventScroll: true })
+    }
+  }, [flowTop, focusRowElement, grouped, hunkAtLine, indexOfKey, navIndexByKey, navRows, report, rows, setCursorAt])
 
   // Restore the reading position once the rows exist.
   useLayoutEffect(() => {
@@ -1080,6 +1093,19 @@ export function ChangeTree({
     const parts = splitPath(row.entry.path)
     const bodyId = rowBodyId(row.key)
     const statusClass = row.entry.untracked === true ? 'vcs-status-untracked' : `vcs-status-${row.entry.status}`
+    const unstaging = row.group === 'staged'
+    const stage = onStage === undefined || (row.entry.untracked !== true && (row.entry.status === 'U' || row.entry.conflict === true))
+      ? undefined : async target => {
+        const source = { key: row.key, alternate: `${unstaging ? 'unstaged' : 'staged'}|${row.entry.path}` }
+        stageSource.current = source
+        const index = navIndexByKey.get(row.key)
+        if (index !== undefined) setCursorAt(index)
+        focusRowElement(row.key)
+        const accepted = await onStage(target)
+        if (!accepted && stageSource.current === source) stageSource.current = null
+        return accepted
+      }
+    const stageLabel = t(unstaging ? 'stage.unstageFile' : 'stage.stageFile')
     return (
       <section
         key={row.key}
@@ -1111,6 +1137,19 @@ export function ChangeTree({
             </span>
             {fileStat(row.entry)}
           </button>
+          {stage === undefined ? null : (
+            <button
+              type="button"
+              className="vcs-button vcs-stage-file"
+              disabled={stageDisabled}
+              aria-label={`${stageLabel} · ${row.entry.path}`}
+              title={stageLabel}
+              onClick={() => { void stage(diffTarget(row.group, row.entry, rev)) }}
+            >
+              <span className="vcs-stage-file-icon" aria-hidden="true">{unstaging ? '−' : '+'}</span>
+              <span className="vcs-stage-file-label">{stageLabel}</span>
+            </button>
+          )}
         </div>
         <div className="vcs-tree-file-body" id={bodyId} ref={bindBody(row.key)}>
           <FileBody
@@ -1124,6 +1163,8 @@ export function ChangeTree({
             revision={revision}
             split={split}
             wrap={wrap}
+            onStage={stage}
+            stageDisabled={stageDisabled}
             t={t}
             locale={locale}
           />
@@ -1170,6 +1211,7 @@ export function ChangeTree({
       className="vcs-tree"
       data-grouped={grouped ? 'true' : undefined}
       role="region"
+      tabIndex={-1}
       aria-label={t('tree.label')}
       data-zone="tree"
       onClick={onTreeClick}

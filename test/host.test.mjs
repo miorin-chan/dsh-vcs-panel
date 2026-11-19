@@ -913,8 +913,11 @@ test('diff reports an unstaged text change', async () => {
     }),
   )
   assert.equal(status, 200)
-  assert.deepEqual(body, {
+  const { fingerprint, ...comparison } = body
+  assert.match(fingerprint, /^[\da-f]{64}$/u)
+  assert.deepEqual(comparison, {
     kind: 'text',
+    lineStaging: true,
     path: 'tracked.txt',
     before: true,
     after: true,
@@ -964,8 +967,11 @@ test('diff reports a staged new file', async () => {
     }),
   )
   assert.equal(status, 200)
-  assert.deepEqual(body, {
+  const { fingerprint, ...comparison } = body
+  assert.match(fingerprint, /^[\da-f]{64}$/u)
+  assert.deepEqual(comparison, {
     kind: 'text',
+    lineStaging: true,
     path: 'staged.txt',
     before: false,
     after: true,
@@ -1030,8 +1036,11 @@ test('diff reports an untracked text file as one all-additions hunk', async () =
     }),
   )
   assert.equal(status, 200)
-  assert.deepEqual(body, {
+  const { fingerprint, ...comparison } = body
+  assert.match(fingerprint, /^[\da-f]{64}$/u)
+  assert.deepEqual(comparison, {
     kind: 'text',
+    lineStaging: true,
     path: 'scratch/notes.md',
     before: false,
     after: true,
@@ -1959,8 +1968,9 @@ test('apply registers nine GET routes and every write route inside the fence and
     '/api/vcs.branch',
     '/api/vcs.tag',
     '/api/vcs.commit-op',
+    '/api/vcs.stage',
   ])
-  const writePaths = new Set(['/api/vcs.sync', '/api/vcs.switch', '/api/vcs.branch', '/api/vcs.tag', '/api/vcs.commit-op'])
+  const writePaths = new Set(['/api/vcs.sync', '/api/vcs.switch', '/api/vcs.branch', '/api/vcs.tag', '/api/vcs.commit-op', '/api/vcs.stage'])
   for (const registered of routes) {
     assert.deepEqual(registered.methods, writePaths.has(registered.path) ? ['POST'] : ['GET'])
     assert.equal(registered.requestBody, 'buffered')

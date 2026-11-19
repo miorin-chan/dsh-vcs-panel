@@ -15,7 +15,7 @@
  * JSX syntax so `node --test` can import the exported pure helpers directly.
  */
 
-import { createElement as h, useMemo, useRef } from 'react'
+import { createElement as h, Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { formatCount } from '../format.js'
 import { highlightLines } from './highlight.js'
 
@@ -180,7 +180,7 @@ function cellClass(cell) {
  * runs under the other and both sides show the same rows and columns of text.
  * Every line is one fixed-height row, which keeps the sides aligned.
  */
-function SplitColumns({ hunks, highlights }) {
+function SplitColumns({ hunks, highlights, lineNumber }) {
   const paired = useMemo(() => hunks.map(hunk => ({ header: hunkHeader(hunk), rows: splitRows(hunk) })), [hunks])
   const columns = useRef({ left: null, right: null })
   const offsets = useRef({ left: { scrollLeft: 0, scrollTop: 0 }, right: { scrollLeft: 0, scrollTop: 0 } })
@@ -215,7 +215,7 @@ function SplitColumns({ hunks, highlights }) {
           className: `vcs-diff-side-line ${cell === undefined ? 'vcs-diff-empty' : `vcs-diff-${cell.kind}`}`,
           'data-diff-line': splitRowKind(row),
         },
-        h('span', { className: 'vcs-diff-number' }, cell?.no ?? ''),
+        lineNumber(position, cell?.kind, cell?.no),
         h(DiffText, { text: cell?.text ?? '', spans }))
       })))))
   )
@@ -224,10 +224,76 @@ function SplitColumns({ hunks, highlights }) {
 /**
  * The hunks of a text comparison with their line numbers, unified or side by side.
  */
-function TextDiff({ diff, split, wrap, t, locale }) {
+function TextDiff({ diff, split, wrap, onStageLines, stageScope, stageDisabled, t, locale }) {
   const note = noteOf(diff)
   const { hunks, truncated } = useMemo(() => renderedHunks(diff.hunks), [diff.hunks])
   const highlights = useMemo(() => hunks.map(hunk => hunkHighlights(hunk, diff.path)), [hunks, diff.path])
+  const [selection, setSelection] = useState(null)
+  const canStage = !truncated && diff.lineStaging === true
+    && typeof diff.fingerprint === 'string' && typeof onStageLines === 'function'
+  const draft = canStage && selection?.fingerprint === diff.fingerprint ? selection : null
+  const selected = draft?.lines ?? null
+  const selectorRef = useRef(null)
+  const bodyRef = useRef(null)
+  useEffect(() => { setSelection(null) }, [diff.fingerprint])
+  const unstage = stageScope === 'staged'
+  const selectLabel = t(unstage ? 'stage.selectToUnstage' : 'stage.selectToStage')
+  const lineIndexes = useMemo(() => hunks.map(hunk => {
+    const indexes = new Map()
+    hunkRows(hunk).forEach((row, index) => {
+      if (row.kind === 'add') indexes.set(`add:${row.new}`, index)
+      if (row.kind === 'del') indexes.set(`del:${row.old}`, index)
+    })
+    return indexes
+  }), [hunks])
+  const firstHunk = lineIndexes.findIndex(indexes => indexes.size > 0)
+  const firstLine = firstHunk < 0 ? null : `${firstHunk}:${lineIndexes[firstHunk].values().next().value}`
+  const closeSelection = () => {
+    selectorRef.current?.focus({ preventScroll: true })
+    setSelection(null)
+  }
+  const lineNumber = (hunk, kind, number) => {
+    const line = selected === null ? undefined : lineIndexes[hunk].get(`${kind}:${number}`)
+    if (line === undefined) return h('span', { className: 'vcs-diff-number' }, number ?? '')
+    const key = `${hunk}:${line}`
+    return h('button', {
+      type: 'button',
+      className: 'vcs-diff-number vcs-stage-line',
+      'aria-label': t(kind === 'add' ? 'stage.addedLine' : 'stage.deletedLine', { number: formatCount(number, locale) }),
+      'aria-pressed': selected.has(key),
+      'data-stage-line': key,
+      disabled: stageDisabled,
+      tabIndex: key === draft.active ? 0 : -1,
+      onFocus: () => {
+        setSelection(previous => previous === null || previous.active === key ? previous : { ...previous, active: key })
+      },
+      onKeyDown: event => {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          closeSelection()
+          return
+        }
+        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+        event.preventDefault()
+        event.stopPropagation()
+        const buttons = Array.from(bodyRef.current.querySelectorAll('[data-stage-line]'))
+        const next = buttons.indexOf(event.currentTarget) + (event.key === 'ArrowDown' ? 1 : -1)
+        buttons[next]?.focus()
+      },
+      onClick: event => {
+        event.stopPropagation()
+        event.currentTarget.focus({ preventScroll: true })
+        setSelection(previous => {
+          const lines = new Map(previous.lines)
+          if (lines.has(key)) lines.delete(key)
+          else lines.set(key, { hunk, line })
+          return { ...previous, lines, active: key }
+        })
+      },
+    }, number)
+  }
   const children = []
   if (note !== undefined) {
     children.push(h('p', {
@@ -244,7 +310,7 @@ function TextDiff({ diff, split, wrap, t, locale }) {
       t('diff.truncated', { count: formatCount(MAX_RENDERED_LINES, locale) })))
   }
   if (split && !wrap) {
-    children.push(h(SplitColumns, { key: 'columns', hunks, highlights }))
+    children.push(h(SplitColumns, { key: 'columns', hunks, highlights, lineNumber }))
   } else {
     hunks.forEach((hunk, position) => {
       const highlighted = highlights[position]
@@ -255,13 +321,13 @@ function TextDiff({ diff, split, wrap, t, locale }) {
           'data-diff-line': splitRowKind(row),
         },
         h('span', { className: cellClass(row.left) },
-          h('span', { className: 'vcs-diff-number' }, row.left?.no ?? ''),
+          lineNumber(position, row.left?.kind, row.left?.no),
           h(DiffText, {
             text: row.left?.text ?? '',
             spans: row.left === undefined ? undefined : highlighted?.old?.get(row.left.no),
           })),
         h('span', { className: cellClass(row.right) },
-          h('span', { className: 'vcs-diff-number' }, row.right?.no ?? ''),
+          lineNumber(position, row.right?.kind, row.right?.no),
           h(DiffText, {
             text: row.right?.text ?? '',
             spans: row.right === undefined ? undefined : highlighted?.new?.get(row.right.no),
@@ -271,8 +337,8 @@ function TextDiff({ diff, split, wrap, t, locale }) {
           className: `vcs-diff-line vcs-diff-${row.kind}`,
           'data-diff-line': row.kind,
         },
-        h('span', { className: 'vcs-diff-number' }, row.old ?? ''),
-        h('span', { className: 'vcs-diff-number' }, row.new ?? ''),
+        lineNumber(position, row.kind, row.old),
+        lineNumber(position, row.kind, row.new),
         h('span', { className: 'vcs-diff-sign' }, row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '),
         h(DiffText, {
           text: row.text,
@@ -283,11 +349,38 @@ function TextDiff({ diff, split, wrap, t, locale }) {
         rows))
     })
   }
-  return h('div', {
+  const body = h('div', {
     className: 'vcs-diff-body',
+    ref: bodyRef,
     'data-review-view': split ? 'split' : 'unified',
     'data-review-wrap': wrap || undefined,
   }, children)
+  return h(Fragment, null,
+    canStage && h('div', { className: 'vcs-stage-toolbar' },
+      h('button', {
+        type: 'button',
+        className: 'vcs-button',
+        'aria-pressed': selected !== null,
+        disabled: stageDisabled,
+        ref: selectorRef,
+        onClick: event => {
+          event.stopPropagation()
+          event.currentTarget.focus({ preventScroll: true })
+          setSelection(selected === null ? { fingerprint: diff.fingerprint, lines: new Map(), active: firstLine } : null)
+        },
+      }, selectLabel),
+      selected !== null && h('button', {
+        type: 'button',
+        className: 'vcs-button',
+        disabled: stageDisabled || selected.size === 0,
+        onClick: async () => {
+          if (await onStageLines(diff.fingerprint, [...selected.values()])) {
+            setSelection(previous => previous === draft ? null : previous)
+          }
+        },
+      }, t(unstage ? 'stage.unstageSelected' : 'stage.stageSelected', { count: formatCount(selected.size, locale) })),
+      selected !== null && h('span', { className: 'vcs-stage-hint' }, t('stage.selectHint'))),
+    body)
 }
 
 /**
@@ -332,7 +425,7 @@ function diffSkeleton(label) {
  * @param {{ state: '*' | 'loading' | 'missing' | 'error' | object | undefined, split: boolean, wrap: boolean, retry: Function, t: Function, locale?: string }} props - comparison state, layout choices, retry action, and localized copy.
  * @returns {object} the comparison or its loading, unavailable, or error state.
  */
-export function FileDiff({ state, split, wrap, retry, t, locale }) {
+export function FileDiff({ state, split, wrap, retry, onStageLines, stageScope, stageDisabled, t, locale }) {
   let content
   if (state === undefined || state === 'loading') {
     content = diffSkeleton(t('diff.loading'))
@@ -352,7 +445,7 @@ export function FileDiff({ state, split, wrap, retry, t, locale }) {
     content = h('p', { className: 'vcs-diff-status' }, t('diff.oversized'))
   } else {
     const oneSided = isOneSided(state)
-    content = h(TextDiff, { diff: state, split: split && !oneSided, wrap, t, locale })
+    content = h(TextDiff, { diff: state, split: split && !oneSided, wrap, onStageLines, stageScope, stageDisabled, t, locale })
   }
   return h('div', { className: 'vcs-diff-root' }, content)
 }

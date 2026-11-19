@@ -149,7 +149,7 @@ export function DetailPane({
   dirChildren, loadingDirs, dirs, collapsed, onToggleDir,
   folds, onToggleFold, onSetFolds, split, wrap, onToggleSplit, onToggleWrap,
   singleColumn, onBack, onLeaveNav, onSelectCommit, isLoaded, onMissing, onSettled,
-  revision, cache, commitCache, initialAnchor, onReading, control, capabilities, onRefActions, t, locale,
+  revision, cache, commitCache, initialAnchor, onReading, control, capabilities, onRefActions, onStage, stageDisabled, t, locale,
   worktree = null, workingCopies = [], snapshotError = null, showCurrentHead = true,
 }) {
   const isWorktree = worktree !== null
@@ -406,6 +406,8 @@ export function DetailPane({
         onBulkFold={bulkFold}
         onLeave={onLeaveNav}
         control={treeControl}
+        onStage={isWorktree ? onStage : undefined}
+        stageDisabled={stageDisabled}
         before={before}
         t={t}
         locale={locale}

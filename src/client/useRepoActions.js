@@ -365,6 +365,22 @@ export function useRepoActions({
     restoreFocus(false)
   }, [api, capabilities, clearBranches, refresh, resetReadingForNewHead, restoreFocus, runRepoWrite, sessionId, sessionRef, setNotice, stateRef, t])
 
+  /** Update the working tree's index and reload both staging groups. */
+  const stage = useCallback(async target => {
+    const repo = writeRootRef.current
+    if (capabilities?.stageOps !== true || repo === null || inFlightRef.current.has(repo)) return false
+    setNotice(null)
+    const result = await runRepoWrite(repo, 'stage', target.scope, () => api.stage(repo, target), run => {
+      if (sessionRef.current !== sessionId || writeRootRef.current !== repo) return
+      if (run.ok || run.error?.code === 'stale-diff') refresh('stage')
+      const key = target.scope === 'staged' ? 'stage.unstaged' : 'stage.staged'
+      setNotice(run.ok
+        ? { tone: 'info', text: t(key) }
+        : { tone: 'error', text: errorMessage(t, run.error) })
+    })
+    return result.ok || result.error?.code === 'stale-diff'
+  }, [api, capabilities, refresh, runRepoWrite, sessionId, sessionRef, setNotice, t])
+
   /** Handle selecting an item from the shared actions menu. */
   const chooseMenuAction = useCallback(action => {
     const target = menu
@@ -452,12 +468,14 @@ export function useRepoActions({
     repoBusy,
     dialogWriting,
     syncing: activeWrite?.domain === 'sync',
+    staging: activeWrite?.domain === 'stage',
     switching: activeWrite?.domain === 'switch',
     branchBusy: activeWrite?.domain === 'branch' ? activeWrite.action : null,
     tagBusy: activeWrite?.domain === 'tag' ? activeWrite.action : null,
     commitBusy: activeWrite?.domain === 'commit' ? activeWrite.action : null,
     resetActionsUi,
     sync,
+    stage,
     switchBranch,
     openBranchActions,
     openCommitActions,

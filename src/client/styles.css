@@ -1072,6 +1072,8 @@
    alignment agree on where a row starts. */
 .vcs-tree {
   --vcs-row-height: 28px;
+  container-type: inline-size;
+  container-name: vcs-change-tree;
   position: relative;
   flex: 1;
   min-width: 0;
@@ -1127,10 +1129,45 @@
    layout, so a folded list reads as one list and every row keeps the shared
    height. */
 .vcs-tree-file-head-wrap {
+  display: flex;
+  align-items: center;
   position: sticky;
   top: 0;
   z-index: 2;
   background: var(--dsw-alias-bg-base);
+}
+
+.vcs-tree-file-head {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.vcs-tree-file-head-wrap > .vcs-stage-file {
+  flex: none;
+  height: calc(var(--vcs-row-height) - 6px);
+  padding-inline: 6px;
+  margin-inline-end: 8px;
+  max-width: 38%;
+}
+
+.vcs-stage-file-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vcs-stage-file-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+@container vcs-change-tree (max-width: 360px) {
+  .vcs-stage-file-label {
+    display: none;
+  }
+  .vcs-tree-file-head-wrap > .vcs-stage-file {
+    width: 24px;
+    padding-inline: 0;
+  }
 }
 
 .vcs-tree-file-head-wrap[data-open] {

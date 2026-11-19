@@ -22,8 +22,11 @@ export function createElement(type, props, ...children) {
   else if (children.length > 1) next.children = children
   return { type, key: source.key, props: next }
 }
+export const Fragment = Symbol('Fragment')
+export function useEffect() {}
 export function useMemo(factory) { return factory() }
 export function useRef(value) { return { current: value } }
+export function useState(value) { return [value, () => {}] }
 `
 
 const reactUrl = 'data:text/javascript;base64,' + Buffer.from(REACT_STUB).toString('base64')

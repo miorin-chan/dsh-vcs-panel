@@ -156,7 +156,7 @@ export function VcsView({
   const snapshots = baseCapabilities?.snapshots === true
   const waitingForSnapshots = snapshots && settledStatusKey !== statusKey
   const capabilities = useMemo(() => showCurrentHead || baseCapabilities === null ? baseCapabilities : {
-    ...baseCapabilities, sync: false, branchSwitch: false, branchOps: false, tagOps: false, commitOps: false,
+    ...baseCapabilities, sync: false, branchSwitch: false, branchOps: false, tagOps: false, commitOps: false, stageOps: false,
   }, [baseCapabilities, showCurrentHead])
   const siblingApi = useMemo(() => createApi(sessionId, { worktreeOf: state.repo }), [sessionId, state.repo])
   // In selected scope send the full checked set, except for the anchor alone.
@@ -1249,6 +1249,7 @@ export function VcsView({
         revalidating={refreshing === 'auto' || Object.values(statuses).some(entry => entry.status === 'refreshing')}
         onSync={() => { void actions.sync() }}
         syncing={actions.syncing || refreshing === 'sync'}
+        staging={actions.staging || refreshing === 'stage'}
         branches={branches.list}
         branchesStatus={branches.status}
         branchesError={branches.error}
@@ -1396,6 +1397,9 @@ export function VcsView({
                   onReading={onReading}
                   control={detailControl}
                   capabilities={capabilities}
+                  onStage={capabilities?.stageOps === true && selectedWorktree?.path === state.repo
+                    ? actions.stage : undefined}
+                  stageDisabled={actions.repoBusy || refreshing !== null || detailStatus.status !== 'ready'}
                   onRefActions={capabilities?.branchOps === true || capabilities?.tagOps === true
                     ? actions.onRefActions
                     : undefined}

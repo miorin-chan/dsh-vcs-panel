@@ -231,6 +231,11 @@ export function createApi(sessionId, { fetchImpl = globalThis.fetch, base = '', 
       return post('/api/vcs.sync', { repo })
     },
 
+    /** Stage or unstage a file, or the selected lines of a specific diff. */
+    stage(repo, { scope, path, oldPath, fingerprint, lines }) {
+      return post('/api/vcs.stage', { repo, scope, path, oldPath, fingerprint, lines })
+    },
+
     /**
      * Local branches a switch can target, newest commit first.
      * @param {string} repo - repository root.

@@ -6,7 +6,7 @@
 
 ### 注册与路由
 
-Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessions', 'subprocess', 'fs']`。`apply` 仅在配置显式为字面量 `enabled: false` 时跳过路由注册（如需同时移除前端页签，需在 Plugins 中停用整个 bundle）。九条只读 `GET` 路由与五条写路由 `POST /api/vcs.sync`、`POST /api/vcs.switch`、`POST /api/vcs.branch`、`POST /api/vcs.tag`、`POST /api/vcs.commit-op` 注册在 `ctx.connection.fetch` 的认证栅栏内。读取的请求 `signal` 与插件生命周期 `AbortController` 组合，取消的请求保留 `AbortError`，不转为错误 JSON；写路由只接插件生命周期的 `signal`，浏览器离开不会中断已开始的抓取、快进、推送、切换、分支操作、标签操作或提交操作。
+Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessions', 'subprocess', 'fs']`。`apply` 仅在配置显式为字面量 `enabled: false` 时跳过路由注册（如需同时移除前端页签，需在 Plugins 中停用整个 bundle）。下表的 `GET` 与 `POST` 路由均注册在 `ctx.connection.fetch` 的认证栅栏内。读取的请求 `signal` 与插件生命周期 `AbortController` 组合，取消的请求保留 `AbortError`，不转为错误 JSON。写路由只接插件生命周期的 `signal`，浏览器离开时已开始的写操作继续执行。
 
 | 路由 | 查询参数 | 应答字段 |
 | --- | --- | --- |
@@ -24,6 +24,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `POST /api/vcs.branch` | JSON 请求体 `{ sessionId, repo, action, branch, name?, local?, force? }` | 本地：`rename` → `{ from, branch }`；`delete` → `{ branch }`；`merge` → `{ branch, current, result }`；`rebase` → `{ branch, current }`；`push` → `{ branch, upstream, pushed }`。远程：`checkout-remote` → `{ branch, local }`；`delete-remote` → `{ branch }`；`merge-remote` / `pull-remote` → `{ branch, current, result }`（仅 `capabilities.branchOps` 为真时可用） |
 | `POST /api/vcs.tag` | JSON 请求体 `{ sessionId, repo, action, tag, remote? }` | `delete` → `{ tag }`；`push` → `{ tag, remote, pushed }`（仅 `capabilities.tagOps` 为真时可用） |
 | `POST /api/vcs.commit-op` | JSON 请求体 `{ sessionId, repo, action, sha, name?, message?, mode?, checkout? }` | `tag` → `{ tag, sha }`；`branch` → `{ branch, sha, checkedOut?: true }`；`checkout` → `{ sha }`；`cherry-pick` / `revert` / `drop` / `rebase` → `{ sha, current }`；`merge` → `{ sha, current, result }`；`reset` → `{ sha, current, mode }`（仅 `capabilities.commitOps` 为真时可用） |
+| `POST /api/vcs.stage` | JSON 请求体 `{ sessionId, repo, scope, path, oldPath?, fingerprint?, lines? }` | `{ scope, path }`（仅 `capabilities.stageOps` 为真时可用） |
 
 ### 输入校验与路径边界
 
@@ -38,7 +39,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
   状态与详情读取的 `worktree` 只接收一个目标，历史读取可接收多个无重复的绝对路径；每次根据 `repo` 重新校验。Git 工作区文件路径约束使用所选树的根。
   写请求仍只接受原仓库白名单，带 `worktree` 参数一律拒绝。
 - **路径与修订号净化**：`validateRelPath` 拒绝绝对路径、反斜杠、空段、`.`、`..`、`-` 前缀与控制字符，Git 侧再包 `:(literal)` pathspec，Jujutsu 侧用 `file:"..."` fileset。提交 ID 先做 7–64 位十六进制校验；Git 再经 `rev-parse --verify <sha>^{commit}` 解析，Jujutsu 仅接受 `@` 或十六进制 ID。
-- **写请求栅栏**：`vcs.sync`、`vcs.switch`、`vcs.branch`、`vcs.tag` 与 `vcs.commit-op` 只接受 `POST`，`content-type` 必须是 `application/json`（跨站页面不经 CORS 预检发不出），`Sec-Fetch-Site` 存在且不是 `same-origin` / `none` 时返回 `403 forbidden`；请求体中的 `sessionId` 与 `repo` 再走与读取相同的会话与仓库白名单。切换的 `branch` 与分支操作的 `branch`、`name`、`local` 必须是字符串：拒绝空串、超过 255 字符、空白或控制字符、`-` 前缀。`vcs.branch` 的 `action` 必须是 `rename`、`delete`、`merge`、`rebase`、`push`、`checkout-remote`、`delete-remote`、`merge-remote` 或 `pull-remote` 之一；`name` 只用于 `rename`，`local` 只用于 `checkout-remote`，`force` 只用于 `delete` 且必须是布尔值。本地分支操作的目标必须命中该仓库的本地分支列表；重命名与远程检出的新名字还要通过 `git check-ref-format refs/heads/<name>`。远程分支操作的目标必须由后端按 `git remote` 的最长远程名切分，并命中一个真实、非符号引用的 `refs/remotes/<remote>/<branch>`；不支持 `<remote>/HEAD`。删除只发送 `refs/heads/<branch>` 且不带 `--force`；拉取只抓取命名的 `refs/heads/<branch>` 到对应的 `refs/remotes/<remote>/<branch>`。`vcs.tag` 的 `action` 必须是 `delete` 或 `push`；`tag` 拒绝空串、超过 255 字符、空白或控制字符与 `-` 前缀，再通过 `git check-ref-format refs/tags/<name>` 并确认该 ref 存在；`push` 的 `remote` 必须命中 `git remote` 的结果。`vcs.commit-op` 的 `action` 必须是 `tag`、`branch`、`checkout`、`cherry-pick`、`revert`、`drop`、`merge`、`rebase` 或 `reset`；`sha` 为 7–64 位十六进制；`tag` / `branch` 的 `name` 复用引用名校验；`branch` 的可选 `checkout` 必须是布尔值；`tag` 的 `message` 是长度不超过 4,000 的字符串；`reset` 的 `mode` 必须是 `soft`、`mixed` 或 `hard`。同一仓库根同时只允许一次写操作，第二次返回 `409 busy`；这些写互相排斥。
+- **写请求栅栏**：`vcs.sync`、`vcs.switch`、`vcs.branch`、`vcs.tag`、`vcs.commit-op` 与 `vcs.stage` 只接受 `POST`，`content-type` 必须是 `application/json`（跨站页面不经 CORS 预检发不出），`Sec-Fetch-Site` 存在且不是 `same-origin` / `none` 时返回 `403 forbidden`；请求体中的 `sessionId` 与 `repo` 再走与读取相同的会话与仓库白名单。切换的 `branch` 与分支操作的 `branch`、`name`、`local` 必须是字符串：拒绝空串、超过 255 字符、空白或控制字符、`-` 前缀。`vcs.branch` 的 `action` 必须是 `rename`、`delete`、`merge`、`rebase`、`push`、`checkout-remote`、`delete-remote`、`merge-remote` 或 `pull-remote` 之一；`name` 只用于 `rename`，`local` 只用于 `checkout-remote`，`force` 只用于 `delete` 且必须是布尔值。本地分支操作的目标必须命中该仓库的本地分支列表；重命名与远程检出的新名字还要通过 `git check-ref-format refs/heads/<name>`。远程分支操作的目标必须由后端按 `git remote` 的最长远程名切分，并命中一个真实、非符号引用的 `refs/remotes/<remote>/<branch>`；不支持 `<remote>/HEAD`。删除只发送 `refs/heads/<branch>` 且不带 `--force`；拉取只抓取命名的 `refs/heads/<branch>` 到对应的 `refs/remotes/<remote>/<branch>`。`vcs.tag` 的 `action` 必须是 `delete` 或 `push`；`tag` 拒绝空串、超过 255 字符、空白或控制字符与 `-` 前缀，再通过 `git check-ref-format refs/tags/<name>` 并确认该 ref 存在；`push` 的 `remote` 必须命中 `git remote` 的结果。`vcs.commit-op` 的 `action` 必须是 `tag`、`branch`、`checkout`、`cherry-pick`、`revert`、`drop`、`merge`、`rebase` 或 `reset`；`sha` 为 7–64 位十六进制；`tag` / `branch` 的 `name` 复用引用名校验；`branch` 的可选 `checkout` 必须是布尔值；`tag` 的 `message` 是长度不超过 4,000 的字符串；`reset` 的 `mode` 必须是 `soft`、`mixed` 或 `hard`。同一仓库根同时只允许一次写操作，第二次返回 `409 busy`；这些写互相排斥。
 
 失败统一返回 `{ error: { code, message } }`，不携带宿主绝对路径、原始命令或堆栈：
 
@@ -77,6 +78,9 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `commit-conflict` | 409 | 拣选、还原或丢弃冲突并已中止，分支保持不变 |
 | `commit-blocked` | 409 | 提交操作被本地改动、已有操作或不支持的提交形态阻止 |
 | `commit-failed` | 409 | 提交操作因其他原因失败 |
+| `stale-diff` | 409 | 暂存目标已变化，或逐行选择的指纹与当前 diff 不匹配 |
+| `staging-unsupported` | 409 | 当前目标或改动不支持请求的暂存操作 |
+| `staging-failed` | 409 | Git 未能完成暂存或取消暂存 |
 
 写操作失败时，`stderr` 末尾三行去掉 URL 中的凭据后只写入 Host 日志（`VcsError.detail`），不进入应答。
 
@@ -87,16 +91,16 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 - **Git**：固定 `-c core.quotepath=false`，环境设 `GIT_CONFIG_COUNT=0`、`GIT_TERMINAL_PROMPT=0`、`GIT_OPTIONAL_LOCKS=0`；比较命令加 `--no-pager`、`--no-ext-diff`、`--no-color`、`-U3`。
 - **Jujutsu**：固定 `--color=never`、`--no-pager`，环境设 `JJ_EDITOR=true`；除工作副本快照外的读取均带 `--ignore-working-copy`。
 
-每个后端实现 `require`、`head`、`status`、`log`、`commit`、`diff`（可选 `untracked`、`worktrees`、`sync`、`branches` / `switchBranch`、`branchOp`、`remotes` / `tagOp`、`commitOp`）并声明 `capabilities`；Client 仅按能力对象驱动布局，不按后端名称分支：
+每个后端实现 `require`、`head`、`status`、`log`、`commit`、`diff`（可选 `untracked`、`worktrees`、`sync`、`branches` / `switchBranch`、`branchOp`、`remotes` / `tagOp`、`commitOp`、`stage`）并声明 `capabilities`；Client 仅按能力对象驱动布局，不按后端名称分支：
 
 | 能力字段 | Git | Jujutsu |
 | --- | --- | --- |
 | `workingCopy` / `workingCopyNode` | `'row'` / `null` | `'commit'` / `'@'` |
-| `staging` / `untracked` / `aheadBehind` / `sync` / `branchSwitch` / `branchOps` / `tagOps` / `commitOps` | `true` | `false` |
+| `staging` / `untracked` / `aheadBehind` / `sync` / `branchSwitch` / `branchOps` / `tagOps` / `commitOps` / `stageOps` | `true` | `false` |
 | `changeId` / `snapshots` | `false` | `true` |
 | `ranges`（`defaultRange`） | **`HEAD`**、`all` | **`@`**、`all` |
 
-Git 工作树预览保留 Git 的读取能力。单选其他工作树或多选时，Client 将 `sync`、`branchSwitch`、`branchOps`、`tagOps` 与 `commitOps` 置为 `false`，不提供写入目标；其他工作树的 `status` 也返回只读能力。
+Git 工作树预览保留 Git 的读取能力。单选其他工作树或多选时，Client 将 `sync`、`branchSwitch`、`branchOps`、`tagOps`、`commitOps` 与 `stageOps` 置为 `false`，不提供写入目标；其他工作树的 `status` 也返回只读能力。
 
 两个后端的读写规则差异：
 
@@ -125,6 +129,17 @@ Git 工作树预览保留 Git 的读取能力。单选其他工作树或多选�
   历史不会启动快照；客户端按共享存储中的确切提交 ID 读取详情与 `jj diff --git -r <rev>`，也不触发快照。轮末 `head` 仅读取记录的 `change_id`。
   `diff` 输出含 NUL 或 `U+FFFD` 时按二进制处理。
 - **每轮摘要与头指针记录**：`createTurnTracker`（`lib/turns.js`）监听活跃会话的 `session/event`、`agent/turn-stopping`、`tools/pre-execute` 与 `session/disposed`，在有工具执行或 `workspace/changes` 的轮次结束时串行读取外围仓库的 `head`（下一轮工具执行前等待上一轮完成，防止跨轮切分支串台）。`vcs.turn` 通过 `ctx.get('workspaceChanges')` 可选读取宿主的每轮 `{ total, added, deleted }`（校验 `turn` 与 `seq` 归属一致，剔除宿主路径与文件明细），并与该轮 `head` 合并返回；两者均不存在（如 Host 重启后的历史轮次）时返回 `404 not-found`。
+
+### Git 暂存
+
+`stageOps` 声明整文件暂存与取消暂存能力。写入沿用同步、切换等仓库操作的目标范围，只接受授权的仓库入口（默认工作树），并与其他仓库写入共用写锁。Client 仅在单选该 Git 工作树时开放操作。整文件与逐行操作的写入目标均为 Git index。
+
+- `scope` 决定方向。`unstaged` 与 `untracked` 执行暂存，`staged` 执行取消暂存。`path` 与可选 `oldPath` 是仓库相对路径。省略 `lines` 表示整文件操作。
+- 支持逐行操作的 Git 工作区文本 diff 返回 `lineStaging: true` 和 `fingerprint`。Client 提交该指纹及非空的 `lines: [{ hunk, line }]`。两项索引均从零开始，分别指向已返回的 `hunks` 和对应 hunk 的 `lines`。增删行可独立选择，显示行号和左右布局不参与索引计算。
+- 整文件操作支持二进制、符号链接、模式变化、删除及经 Git 状态验证的重命名。逐行操作适用于受支持的普通文件文本 diff，包括部分新增或删除。重命名、复制、模式变化、符号链接、子模块、二进制、超限或冲突 diff 不声明 `lineStaging`。未跟踪文本需由 Host 核对 UTF-8 内容与 Git diff 一致，可执行位遵循 Git 的 `core.fileMode` 设置。
+- Host 在共享写锁内校验暂存目标。逐行操作重新读取文件 diff 并校验指纹和所选行，再以完整的 index 源 blob 构建补丁。源 blob 上限为 2 MiB，与 diff 输出和 Client 渲染上限分别校验。`git apply --cached` 在取得 index 锁后校验原文。整文件取消暂存在写入前再次核对受影响的 index 条目和 `HEAD`，该复核与 `git update-index` 取得 index 锁之间仍有并发窗口。Client 在操作成功或收到 `stale-diff` 时刷新工作区状态与 diff，并沿用阅读锚点恢复。
+
+撤销与重做的后续设计见 [工作区撤销与重做](DESIGN.md#工作区撤销与重做后续设计)。
 
 ## 核心数据形状
 
@@ -200,7 +215,7 @@ type VcsHunk = {
 }
 
 type VcsFileDiff =
-  | { kind: 'text'; path: string; before: boolean; after: boolean; hunks: VcsHunk[]; coarse?: boolean }
+  | { kind: 'text'; path: string; before: boolean; after: boolean; hunks: VcsHunk[]; coarse?: boolean; lineStaging?: true; fingerprint?: string }
   | { kind: 'binary'; path: string }
   | { kind: 'oversized'; path: string }
 // Client 视图层在此之上另有 'loading' | 'missing' | 'error' 三种状态

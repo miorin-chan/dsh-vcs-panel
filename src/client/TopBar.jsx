@@ -489,7 +489,7 @@ function SyncButton({ branch, syncing, onSync, t, locale }) {
 export function TopBar({
   repositories, repo, onRepoChange, status, capabilities, refMode, onRefMode, onRefresh, refreshing,
   worktrees = [], checkedPaths = [], onToggleWorktree, sessionPath,
-  revalidating = false, onSync, syncing, branches = [], branchesStatus = 'idle', branchesError = null,
+  revalidating = false, onSync, syncing, staging = false, branches = [], branchesStatus = 'idle', branchesError = null,
   branchesTruncated = false, onLoadBranches = () => {}, onSwitchBranch = () => {}, onBranchActions = () => {},
   onRestoreFocus = () => {}, switching = false, branchBusy = null, tagBusy = null, commitBusy = null, notice,
   twoColumns = true, twoColumnsFit = true, onTwoColumns = () => {}, t, locale,
@@ -499,7 +499,7 @@ export function TopBar({
   // commit action) or the panel did (a refresh on becoming visible); the
   // content stays put.
   const busy = refreshing || syncing || switching || branchBusy !== null || tagBusy !== null
-    || commitBusy !== null || revalidating
+    || commitBusy !== null || staging || revalidating
   const branch = status?.branch
   const workingCopy = status?.workingCopy
   const showsWorkingCopy = capabilities?.workingCopy === 'commit'
@@ -548,6 +548,10 @@ export function TopBar({
     readonlyHint = t('top.readonlyHintSnapshots')
   } else if (checkedPaths.length > 1) {
     readonlyHint = t('top.readonlyHintWorktrees')
+  }
+  if (capacity?.stageOps === true) {
+    readonlyLabel = t('stage.writeLabel')
+    readonlyHint = `${readonlyHint} ${t('stage.indexHint')}`
   }
   return (
     <div className="vcs-topbar">
@@ -652,7 +656,7 @@ export function TopBar({
                 ? t(TAG_BUSY_KEYS[tagBusy])
                 : commitBusy !== null && COMMIT_BUSY_KEYS[commitBusy] !== undefined
                   ? t(COMMIT_BUSY_KEYS[commitBusy])
-                  : t('top.refreshing')}
+                  : staging ? t('stage.updatingIndex') : t('top.refreshing')}
       />
     </div>
   )

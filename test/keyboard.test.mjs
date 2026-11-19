@@ -2490,6 +2490,82 @@ test('VcsView scopes in-flight writes per repository without locking another rep
   }
 })
 
+test('VcsView stages selected diff lines and unstages the file from the refreshed group', async () => {
+  const harness = createHarness({ width: 1000 })
+  const restore = harness.installGlobals()
+  const fakeWin = installFakeWindow()
+  const savedFetch = globalThis.fetch
+  const repo = '/repo'
+  const path = 'example.txt'
+  const fingerprint = 'a'.repeat(64)
+  const sha = 'b'.repeat(40)
+  let staged = false
+  const writes = []
+  const entry = { path, status: 'M', added: 1, deleted: 1 }
+  const json = body => ({ ok: true, status: 200, async json() { return body } })
+  globalThis.fetch = async (url, init) => {
+    const parsed = new URL(url, 'http://127.0.0.1')
+    switch (parsed.pathname) {
+      case '/api/vcs.repositories':
+        return json({ repositories: [{ path: repo, name: 'repo', enclosing: true, capabilities: GIT_CAPABILITIES }] })
+      case '/api/vcs.status':
+        return json({ capabilities: GIT_CAPABILITIES, defaultNode: 'worktree', branch: { name: 'main', oid: sha }, total: staged ? 2 : 1,
+          groups: { staged: staged ? [entry] : [], unstaged: [entry], untracked: [] } })
+      case '/api/vcs.log':
+        return json({ commits: [{ sha, parents: [], refs: [], author: 'Ada', subject: 'base' }] })
+      case '/api/vcs.diff':
+        return json({ kind: 'text', path, before: true, after: true, lineStaging: true, fingerprint,
+          hunks: [{ oldStart: 1, newStart: 1, oldLines: 2, newLines: 2, lines: [' shared', '-before', '+after'] }] })
+      case '/api/vcs.stage': {
+        const write = JSON.parse(init.body)
+        assert.equal(init.method, 'POST')
+        writes.push(write)
+        staged = write.scope !== 'staged'
+        return json({ scope: write.scope, path })
+      }
+      default: throw new Error(`unexpected route: ${parsed.pathname}`)
+    }
+  }
+  try {
+    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    harness.mount(harness.react.createElement(VcsView, { sessionId: 'stage-session', t }))
+    await harness.settle()
+    const body = harness.document.body
+    const unstaged = () => body.querySelector('[data-file-key="unstaged|example.txt"]')
+    unstaged().querySelector('.vcs-tree-file-head').props.onClick()
+    for (const observer of harness.intersections) observer.trigger(() => true)
+    await harness.settle()
+    const toolbar = () => unstaged().querySelector('.vcs-stage-toolbar')
+    assert.equal(unstaged().querySelectorAll('[data-stage-line]').length, 0)
+    assert.ok(toolbar(), `staging toolbar is visible in the opened diff: ${textOf(unstaged())}`)
+    harness.mouseClick(toolbar().querySelector('.vcs-button'))
+    await harness.settle()
+    const lines = unstaged().querySelectorAll('[data-stage-line]')
+    assert.equal(lines.length, 2, 'context is excluded from the picker')
+    assert.equal(lines.filter(line => line.props.tabIndex === 0).length, 1)
+    lines[0].focus()
+    harness.keyDown(lines[0], 'ArrowDown')
+    assert.equal(harness.document.activeElement, lines[1])
+    harness.keyClick(lines[1], ' ')
+    await harness.settle()
+    assert.equal(lines[1].attributes.get('aria-pressed'), 'true')
+    harness.keyClick(toolbar().querySelectorAll('.vcs-button')[1])
+    await harness.settle()
+    assert.deepEqual(writes, [{ sessionId: 'stage-session', repo, path, scope: 'unstaged', fingerprint, lines: [{ hunk: 0, line: 2 }] }])
+    assert.equal(harness.document.activeElement, unstaged().querySelector('.vcs-tree-file-head'))
+    const stagedFile = body.querySelector('[data-file-key="staged|example.txt"]')
+    stagedFile.querySelector('.vcs-stage-file').props.onClick()
+    await harness.settle()
+    assert.deepEqual(writes[1], { sessionId: 'stage-session', repo, path, scope: 'staged' })
+    assert.equal(body.querySelector('[data-file-key="staged|example.txt"]'), null)
+  } finally {
+    harness.unmount()
+    globalThis.fetch = savedFetch
+    fakeWin.restore()
+    restore()
+  }
+})
+
 test('VcsView combines Git worktree and range choices and isolates diffs by worktree', async () => {
   const harness = createHarness({ width: 1000 })
   const restore = harness.installGlobals()
@@ -2614,6 +2690,7 @@ test('VcsView combines Git worktree and range choices and isolates diffs by work
     releaseMainDirectory()
     await harness.settle()
     assert.match(textOf(body.querySelector('.vcs-tree-file-head')), /preview\.txt/u)
+    assert.equal(body.querySelector('.vcs-stage-file'), null, 'a sibling preview has no staging action')
     assert.doesNotMatch(textOf(body.querySelector('.vcs-content')), /source\.txt/u)
     body.querySelector('.vcs-tree-file-head').props.onClick()
     for (const observer of harness.intersections) observer.trigger(() => true)
