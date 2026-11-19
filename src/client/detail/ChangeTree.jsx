@@ -913,10 +913,17 @@ export function ChangeTree({
       root.scrollTop = Math.max(0, flowTop(element) + (row.key === pending.key ? pending.offset : 0))
     }
     report()
+    const doc = root.ownerDocument
+    // Focus marks the stop keys act on, so a row that kept focus through the
+    // refresh stays the cursor even when the reading row is another one.
+    const focusedIndex = root.contains(doc.activeElement) ? navIndexByKey.get(doc.activeElement.dataset?.rowKey) : undefined
+    if (focusedIndex !== undefined) {
+      setCursorAt(focusedIndex, -1)
+      return
+    }
     const line = root.scrollTop + (grouped ? ROW_HEIGHT : 0) + ROW_HEIGHT
     const hunk = row === undefined ? -1 : hunkAtLine(row, line)
     setCursorAt(index >= 0 ? index : 0, hunk)
-    const doc = root.ownerDocument
     if (pending.focused && doc.activeElement === doc.body) {
       if (row !== undefined) focusRowElement(row.key)
       else root.focus({ preventScroll: true })

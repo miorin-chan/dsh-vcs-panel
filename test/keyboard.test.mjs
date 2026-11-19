@@ -2683,6 +2683,39 @@ test('VcsView stages a line directly, displays mixed file state, and replays the
   }
 })
 
+test('ChangeTree keeps the cursor on the focused row when a refresh restores the reading row', async () => {
+  const harness = createHarness()
+  const restore = harness.installGlobals()
+  try {
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const groups = [
+      { id: 'staged', header: true, entries: [{ path: 'docs/a.md', status: 'A' }] },
+      { id: 'unstaged', header: true, entries: [{ path: 'src/b.js', status: 'M' }, { path: 'src/c.js', status: 'M' }] },
+    ]
+    const mount = revision => {
+      harness.mount(harness.react.createElement(ChangeTree, {
+        api: { async diff(_repo, target) { return { kind: 'text', path: target.path, before: true, after: true, hunks: [] } } },
+        repo: '/repo', rev: null, rows: buildNodeRows(groups), budget: new Map(), folds: {}, split: false, wrap: false,
+        revision, cache: new Map(), initialAnchor: null, onReading() {}, onToggleRow() {}, onBulkFold() {}, onLeave() {},
+        control: { current: null }, onStage: async () => true, partiallyStaged: new Set(), stageDisabled: false, t, locale: 'en-US',
+      }))
+      return harness.settle()
+    }
+    await mount(0)
+    const head = key => harness.document.body.querySelector(`[data-row-key="${key}"]`)
+    harness.mouseClick(head('unstaged|src'))
+    assert.equal(harness.document.activeElement, head('unstaged|src'))
+    // An automatic refresh anchors on the reading row at the top of the tree.
+    await mount(1)
+    assert.equal(harness.document.activeElement, head('unstaged|src'))
+    assert.equal(head('unstaged|src').props.tabIndex, 0, 'the focused row stays the cursor')
+    assert.equal(head('staged|').props.tabIndex, -1)
+  } finally {
+    harness.unmount()
+    restore()
+  }
+})
+
 test('FileDiff split layouts stage the exact side and suppress disabled actions', async () => {
   for (const wrap of [false, true]) {
     const harness = createHarness({ width: 1000 })
