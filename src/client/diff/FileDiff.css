@@ -118,6 +118,18 @@
   white-space: pre;
 }
 
+.vcs-diff-hunk-header:has(> .vcs-stage-hunk) {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-inline-start: 0;
+}
+
+.vcs-stage-hunk {
+  flex: 0 0 22px;
+  height: var(--vcs-diff-line-height);
+}
+
 /* Line numbers fit four digits; the sign column leaves a clear gap before
    the code so `+` and `−` never touch the first character. */
 .vcs-diff-line {

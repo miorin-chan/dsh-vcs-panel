@@ -2645,6 +2645,23 @@ test('VcsView stages a line directly, displays mixed file state, and replays the
     assert.equal(layout.attributes.get('aria-pressed'), 'false')
     assert.equal(merged(), null)
     assert.equal(unstaged().querySelector('.vcs-tree-file-head').attributes.get('aria-expanded'), 'true')
+
+    harness.keyClick(layout)
+    for (const observer of harness.intersections) observer.trigger(() => true)
+    await harness.settle()
+    const hunk = () => merged().querySelector('[data-stage-hunk]')
+    assert.equal(hunk().attributes.get('aria-checked'), 'false')
+    harness.keyClick(hunk(), ' ')
+    await harness.settle()
+    assert.deepEqual(writes[9], { sessionId: 'stage-session', repo, path, scope: 'unstaged', fingerprint,
+      lines: [{ hunk: 0, line: 1 }, { hunk: 0, line: 2 }] })
+    assert.equal(merged().querySelector('.vcs-tree-file-head').attributes.get('aria-expanded'), 'true')
+    assert.equal(hunk().attributes.get('aria-checked'), 'mixed')
+    assert.ok(harness.document.activeElement === hunk(), 'focus remains on a hunk checkbox after refresh')
+    harness.keyClick(hunk(), 'Enter')
+    await harness.settle()
+    assert.deepEqual(writes[10], { sessionId: 'stage-session', repo, path, scope: 'unstaged', fingerprint: 'c'.repeat(64),
+      lines: [{ hunk: 0, line: 1 }] })
   } finally {
     harness.unmount()
     globalThis.fetch = savedFetch
@@ -2684,13 +2701,21 @@ test('FileDiff split layouts stage the exact side and suppress disabled actions'
       harness.mouseClick(deleted)
       harness.keyClick(added, ' ')
       assert.deepEqual(writes, [2, 3].map(line => ({ fingerprint: state.fingerprint, lines: [{ hunk: 0, line }] })))
+      const hunks = body.querySelectorAll('[data-stage-hunk]')
+      assert.equal(hunks.length, 1, 'both split columns share a single hunk action')
+      assert.equal(hunks[0].attributes.get('aria-checked'), 'true')
+      harness.mouseClick(hunks[0])
+      assert.deepEqual(writes[2], { fingerprint: state.fingerprint, lines: [1, 2, 3].map(line => ({ hunk: 0, line })) })
 
       render(true)
       await harness.settle()
       const disabled = body.querySelector('[data-stage-line="0:3"]')
       assert.equal(disabled.attributes.get('aria-disabled'), 'true')
       harness.mouseClick(disabled)
-      assert.equal(writes.length, 2)
+      const disabledHunk = body.querySelector('[data-stage-hunk]')
+      assert.equal(disabledHunk.attributes.get('aria-disabled'), 'true')
+      harness.mouseClick(disabledHunk)
+      assert.equal(writes.length, 3)
     } finally {
       harness.unmount()
       restore()
