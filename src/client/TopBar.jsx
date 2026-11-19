@@ -465,7 +465,7 @@ function SyncButton({ branch, syncing, onSync, t, locale }) {
       aria-label={label}
       aria-disabled={inert ? 'true' : undefined}
       aria-busy={syncing ? 'true' : undefined}
-      title={available ? `${label}\n${t('top.syncHint')}` : label}
+      title={syncing ? t('top.syncing') : available ? `${label}\n${t('top.syncHint')}` : label}
       onClick={() => { if (!inert) onSync() }}
     >
       {/* The icon itself turns while the sync runs; the bar under the header announces it. */}
@@ -500,6 +500,10 @@ export function TopBar({
   // content stays put.
   const busy = refreshing || syncing || switching || branchBusy !== null || tagBusy !== null
     || commitBusy !== null || staging || revalidating
+  const columnsAction = t(twoColumnsFit
+    ? (twoColumns ? 'top.twoColumnsOff' : 'top.twoColumnsOn')
+    : (twoColumns ? 'top.twoColumnsNarrowOff' : 'top.twoColumnsNarrowOn'))
+  const constrainedColumnsTitle = twoColumnsFit ? undefined : `${columnsAction} ${t('top.twoColumnsNarrow')}`
   const branch = status?.branch
   const workingCopy = status?.workingCopy
   const showsWorkingCopy = capabilities?.workingCopy === 'commit'
@@ -627,13 +631,12 @@ export function TopBar({
       <IconButton
         label={t('top.twoColumns')}
         pressed={twoColumns}
-        title={!twoColumnsFit
-          ? t('top.twoColumnsNarrow')
-          : twoColumns ? t('top.twoColumnsOff') : t('top.twoColumnsOn')}
+        title={constrainedColumnsTitle ?? columnsAction}
+        description={constrainedColumnsTitle}
         onClick={() => { onTwoColumns(!twoColumns) }}
         className="vcs-columns-toggle"
       >
-        <TimelineBesideIcon beside={twoColumns} />
+        <TimelineBesideIcon beside={twoColumns && twoColumnsFit} />
       </IconButton>
       <span
         className="vcs-readonly"
@@ -643,7 +646,7 @@ export function TopBar({
       >
         <LockIcon />
       </span>
-      <IconButton label={t('top.refresh')} onClick={() => { onRefresh() }} busy={refreshing}>
+      <IconButton label={t('top.refresh')} title={refreshing ? t('top.refreshing') : undefined} onClick={() => { onRefresh() }} busy={refreshing}>
         <Turning turning={refreshing}><RefreshIcon /></Turning>
       </IconButton>
       <ProgressLine

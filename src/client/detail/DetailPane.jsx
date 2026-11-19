@@ -37,7 +37,8 @@ function StageHistoryButton({ action, entry, busy, onAction, t, locale }) {
     else if (Number.isSafeInteger(entry.lineCount)) {
       operation = t(unstaged ? 'stage.unstageSelected' : 'stage.stageSelected', { count: formatCount(entry.lineCount, locale) })
     }
-    title = t(undo ? 'stage.undoTarget' : 'stage.redoTarget', { operation, path: entry.path })
+    const target = t(undo ? 'stage.undoTarget' : 'stage.redoTarget', { operation, path: entry.path })
+    title = busy ? `${t('stage.historyBusy')} ${target}` : target
   }
   return (
     <span className="vcs-stage-history-control">
@@ -80,7 +81,7 @@ function ShaButton({ sha, t }) {
     navigator.clipboard.writeText(sha).then(() => { setCopied(true) }).catch(() => { setCopied(false) })
   }
   return (
-    <Button className="vcs-sha-button" onClick={copy} title={t('commit.copySha')} aria-label={t('commit.copySha')}>
+    <Button className="vcs-sha-button" onClick={copy} title={t(copied ? 'status.copied' : 'commit.copySha')} aria-label={t('commit.copySha')}>
       <code>{shortSha(sha)}</code>
       {copied ? <CheckIcon /> : <CopyIcon />}
     </Button>
@@ -279,7 +280,12 @@ export function DetailPane({
     () => hasUnfoldedFile(allSections, folds),
     [allSections, folds],
   )
-  const splitNarrow = split && width > 0 && width < SPLIT_MIN_WIDTH
+  const splitFits = width === 0 || width >= SPLIT_MIN_WIDTH
+  const showSplit = split && splitFits
+  const splitAction = t(splitFits
+    ? (split ? 'diff.unified' : 'diff.split')
+    : (split ? 'diff.splitNarrowOff' : 'diff.splitNarrowOn'))
+  const constrainedSplitTitle = splitFits ? undefined : `${splitAction} ${t('diff.splitNarrow')}`
 
   /** Collapse or expand one row: file folds, group and directory expansion. */
   const toggleRow = useCallback((row, nextExpanded) => {
@@ -473,16 +479,17 @@ export function DetailPane({
             onClick={toggleAll}
             className="vcs-diff-tool"
           >
-            <FoldIcon open={someUnfolded} />
+            <FoldIcon expanded={someUnfolded} />
           </IconButton>
           <IconButton
             label={t('diff.splitAria')}
             pressed={split}
-            title={splitNarrow ? t('diff.splitNarrow') : split ? t('diff.unified') : t('diff.split')}
+            title={constrainedSplitTitle ?? splitAction}
+            description={constrainedSplitTitle}
             onClick={() => { onToggleSplit(!split) }}
             className="vcs-diff-tool vcs-diff-split"
           >
-            <CompareSplitIcon />
+            <CompareSplitIcon split={showSplit} />
           </IconButton>
           <IconButton
             label={t('diff.wrapAria')}
@@ -491,7 +498,7 @@ export function DetailPane({
             onClick={() => { onToggleWrap(!wrap) }}
             className="vcs-diff-tool"
           >
-            {wrap ? <NowrapIcon /> : <WrapIcon />}
+            {wrap ? <WrapIcon /> : <NowrapIcon />}
           </IconButton>
         </span>
       </div>
@@ -503,7 +510,7 @@ export function DetailPane({
         rows={rows}
         budget={budget}
         folds={folds}
-        split={split && !splitNarrow}
+        split={showSplit}
         wrap={wrap}
         revision={revision}
         cache={cache}

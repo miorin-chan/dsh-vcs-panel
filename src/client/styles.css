@@ -966,7 +966,7 @@
   height: 15px;
 }
 
-.vcs-diff-split[aria-pressed='true'] .vcs-icon {
+.vcs-diff-split .vcs-icon[data-unified] {
   transform: rotate(90deg);
 }
 

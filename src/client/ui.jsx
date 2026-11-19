@@ -31,13 +31,14 @@ export function Button({ children, onClick, disabled = false, title, className =
  * button ignores clicks while its work runs but keeps focus and full contrast
  * (`aria-disabled` rather than `disabled`).
  */
-export function IconButton({ label, children, onClick, disabled = false, busy = false, title, pressed, className = '' }) {
+export function IconButton({ label, children, onClick, disabled = false, busy = false, title, pressed, description, className = '' }) {
   return (
     <button
       type="button"
       className={`vcs-icon-button ${className}`.trim()}
       aria-label={label}
       aria-pressed={pressed}
+      aria-description={description}
       aria-busy={busy ? 'true' : undefined}
       aria-disabled={busy ? 'true' : undefined}
       title={title ?? label}
@@ -254,11 +255,11 @@ export function Chevron({ open }) {
   )
 }
 
-/** Chevrons pointing inward (collapse all files) or outward (expand all files). */
-export function FoldIcon({ open }) {
+/** Outward chevrons for expanded diffs, inward chevrons for the folded list. */
+export function FoldIcon({ expanded }) {
   return (
     <svg className="vcs-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      {open ? (
+      {!expanded ? (
         <>
           <path d="M4.5 2.5 8 6l3.5-3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
           <path d="M4.5 13.5 8 10l3.5 3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
@@ -297,9 +298,9 @@ export function CopyIcon() {
  * Two columns: the layout toggle of the diff stream, from DSH's
  * `compare-split-outline` icon.
  */
-export function CompareSplitIcon() {
+export function CompareSplitIcon({ split }) {
   return (
-    <svg className="vcs-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <svg className="vcs-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true" data-unified={split ? undefined : ''}>
       <path
         d="M6 1.5H2.5C1.94772 1.5 1.5 1.94772 1.5 2.5V13.5C1.5 14.0523 1.94772 14.5 2.5 14.5H6C6.55228 14.5 7 14.0523 7 13.5V2.5C7 1.94772 6.55228 1.5 6 1.5Z"
         stroke="currentColor"
@@ -328,9 +329,7 @@ export function StagingLayoutIcon({ merged }) {
 }
 
 /**
- * A pane with a narrow column on its left: the timeline beside the changes.
- * The column is filled while the timeline stands beside the changes and left
- * empty while the panel shows one column at a time.
+ * The left column is filled while the timeline stands beside the changes.
  */
 export function TimelineBesideIcon({ beside }) {
   return (
@@ -342,7 +341,7 @@ export function TimelineBesideIcon({ beside }) {
   )
 }
 
-/** Wrapped lines: the wrap toggle shows it while wrapping is off, from DSH's `wrap-fill` icon. */
+/** Wrapped line from DSH's `wrap-fill` icon. */
 export function WrapIcon() {
   return (
     <svg className="vcs-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -356,7 +355,7 @@ export function WrapIcon() {
   )
 }
 
-/** Straight lines: the wrap toggle shows it while wrapping is on, from DSH's `nowrap-fill` icon. */
+/** Unwrapped line from DSH's `nowrap-fill` icon. */
 export function NowrapIcon() {
   return (
     <svg className="vcs-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
