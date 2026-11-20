@@ -89,6 +89,8 @@ export default Object.freeze({
   "diff.retry": "Réessayer",
   "history.refLabel": "Plage de l’historique",
   "history.commitsLabel": "Commits",
+  "history.head": "HEAD",
+  "history.headTitle": "Commits accessibles depuis HEAD",
   "history.selectedWorktrees": "Sélection",
   "history.selectedWorktreesTitle": "Commits accessibles depuis les arbres de travail sélectionnés",
   "history.loading": "Chargement de l’historique…",

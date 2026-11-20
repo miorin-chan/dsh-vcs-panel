@@ -250,15 +250,15 @@
   height: 12px;
 }
 
-.vcs-worktree-button[data-filtered] .vcs-filter-icon {
+.vcs-picker-button[data-filtered] .vcs-filter-icon {
   flex: none;
   width: 12px;
   height: 12px;
   color: var(--dsw-alias-brand-primary);
 }
 
-/* Long worktree lists scroll independently, leaving the header range filter pinned. */
-.vcs-worktree-header {
+/* Long worktree and branch lists scroll independently, leaving the header range filter pinned. */
+.vcs-picker-header {
   display: flex;
   flex: none;
   align-items: center;
@@ -269,12 +269,12 @@
   border-bottom: 0.5px solid var(--dsw-alias-border-l1, var(--dsw-alias-border-l2));
 }
 
-.vcs-worktree-range-label {
+.vcs-picker-range-label {
   flex: none;
   margin: 0;
 }
 
-.vcs-worktree-range {
+.vcs-picker-range {
   display: inline-flex;
   flex: 0 1 auto;
   align-items: center;
@@ -322,13 +322,14 @@
   box-shadow: inset 0 0 0 var(--vcs-cursor-ring-width) var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
 }
 
-.vcs-worktree-choices {
+.vcs-picker-choices {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-.vcs-worktree-menu .vcs-picker-menu-note {
+.vcs-worktree-menu .vcs-picker-menu-note,
+.vcs-branch-menu > .vcs-picker-menu-note {
   margin: 4px 6px 2px;
   font-size: 11px;
   color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));

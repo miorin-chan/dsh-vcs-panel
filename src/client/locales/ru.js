@@ -99,6 +99,8 @@ export default Object.freeze({
   "diff.retry": "Повторить",
   "history.refLabel": "Диапазон истории",
   "history.commitsLabel": "Коммиты",
+  "history.head": "HEAD",
+  "history.headTitle": "Коммиты, достижимые из HEAD",
   "history.selectedWorktrees": "Выбранные",
   "history.selectedWorktreesTitle": "Коммиты, достижимые из выбранных рабочих деревьев",
   "history.loading": "Загрузка истории…",

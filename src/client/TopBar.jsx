@@ -55,22 +55,64 @@ function AheadBehind({ ahead, behind }) {
   )
 }
 
+/** Compact top-bar segmented switch shared by the worktree and branch pickers. */
+function RangeHeader({ options, refMode, onRefMode, t }) {
+  const moveSegment = event => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    const radios = Array.from(event.currentTarget.parentElement?.querySelectorAll?.('[role="menuitemradio"]') ?? [])
+    const index = radios.indexOf(event.currentTarget)
+    if (index < 0 || radios.length < 2) return
+    event.preventDefault()
+    event.stopPropagation()
+    const next = event.key === 'ArrowRight'
+      ? (index + 1) % radios.length
+      : (index - 1 + radios.length) % radios.length
+    radios[next]?.focus()
+  }
+  return (
+    <div className="vcs-picker-header">
+      <span className="vcs-picker-menu-title vcs-picker-range-label" aria-hidden="true">
+        {t('history.commitsLabel')}
+      </span>
+      <div className="vcs-picker-range" role="group" aria-label={t('history.refLabel')}>
+        {options.map(option => (
+          <button
+            key={option.value}
+            type="button"
+            role="menuitemradio"
+            className="vcs-range-option"
+            tabIndex={-1}
+            aria-checked={option.value === refMode}
+            title={t(option.title)}
+            onClick={() => { if (option.value !== refMode) onRefMode(option.value) }}
+            onKeyDown={moveSegment}
+          >
+            {t(option.label)}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /**
  * The branch control: a button that opens the repository's local branches,
- * with a right-click actions menu on the current branch and on each listed
- * branch. The actions menu itself lives at the panel root so the timeline's
- * branch ref badges can open the same menu.
+ * with a compact header range toggle and a right-click actions menu on the
+ * current branch and on each listed branch. The actions menu itself lives at
+ * the panel root so the timeline's branch ref badges can open the same menu.
  *
  * The header clips its children, so the branch menu is positioned `fixed`
  * rather than inside its flow. It closes on Escape, an outside press, a
  * resize, or a scroll, and gives focus back to the button. Arrow keys, Home,
- * and End move between items, and the checked-out branch is marked. Right-click
- * and Shift+F10 hand the branch to `onOpenActions`.
+ * and End move between the header range switch and branch items, and the
+ * checked-out branch is marked. Right-click and Shift+F10 hand the branch to
+ * `onOpenActions`.
  *
- * @param {{ branch: object, branchText: string, branches: object[], branchesStatus: string, branchesError: object | null, branchesTruncated: boolean, onOpen: Function, onSwitch: Function, onOpenActions: Function, switching: boolean, busy: boolean, canOps: boolean, syncable: boolean, t: Function, locale?: string }} props - branch facts and menu state.
+ * @param {{ branch: object, branchText: string, branches: object[], branchesStatus: string, branchesError: object | null, branchesTruncated: boolean, ranges: object[], refMode: string, filtered: boolean, onRefMode: Function, onOpen: Function, onSwitch: Function, onOpenActions: Function, switching: boolean, busy: boolean, canOps: boolean, syncable: boolean, t: Function, locale?: string }} props - branch facts and menu state.
  */
 function BranchSwitcher({
   branch, branchText, branches, branchesStatus, branchesError, branchesTruncated,
+  ranges = [], refMode, filtered = false, onRefMode = () => {},
   onOpen, onSwitch, onOpenActions, onRestoreFocus = () => {}, switching, busy, canOps, syncable, t, locale,
 }) {
   const [open, setOpen] = useState(false)
@@ -80,6 +122,19 @@ function BranchSwitcher({
   const openedByKeyboardRef = useRef(false)
   // The checked-out branch's name, or null on a detached HEAD.
   const currentName = branch?.detached === true || typeof branch?.name !== 'string' ? null : branch.name
+  const branchRanges = ranges.map(range => (
+    range.value === 'HEAD'
+      ? { ...range, label: 'history.head', title: 'history.headTitle' }
+      : range
+  ))
+  const currentRange = branchRanges.find(range => range.value === refMode)
+  const baseLabel = t('top.switchBranchLabel', { branch: branchText })
+  const buttonLabel = filtered && currentRange !== undefined
+    ? `${baseLabel} · ${t(currentRange.label)}`
+    : baseLabel
+  const buttonTitle = filtered && currentRange !== undefined
+    ? `${t(currentRange.title)}\n${t('top.switchBranchHint')}`
+    : t('top.switchBranchHint')
 
   const close = useCallback((returnFocus, toNav = false) => {
     setOpen(false)
@@ -96,7 +151,7 @@ function BranchSwitcher({
     open,
     menuRef,
     triggerRef,
-    itemSelector: '[data-branch-item]',
+    itemSelector: '[role="menuitemradio"]',
     onClose: close,
   })
 
@@ -121,9 +176,15 @@ function BranchSwitcher({
   useEffect(() => {
     if (!open || branchesStatus === 'loading') return undefined
     const frame = requestAnimationFrame(() => {
-      const current = menuRef.current?.querySelector('[data-branch-current="true"]')
-      const first = menuRef.current?.querySelector('[data-branch-item]')
-      const target = current ?? first ?? menuRef.current
+      const menu = menuRef.current
+      if (menu === null) return
+      if (typeof document !== 'undefined' && menu.contains(document.activeElement) && document.activeElement !== menu) {
+        return
+      }
+      const current = menu.querySelector('[data-branch-current="true"]')
+      const first = menu.querySelector('[data-branch-item]')
+      const activeRange = menu.querySelector('.vcs-range-option[aria-checked="true"]')
+      const target = current ?? first ?? activeRange ?? menu
       target?.focus()
     })
     return () => { cancelAnimationFrame(frame) }
@@ -137,8 +198,9 @@ function BranchSwitcher({
         className="vcs-picker-button vcs-branch-button"
         aria-haspopup="menu"
         aria-expanded={open ? 'true' : undefined}
-        aria-label={t('top.switchBranchLabel', { branch: branchText })}
-        title={t('top.switchBranchHint')}
+        aria-label={buttonLabel}
+        title={buttonTitle}
+        data-filtered={filtered ? '' : undefined}
         aria-busy={switching || busy ? 'true' : undefined}
         onClick={event => { toggle(event, false) }}
         onContextMenu={event => {
@@ -170,6 +232,7 @@ function BranchSwitcher({
         <Turning turning={switching || busy}><BranchIcon /></Turning>
         <span className="vcs-branch-name">{branchText}</span>
         {syncable ? null : <AheadBehind ahead={branch?.ahead ?? 0} behind={branch?.behind ?? 0} />}
+        {filtered ? <FilterIcon /> : null}
         <Chevron open={open} />
       </button>
       {open && position !== null ? (
@@ -182,54 +245,60 @@ function BranchSwitcher({
           style={position}
           onKeyDown={onMenuKeyDown}
         >
-          <p className="vcs-picker-menu-title">{t('top.switchBranch')}</p>
-          {branchesStatus === 'loading' ? (
-            <p className="vcs-picker-menu-note">{t('switch.loading')}</p>
-          ) : null}
-          {branchesStatus === 'error' ? (
-            <p className="vcs-picker-menu-note" role="alert">{errorMessage(t, branchesError)}</p>
-          ) : null}
-          {branchesStatus === 'ready' && branches.length === 0 ? (
-            <p className="vcs-picker-menu-note">{t('switch.empty')}</p>
-          ) : null}
-          {branches.map(entry => (
-            <button
-              key={entry.name}
-              type="button"
-              role="menuitemradio"
-              aria-checked={entry.current ? 'true' : 'false'}
-              className="vcs-menu-item"
-              data-branch-item=""
-              data-branch-current={entry.current ? 'true' : undefined}
-              title={entry.name}
-              onClick={event => {
-                const switched = !entry.current
-                if (switched) onSwitch(entry.name)
-                close(true, switched || !openedByKeyboardRef.current || (event !== undefined && event.detail > 0))
-              }}
-              onContextMenu={event => {
-                if (!canOps) return
-                event.preventDefault()
-                event.stopPropagation()
-                openActions(entry, event, null)
-              }}
-              onKeyDown={event => {
-                if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
-                event.preventDefault()
-                event.stopPropagation()
-                const rect = event.currentTarget.getBoundingClientRect()
-                const bottom = rect.bottom ?? (rect.top + rect.height)
-                openActions(
-                  entry,
-                  { clientX: rect.left + 12, clientY: bottom },
-                  openedByKeyboardRef.current ? triggerRef.current : null,
-                )
-              }}
-            >
-              <span className="vcs-menu-item-name">{entry.name}</span>
-              {entry.current ? <CheckIcon /> : null}
-            </button>
-          ))}
+          {branchRanges.length > 0 ? (
+            <RangeHeader options={branchRanges} refMode={refMode} onRefMode={onRefMode} t={t} />
+          ) : (
+            <p className="vcs-picker-menu-title">{t('top.switchBranch')}</p>
+          )}
+          <div className="vcs-picker-choices">
+            {branchesStatus === 'loading' ? (
+              <p className="vcs-picker-menu-note">{t('switch.loading')}</p>
+            ) : null}
+            {branchesStatus === 'error' ? (
+              <p className="vcs-picker-menu-note" role="alert">{errorMessage(t, branchesError)}</p>
+            ) : null}
+            {branchesStatus === 'ready' && branches.length === 0 ? (
+              <p className="vcs-picker-menu-note">{t('switch.empty')}</p>
+            ) : null}
+            {branches.map(entry => (
+              <button
+                key={entry.name}
+                type="button"
+                role="menuitemradio"
+                aria-checked={entry.current ? 'true' : 'false'}
+                className="vcs-menu-item"
+                data-branch-item=""
+                data-branch-current={entry.current ? 'true' : undefined}
+                title={entry.name}
+                onClick={event => {
+                  const switched = !entry.current
+                  if (switched) onSwitch(entry.name)
+                  close(true, switched || !openedByKeyboardRef.current || (event !== undefined && event.detail > 0))
+                }}
+                onContextMenu={event => {
+                  if (!canOps) return
+                  event.preventDefault()
+                  event.stopPropagation()
+                  openActions(entry, event, null)
+                }}
+                onKeyDown={event => {
+                  if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+                  event.preventDefault()
+                  event.stopPropagation()
+                  const rect = event.currentTarget.getBoundingClientRect()
+                  const bottom = rect.bottom ?? (rect.top + rect.height)
+                  openActions(
+                    entry,
+                    { clientX: rect.left + 12, clientY: bottom },
+                    openedByKeyboardRef.current ? triggerRef.current : null,
+                  )
+                }}
+              >
+                <span className="vcs-menu-item-name">{entry.name}</span>
+                {entry.current ? <CheckIcon /> : null}
+              </button>
+            ))}
+          </div>
           {branchesTruncated ? (
             <p className="vcs-picker-menu-note">
               {formatPlural(t, 'switch.truncated', branches.length, locale)}
@@ -378,53 +447,17 @@ function RepositoryPicker({ repositories, current, onRepoChange, t }) {
 
 /** The choices affect what is displayed; keep the menu open for successive changes. */
 function WorktreePicker({
-  worktrees, checkedPaths, sessionPath, commitBased, onToggle, ranges, defaultRange, refMode, onRefMode, t, locale,
+  worktrees, checkedPaths, sessionPath, commitBased, onToggle, ranges, refMode, filtered = false, onRefMode, t, locale,
 }) {
   const currentRange = ranges.find(range => range.value === refMode)
-  const baselineRange = defaultRange ?? ranges[0]?.value
-  const filtered = ranges.length > 1 && currentRange !== undefined && currentRange.value !== baselineRange
   const summary = t('top.worktreeSelection', { count: formatCount(checkedPaths.length, locale) })
-  const rangeLabel = t('history.refLabel')
-  const moveSegment = event => {
-    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-    const options = Array.from(event.currentTarget.parentElement?.querySelectorAll?.('[role="menuitemradio"]') ?? [])
-    const index = options.indexOf(event.currentTarget)
-    if (index < 0 || options.length < 2) return
-    event.preventDefault()
-    event.stopPropagation()
-    const next = event.key === 'ArrowRight'
-      ? (index + 1) % options.length
-      : (index - 1 + options.length) % options.length
-    options[next]?.focus()
-  }
   function renderOptions() {
     return (
       <>
         {ranges.length > 0 ? (
-          <div className="vcs-worktree-header">
-            <span className="vcs-picker-menu-title vcs-worktree-range-label" aria-hidden="true">
-              {t('history.commitsLabel')}
-            </span>
-            <div className="vcs-worktree-range" role="group" aria-label={rangeLabel}>
-              {ranges.map(range => (
-                <button
-                  key={range.value}
-                  type="button"
-                  role="menuitemradio"
-                  className="vcs-range-option"
-                  tabIndex={-1}
-                  aria-checked={range.value === refMode}
-                  title={t(range.title)}
-                  onClick={() => { if (range.value !== refMode) onRefMode(range.value) }}
-                  onKeyDown={moveSegment}
-                >
-                  {t(range.label)}
-                </button>
-              ))}
-            </div>
-          </div>
+          <RangeHeader options={ranges} refMode={refMode} onRefMode={onRefMode} t={t} />
         ) : null}
-        <div className="vcs-worktree-choices">
+        <div className="vcs-picker-choices">
           {worktrees.map(tree => {
             const { path, name } = tree
             const refLabel = worktreeRefLabel(tree, t, commitBased)
@@ -462,7 +495,7 @@ function WorktreePicker({
       kind="worktree"
       label={t('top.worktrees')}
       summary={summary}
-      buttonLabel={filtered ? `${summary} · ${t(currentRange.label)}` : undefined}
+      buttonLabel={filtered && currentRange !== undefined ? `${summary} · ${t(currentRange.label)}` : undefined}
       title={currentRange === undefined ? undefined : t(currentRange.title)}
       dismissOnScroll={false}
       showTitle={ranges.length === 0}
@@ -558,6 +591,13 @@ export function TopBar({
     && branch !== undefined && branch !== null
     && branch.unborn !== true
   const ranges = capabilities?.ranges ?? []
+  const currentRange = ranges.find(range => range.value === refMode)
+  const baselineRange = capabilities?.defaultRange ?? ranges[0]?.value
+  const rangeFiltered = ranges.length > 1 && currentRange !== undefined && currentRange.value !== baselineRange
+  // Show the header funnel icon on the control closest to the active scope:
+  // on the branch trigger when single-worktree Git is filtering to HEAD,
+  // and on the worktree trigger for multi-worktree, sibling preview, or Jujutsu.
+  const branchOwnsFilterIndicator = !showsWorkingCopy && branchText !== '' && branchSwitchable
   const capacity = capabilities
   const branchOps = capacity?.branchOps === true
   let readonlyLabel = t('top.readonly')
@@ -602,8 +642,8 @@ export function TopBar({
           commitBased={showsWorkingCopy}
           onToggle={onToggleWorktree}
           ranges={ranges}
-          defaultRange={capabilities?.defaultRange}
           refMode={refMode}
+          filtered={rangeFiltered && !branchOwnsFilterIndicator}
           onRefMode={onRefMode}
           t={t}
           locale={locale}
@@ -631,6 +671,10 @@ export function TopBar({
           branchesStatus={branchesStatus}
           branchesError={branchesError}
           branchesTruncated={branchesTruncated}
+          ranges={ranges}
+          refMode={refMode}
+          filtered={rangeFiltered}
+          onRefMode={onRefMode}
           onOpen={onLoadBranches}
           onSwitch={onSwitchBranch}
           onOpenActions={onBranchActions}

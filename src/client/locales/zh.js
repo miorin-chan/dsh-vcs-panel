@@ -84,6 +84,8 @@ export default Object.freeze({
   "diff.retry": "重试",
   "history.refLabel": "历史范围",
   "history.commitsLabel": "提交",
+  "history.head": "仅 HEAD",
+  "history.headTitle": "仅当前 HEAD 可达的提交",
   "history.selectedWorktrees": "仅所选",
   "history.selectedWorktreesTitle": "从所选工作树可达的提交",
   "history.loading": "正在加载历史…",

@@ -89,6 +89,8 @@ export default Object.freeze({
   "diff.retry": "Erneut versuchen",
   "history.refLabel": "Verlaufsbereich",
   "history.commitsLabel": "Commits",
+  "history.head": "HEAD",
+  "history.headTitle": "Commits, die von HEAD erreichbar sind",
   "history.selectedWorktrees": "Auswahl",
   "history.selectedWorktreesTitle": "Commits, die von den ausgewählten Arbeitsbäumen erreichbar sind",
   "history.loading": "Verlauf wird geladen…",

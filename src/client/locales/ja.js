@@ -84,6 +84,8 @@ export default Object.freeze({
   "diff.retry": "再試行",
   "history.refLabel": "履歴の範囲",
   "history.commitsLabel": "コミット",
+  "history.head": "HEAD",
+  "history.headTitle": "現在の HEAD から到達できるコミット",
   "history.selectedWorktrees": "選択中",
   "history.selectedWorktreesTitle": "選択した作業ツリーから到達できるコミット",
   "history.loading": "履歴を読み込み中…",
