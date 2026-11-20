@@ -582,6 +582,12 @@ test('long refs, menu items, and dialog selects keep single-line ellipsis and st
   assert.match(css, /\.vcs-timeline-meta > \.vcs-ref:not\(\.vcs-ref-more, \.vcs-ref-head\) \{\s*flex: 0 1 auto;/u)
   assert.match(css, /\.vcs-detail-refs \{[\s\S]*?overflow-x: auto;/u)
   assert.match(css, /\.vcs-detail-refs > \.vcs-ref \{\s*flex: none;/u)
+
+  // Worktree menu keeps the range toggle pinned in its top header row and
+  // marks the trigger button with a compact filter icon when narrowed.
+  assert.match(css, /\.vcs-worktree-header \{[\s\S]*?flex: none;/u)
+  assert.match(css, /\.vcs-worktree-button\[data-filtered\] \.vcs-filter-icon \{[\s\S]*?color: var\(--dsw-alias-brand-primary\);/u)
+  assert.match(css, /\.vcs-root\[data-narrow\] \.vcs-topbar \{[\s\S]*?column-gap: 6px;/u)
 })
 
 test('expanded file card keeps opaque sticky wrapper, solid/dashed merged bars, and hover-only horizontal scrollbars', () => {

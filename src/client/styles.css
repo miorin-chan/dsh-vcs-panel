@@ -250,18 +250,88 @@
   height: 12px;
 }
 
-/* Long worktree lists scroll independently, leaving the range choices visible. */
+.vcs-worktree-button[data-filtered] .vcs-filter-icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--dsw-alias-brand-primary);
+}
+
+/* Long worktree lists scroll independently, leaving the header range filter pinned. */
+.vcs-worktree-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  padding: 0 2px 6px 6px;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l1, var(--dsw-alias-border-l2));
+}
+
+.vcs-worktree-range-label {
+  flex: none;
+  margin: 0;
+}
+
+.vcs-worktree-range {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 2px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 6px);
+  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-bg-base));
+}
+
+.vcs-range-option {
+  flex: none;
+  height: 20px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 11px;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.vcs-range-option:hover:not([aria-checked='true']) {
+  color: var(--dsw-alias-label-primary);
+}
+
+.vcs-range-option[aria-checked='true'] {
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  font-weight: 500;
+  box-shadow: 0 0 0 0.5px var(--dsw-alias-border-l2), 0 1px 2px var(--dsw-alias-shadow, rgb(0 0 0 / 12%));
+}
+
+.vcs-range-option:focus {
+  outline: none;
+}
+
+.vcs-range-option:focus-visible {
+  background: var(--vcs-cursor-fill);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: inset 0 0 0 var(--vcs-cursor-ring-width) var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+
 .vcs-worktree-choices {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-.vcs-worktree-range {
-  flex: none;
-  margin-top: 4px;
-  padding-top: 4px;
-  border-top: 0.5px solid var(--dsw-alias-border-l2);
+.vcs-worktree-menu .vcs-picker-menu-note {
+  margin: 4px 6px 2px;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
 }
 
 .vcs-repo-item,
@@ -2053,6 +2123,7 @@ select.vcs-dialog-input {
   height: auto;
   min-height: 42px;
   flex-wrap: wrap;
+  column-gap: 6px;
   row-gap: 4px;
   padding-block: 6px;
 }

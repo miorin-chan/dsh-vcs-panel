@@ -378,6 +378,15 @@ export function CheckIcon() {
   )
 }
 
+/** Compact funnel glyph marking a narrowed history range on the worktree trigger. */
+export function FilterIcon() {
+  return (
+    <svg className="vcs-icon vcs-filter-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M2.5 3.5h11l-4.2 5v4l-2.6-1.3V8.5l-4.2-5Z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
 /** Arrow used for ahead/behind counts. */
 export function Arrow({ up = false }) {
   return (

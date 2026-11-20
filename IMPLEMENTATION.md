@@ -102,7 +102,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `workingCopy` / `workingCopyNode` | `'row'` / `null` | `'commit'` / `'@'` |
 | `staging` / `untracked` / `aheadBehind` / `sync` / `branchSwitch` / `branchOps` / `tagOps` / `commitOps` / `stageOps` | `true` | `false` |
 | `changeId` / `snapshots` | `false` | `true` |
-| `ranges`（`defaultRange`） | `HEAD`、**`all`** | `@`、**`all`** |
+| `ranges`（`defaultRange`） | **`all`**、`HEAD` | **`all`**、`@` |
 
 Git 工作树预览保留 Git 的读取能力。单选其他工作树或多选时，Client 将 `sync`、`branchSwitch`、`branchOps`、`tagOps`、`commitOps` 与 `stageOps` 置为 `false`，不提供写入目标；其他工作树的 `status` 也返回只读能力。
 
@@ -304,7 +304,7 @@ Git 工作区行与 Jujutsu 工作副本提交都可用 `worktree:<path>` 选中
 `folds` 只为用户显式操作过的文件保存布尔值：空记录表示文件全部收起，也就是详情的默认形态。行键前缀白名单为 `staged|`、`unstaged|`、`merged|`、`merged-dir|`、`commit|`；`sanitizeState` 在读取时丢弃未知字段与旧版遗留的 `untracked|` 键。数据刷新、折叠全部文件或收起吸顶文件头时，统一先记录锚点行与行内像素偏移，重排后恢复；锚点行未渲染时沿“文件行 → 父目录链 → 分组行”降级。
 
 顶部栏的菜单只保留临时打开状态。仓库与工作树菜单共用 `HeaderPicker`，本地分支菜单每次打开时重读，期间保留上一份列表。
-工作树菜单的范围选项由 `capabilities.ranges` 提供，选择更新同一个 `ref`。
+工作树菜单的范围选项由 `capabilities.ranges` 提供，置于菜单顶部的固定单行标题栏（`.vcs-worktree-header`，`提交` 标签配 `.vcs-worktree-range` 分段胶囊，支持 `←`/`→` 与 `↑`/`↓` 导航），选择更新同一个 `ref`；偏离 `defaultRange` 时触发按钮 `.vcs-worktree-button` 标出 `data-filtered` 并附带 `FilterIcon`。
 Jujutsu 按工作树路径索引工作副本节点，将多个指向同一提交的工作区标记合并到该提交行，不生成虚拟节点。
 顶部栏菜单与 `RefActionsMenu` 共用 `useFloatingMenu.js`，统一处理外部指针按下、窗口尺寸变化、失焦退出与键盘移动。
 菜单内部滚动不触发关闭；工作树菜单也忽略外部滚动，以免调整视图引起的时间线重排打断连续操作。

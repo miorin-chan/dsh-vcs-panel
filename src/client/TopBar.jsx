@@ -16,7 +16,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Arrow, BranchIcon, CheckIcon, Chevron, IconButton, LockIcon, RefreshIcon, RefBadge, SyncIcon,
+  Arrow, BranchIcon, CheckIcon, Chevron, FilterIcon, IconButton, LockIcon, RefreshIcon, RefBadge, SyncIcon,
   TimelineBesideIcon, Turning, WorkingCopyBadge,
 } from './ui.jsx'
 import { errorMessage, formatCount, formatPlural, shortChangeId } from './format.js'
@@ -242,7 +242,10 @@ function BranchSwitcher({
 }
 
 /** An anchored menu for choices already loaded. Its rows decide when to close. */
-function HeaderPicker({ kind, label, summary, buttonLabel, title, disabled = false, dismissOnScroll, children }) {
+function HeaderPicker({
+  kind, label, summary, buttonLabel, title, disabled = false,
+  dismissOnScroll, showTitle = true, indicator = null, filtered = false, children,
+}) {
   const [position, setPosition] = useState(null)
   const triggerRef = useRef(null)
   const menuRef = useRef(null)
@@ -281,6 +284,7 @@ function HeaderPicker({ kind, label, summary, buttonLabel, title, disabled = fal
         aria-expanded={open}
         aria-label={buttonLabel}
         title={title}
+        data-filtered={filtered ? '' : undefined}
         disabled={disabled}
         onClick={() => { if (open) close(true); else showMenu() }}
         onKeyDown={event => {
@@ -290,6 +294,7 @@ function HeaderPicker({ kind, label, summary, buttonLabel, title, disabled = fal
         }}
       >
         <span className="vcs-picker-label">{summary}</span>
+        {indicator}
         <Chevron open={open} />
       </button>
       {open ? (
@@ -310,7 +315,7 @@ function HeaderPicker({ kind, label, summary, buttonLabel, title, disabled = fal
             onKeyDown(event)
           }}
         >
-          <p className="vcs-picker-menu-title">{label}</p>
+          {showTitle ? <p className="vcs-picker-menu-title">{label}</p> : null}
           {children(close)}
         </div>
       ) : null}
@@ -373,13 +378,52 @@ function RepositoryPicker({ repositories, current, onRepoChange, t }) {
 
 /** The choices affect what is displayed; keep the menu open for successive changes. */
 function WorktreePicker({
-  worktrees, checkedPaths, sessionPath, commitBased, onToggle, ranges, refMode, onRefMode, t, locale,
+  worktrees, checkedPaths, sessionPath, commitBased, onToggle, ranges, defaultRange, refMode, onRefMode, t, locale,
 }) {
   const currentRange = ranges.find(range => range.value === refMode)
+  const baselineRange = defaultRange ?? ranges[0]?.value
+  const filtered = ranges.length > 1 && currentRange !== undefined && currentRange.value !== baselineRange
+  const summary = t('top.worktreeSelection', { count: formatCount(checkedPaths.length, locale) })
   const rangeLabel = t('history.refLabel')
+  const moveSegment = event => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    const options = Array.from(event.currentTarget.parentElement?.querySelectorAll?.('[role="menuitemradio"]') ?? [])
+    const index = options.indexOf(event.currentTarget)
+    if (index < 0 || options.length < 2) return
+    event.preventDefault()
+    event.stopPropagation()
+    const next = event.key === 'ArrowRight'
+      ? (index + 1) % options.length
+      : (index - 1 + options.length) % options.length
+    options[next]?.focus()
+  }
   function renderOptions() {
     return (
       <>
+        {ranges.length > 0 ? (
+          <div className="vcs-worktree-header">
+            <span className="vcs-picker-menu-title vcs-worktree-range-label" aria-hidden="true">
+              {t('history.commitsLabel')}
+            </span>
+            <div className="vcs-worktree-range" role="group" aria-label={rangeLabel}>
+              {ranges.map(range => (
+                <button
+                  key={range.value}
+                  type="button"
+                  role="menuitemradio"
+                  className="vcs-range-option"
+                  tabIndex={-1}
+                  aria-checked={range.value === refMode}
+                  title={t(range.title)}
+                  onClick={() => { if (range.value !== refMode) onRefMode(range.value) }}
+                  onKeyDown={moveSegment}
+                >
+                  {t(range.label)}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
         <div className="vcs-worktree-choices">
           {worktrees.map(tree => {
             const { path, name } = tree
@@ -409,21 +453,6 @@ function WorktreePicker({
           })}
         </div>
         {worktrees.length > 1 ? <p className="vcs-picker-menu-note">{t('top.keepWorktree')}</p> : null}
-        {ranges.length > 0 ? (
-          <div className="vcs-worktree-range" role="group" aria-label={rangeLabel}>
-            <p className="vcs-picker-menu-title" aria-hidden="true">{rangeLabel}</p>
-            {ranges.map(range => (
-              <PickerRadioItem
-                key={range.value}
-                checked={range.value === refMode}
-                title={t(range.title)}
-                onClick={() => { if (range.value !== refMode) onRefMode(range.value) }}
-              >
-                {t(range.label)}
-              </PickerRadioItem>
-            ))}
-          </div>
-        ) : null}
       </>
     )
   }
@@ -432,9 +461,13 @@ function WorktreePicker({
     <HeaderPicker
       kind="worktree"
       label={t('top.worktrees')}
-      summary={t('top.worktreeSelection', { count: formatCount(checkedPaths.length, locale) })}
+      summary={summary}
+      buttonLabel={filtered ? `${summary} · ${t(currentRange.label)}` : undefined}
       title={currentRange === undefined ? undefined : t(currentRange.title)}
       dismissOnScroll={false}
+      showTitle={ranges.length === 0}
+      filtered={filtered}
+      indicator={filtered ? <FilterIcon /> : null}
     >
       {renderOptions}
     </HeaderPicker>
@@ -569,6 +602,7 @@ export function TopBar({
           commitBased={showsWorkingCopy}
           onToggle={onToggleWorktree}
           ranges={ranges}
+          defaultRange={capabilities?.defaultRange}
           refMode={refMode}
           onRefMode={onRefMode}
           t={t}

@@ -507,7 +507,8 @@ test('repositories lists the enclosing repository and one-level children only', 
   assert.equal(body.repositories[0].capabilities.branchOps, true)
   assert.equal(body.repositories[0].capabilities.tagOps, true)
   assert.equal(body.repositories[0].capabilities.commitOps, true)
-  assert.deepEqual(body.repositories[0].capabilities.ranges.map(range => range.value), ['HEAD', 'all'])
+  assert.deepEqual(body.repositories[0].capabilities.ranges.map(range => range.value), ['all', 'HEAD'])
+  assert.equal(body.repositories[0].capabilities.defaultRange, 'all')
 })
 
 test('repositories is empty rather than an error when the cwd is not in a repository', async () => {
@@ -1513,7 +1514,7 @@ test('repositories identifies a Jujutsu workspace and exposes its capabilities',
   assert.equal(repo.capabilities.branchOps, false)
   assert.equal(repo.capabilities.tagOps, false)
   assert.equal(repo.capabilities.commitOps, false)
-  assert.deepEqual(repo.capabilities.ranges.map(range => range.value), ['@', 'all'])
+  assert.deepEqual(repo.capabilities.ranges.map(range => range.value), ['all', '@'])
   assert.equal(repo.capabilities.defaultRange, 'all')
 })
 
