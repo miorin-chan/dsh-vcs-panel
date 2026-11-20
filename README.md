@@ -61,6 +61,6 @@ npm run check        # run node --test and verify client.js is current
 npm pack --dry-run   # verify package contents
 ```
 
-Edit `src/client/` and run `npm run build` to update generated `client.js`. Run `dsh plugin` lifecycle checks against a temporary `DSH_HOME` to keep your real profile untouched.
+Edit `src/client/` and run `npm run build` to update generated `client.js`. Run `dsh plugin` lifecycle checks against a temporary `DSH_HOME` to keep your real profile untouched. To check the panel in a running DSH Web, create the Git fixture with `node scripts/fixture.mjs <dir>` and follow the steps in [`TODO.md`](TODO.md).
 
 Design: [`DESIGN.md`](DESIGN.md) · Implementation & limits: [`IMPLEMENTATION.md`](IMPLEMENTATION.md) · Changelog: [`CHANGELOG.md`](CHANGELOG.md) · License: MIT ([`LICENSE`](LICENSE), [`NOTICE`](NOTICE))

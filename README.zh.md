@@ -61,6 +61,6 @@ npm run check        # 运行 node --test 并检查 client.js 是否为最新
 npm pack --dry-run   # 检查打包内容
 ```
 
-修改客户端代码请编辑 `src/client/` 并运行 `npm run build` 更新产物 `client.js`。验证 `dsh plugin` 安装、升级与卸载时请使用临时 `DSH_HOME`，保持真实 profile 独立。
+修改客户端代码请编辑 `src/client/` 并运行 `npm run build` 更新产物 `client.js`。验证 `dsh plugin` 安装、升级与卸载时请使用临时 `DSH_HOME`，保持真实 profile 独立。在运行中的 DSH Web 里检查面板时，用 `node scripts/fixture.mjs <dir>` 生成 Git 夹具，再按 [`TODO.md`](TODO.md) 的步骤启动。
 
 产品设计：[`DESIGN.md`](DESIGN.md) · 实现与上限：[`IMPLEMENTATION.md`](IMPLEMENTATION.md) · 变更日志：[`CHANGELOG.md`](CHANGELOG.md) · 许可：MIT（[`LICENSE`](LICENSE)、[`NOTICE`](NOTICE)）
