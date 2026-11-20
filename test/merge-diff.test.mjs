@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mergeDiffs } from '../src/client/diff/merge.js'
+import { mergeDiffs } from '../lib/client/diff/merge.js'
 
 function diff(...hunks) {
   return { kind: 'text', path: 'example.txt', before: true, after: true, hunks }

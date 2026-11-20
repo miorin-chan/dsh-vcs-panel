@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import {
   BACK, canClaimFocusFrom, DOWN, FORWARD, isDiscreteActionButton, isEditableTarget,
   isNavigationStop, isOverlayOrMenuTarget, isOverlayTarget, movement, rowStep, unmodified, UP, zoneOf,
-} from '../src/client/keys.js'
+} from '../lib/client/keys.js'
 
 test('movement maps arrows and vim keys to one direction', () => {
   assert.equal(movement({ key: 'ArrowUp' }), UP)

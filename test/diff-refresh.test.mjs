@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { adoptComparison, keepsActiveFiles } from '../src/client/detail/comparison.js'
+import { adoptComparison, keepsActiveFiles } from '../lib/client/detail/comparison.js'
 
 const load = () => {}
 const comparison = (worktreeRevision, revision = 0, targetsKey = 'unstaged') => ({

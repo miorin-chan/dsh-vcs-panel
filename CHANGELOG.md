@@ -2,6 +2,23 @@
 
 ## 未发布
 
+### 源码与构建
+
+- 源码改为 TypeScript：`src/host/`、`src/lib/`、`src/client/` 是唯一手写来源，
+  `index.js`、`client.js` 与 `lib/**/*.js` 由 `npm run build` 构建并入库。
+  客户端纯模块另产出 `lib/client/` 镜像，`node --test` 直接加载它们；`.tsx` 组件仍由 `client.js` 承载。
+- `npm run check` 增加 `tsc -p tsconfig.json` 与类型包版本检查。
+  DSH 类型只以 `import type` 使用，服务声明集中在 `src/dsh.d.ts`，产物里没有 `@deepseek-ai/*` 的运行时 import。
+- `history/timeline.js` 更名为 `history/timeline-model.ts`，
+  避免与 `history/Timeline.tsx` 在大小写不敏感的文件系统上冲突；
+  `diff/FileDiff.jsx` 更名为 `diff/FileDiff.ts`（本就没有 JSX）。
+
+### 未跟踪计数
+
+- Git 工作区的时间线行、详情工具栏与「未暂存」分组在增删行数后显示灰色 `U +N`。
+  `N` 是未跟踪条目数，未跟踪目录按 Git 返回的条目算一项、展开后不变；没有未跟踪条目时隐藏。
+  提示与读屏文本沿用已有的 `status.untracked`，单栏窄详情在被隐藏的工具栏统计下方另起一行显示同一组数字。
+
 ### 自动刷新
 
 - 可见的面板跟随 Git 工作树、索引与引用的变化。

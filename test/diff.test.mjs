@@ -44,8 +44,8 @@ export async function load(url, context, nextLoad) {
 `
 register('data:text/javascript,' + encodeURIComponent(loaderSource))
 
-const diffModule = await import(new URL('../src/client/diff/FileDiff.jsx', import.meta.url))
-const highlightModule = await import(new URL('../src/client/diff/highlight.js', import.meta.url))
+const diffModule = await import(new URL('../lib/client/diff/FileDiff.js', import.meta.url))
+const highlightModule = await import(new URL('../lib/client/diff/highlight.js', import.meta.url))
 
 const {
   FileDiff,

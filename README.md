@@ -143,13 +143,18 @@ Restart DSH after adding. Disable or uninstall in **Plugins** at any time (resto
 ## Development
 
 ```sh
-npm install          # install esbuild
-npm run build        # build client.js from src/client/
-npm run check        # run node --test and verify client.js is current
+npm install          # install the build and type dependencies
+npm run build        # build index.js, client.js, and lib/ from src/
+npm run typecheck    # tsc -p tsconfig.json
+npm run check        # tests, typecheck, artifact freshness, pinned type packages
 npm pack --dry-run   # verify package contents
 ```
 
-Edit `src/client/` and run `npm run build` to update generated `client.js`.
+Sources are TypeScript under `src/`: `src/host/` for the Host half, `src/lib/`
+for private Host modules, and `src/client/` for the browser half.
+`index.js`, `client.js`, and `lib/**/*.js` are generated artifacts built from them
+and committed; run `npm run build` after changing sources.
+Types are used only with `import type`, so no artifact imports `@deepseek-ai/*` at runtime.
 Run `dsh plugin` lifecycle checks against a temporary `DSH_HOME` to keep your real profile untouched.
 To check the panel in a running DSH Web, create the Git fixture with `node scripts/fixture.mjs <dir>`
 and follow the steps in [`TODO.md`](TODO.md).

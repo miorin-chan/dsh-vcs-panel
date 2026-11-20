@@ -10,6 +10,20 @@
 
 文档中的命令、参数和示例应与实际脚本一致。
 
+## 结构
+
+- [src/host/index.ts](src/host/index.ts) 是宿主半：注册 `/api/vcs.*` 路由与轮末观察者。
+  [src/lib/](src/lib/) 是私有宿主模块（Git/Jujutsu 后端、输出解析、暂存、写入操作、刷新信号），
+  逐模块产出 `lib/**/*.js`。
+- [src/client/index.tsx](src/client/index.tsx) 是浏览器半入口；`src/client/**/*.ts(x)` 是面板、
+  对话框、变更树、diff 与历史视图。
+  纯模块另产出 `lib/client/**/*.js` 镜像供 `node --test` 直接 import；`.tsx` 组件由 `client.js` 承载。
+- `index.js`、`client.js`、`lib/**/*.js` 是入库的构建产物，不手改；`scripts/build.mjs --check` 防止落后。
+- `tsconfig.json`、`scripts/build.mjs`、`scripts/sync-types.mjs` 来自工作区 `tools/dsh-plugin-ts/` 模板，
+  本插件在模板之上增加客户端镜像与递归 `src/lib` 产物。
+- 类型只以 `import type` 使用，DSH 服务声明集中在 [src/dsh.d.ts](src/dsh.d.ts)；
+  产物里没有 `@deepseek-ai/*` 的运行时 import。
+
 ## 语言与术语
 
 与用户使用当前对话的语言交流。用户文档以英文为主：`README.md` 为英文，`README.zh.md` 为中文；
@@ -44,8 +58,9 @@
 ## 验证
 
 迭代时先运行受影响的测试。运行时代码变更完成后执行项目的完整测试与检查；发行时按项目说明打包。
-具体命令与验证重点见 `README.md`。本项目的完整检查为 `node --test`；
-`client.js` 由 `npm run build` 从 `src/` 生成，不手改；打包检查用 `npm pack --dry-run`。
+具体命令与验证重点见 `README.md`。本项目的完整检查为 `npm run check`：`node --test`、
+`tsc -p tsconfig.json`、`scripts/build.mjs --check`、`scripts/sync-types.mjs --check`；`index.js`、
+`client.js` 与 `lib/**/*.js` 由 `npm run build` 从 `src/` 生成，不手改；打包检查用 `npm pack --dry-run`。
 安装、升级与卸载验证使用假 `DSH_HOME` 的 `dsh plugin` 命令，不操作真实 profile。
 
 行为或校验变更同时覆盖有效输入与对应的拒绝、缺失或冲突情形。
@@ -108,8 +123,8 @@
 ## 骨架与 Markdown
 
 - 保持插件可以独立安装、启用与停用，并保持 npm 公开发布所需的包结构。
-  保留生成的 `client.js` 与现有的 `test/`。
-- `npm run check` 同时运行测试并检查 `client.js` 是否为最新。
+  保留 `src/`、`scripts/`、`tsconfig.json` 与现有的 `test/`，产物随源码入库。
+- `npm run check` 一次运行测试、类型检查、产物新鲜度与类型包版本钉住。
 - 在工作区根目录运行 `node tools/new-dsh-plugin/cli.mjs --check plugins/dsh-vcs-panel` 检查骨架。
 - 重排修改过的英文 Markdown 时，在项目根目录运行 `docs/scripts/reflow md <path>`。
   命令需要 Python 3.11 或更新版本。

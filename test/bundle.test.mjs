@@ -480,7 +480,7 @@ test('no component receives the reserved ref prop (React 18 drops it)', () => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name)
       if (entry.isDirectory()) walk(path)
-      else if (/\.(js|jsx)$/u.test(entry.name)) files.push(path)
+      else if (/\.(ts|tsx)$/u.test(entry.name) && !entry.name.endsWith('.d.ts')) files.push(path)
     }
   }
   walk(new URL('../src/client', import.meta.url).pathname)
@@ -497,8 +497,8 @@ test('no component receives the reserved ref prop (React 18 drops it)', () => {
 test('selection styles target the classes and attributes the components set', () => {
   const read = path => readFileSync(new URL(`../src/client/${path}`, import.meta.url), 'utf8')
   const css = read('styles.css')
-  const timeline = read('history/Timeline.jsx')
-  const tree = read('detail/ChangeTree.jsx')
+  const timeline = read('history/Timeline.tsx')
+  const tree = read('detail/ChangeTree.tsx')
 
   // Timeline rows mark the selected node with aria-current, and so does the style.
   assert.match(timeline, /'aria-current': index === selectedRow \? 'true'/u)
@@ -548,7 +548,7 @@ test('focus marks use the host focus color and leave sticky rows opaque', () => 
 test('the change tree exposes disclosure semantics and one tab stop', () => {
   const read = path => readFileSync(new URL(`../src/client/${path}`, import.meta.url), 'utf8')
   const css = read('styles.css')
-  const tree = read('detail/ChangeTree.jsx')
+  const tree = read('detail/ChangeTree.tsx')
 
   // Every expandable row announces its state and controls its content.
   assert.match(tree, /aria-expanded=\{row\.expanded\}/u)
@@ -565,7 +565,7 @@ test('the change tree exposes disclosure semantics and one tab stop', () => {
 test('long refs, menu items, and dialog selects keep single-line ellipsis and stay readable', () => {
   const read = path => readFileSync(new URL(`../src/client/${path}`, import.meta.url), 'utf8')
   const css = read('styles.css')
-  const menu = read('RefActionsMenu.jsx')
+  const menu = read('RefActionsMenu.tsx')
 
   // text-overflow: ellipsis does not apply to flex containers; ref pills must
   // be inline-block and action menu labels must sit inside .vcs-menu-item-name.

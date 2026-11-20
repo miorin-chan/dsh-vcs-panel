@@ -14,9 +14,9 @@ import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { createApi } from '../src/client/api.js'
-import { buildNodeRows } from '../src/client/detail/tree.js'
-import { budgetFolds, mergedWorktreeGroups, streamSections } from '../src/client/detail/detail.js'
+import { createApi } from '../lib/client/api.js'
+import { buildNodeRows } from '../lib/client/detail/tree.js'
+import { budgetFolds, mergedWorktreeGroups, streamSections } from '../lib/client/detail/detail.js'
 import { GIT_CAPABILITIES, GIT_WORKTREE_CAPABILITIES, JUJUTSU_CAPABILITIES } from '../lib/vcs/capabilities.js'
 
 const require = createRequire(import.meta.url)
@@ -786,7 +786,7 @@ test('keyboard navigation past in-flight diffs that abort mid-body never crashes
   const harness = createHarness()
   const restore = harness.installGlobals()
   try {
-    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.tsx', harness)
     const entries = [
       { path: 'a.js', status: 'M', added: 4, deleted: 1 },
       { path: 'b.js', status: 'M', added: 3, deleted: 0 },
@@ -891,7 +891,7 @@ test('background Diff preserves an active gutter selection and sends its origina
   const harness = createHarness()
   const restore = harness.installGlobals()
   try {
-    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.tsx', harness)
     const groups = [{ id: 'unstaged', header: true, entries: [{ path: 'notes.txt', status: 'M', added: 2 }] }]
     const rows = buildNodeRows(groups)
     const cache = new Map()
@@ -969,7 +969,7 @@ test('background Diff keeps native text selected and manual refresh discards the
   const harness = createHarness()
   const restore = harness.installGlobals()
   try {
-    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.tsx', harness)
     const rows = buildNodeRows([{ id: 'unstaged', entries: [{ path: 'notes.txt', status: 'M', added: 1 }] }])
     const cache = new Map()
     const control = { current: null }
@@ -1035,7 +1035,7 @@ test('ChangeTree measures static row containers rather than sticky-displaced hea
   const harness = createHarness()
   const restore = harness.installGlobals()
   try {
-    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.tsx', harness)
     const groups = [{
       id: 'unstaged',
       header: true,
@@ -1134,7 +1134,7 @@ test('added and untracked rows carry distinct letters and labels', async () => {
   const harness = createHarness()
   const restore = harness.installGlobals()
   try {
-    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.tsx', harness)
     const groups = [
       {
         id: 'staged',
@@ -1216,7 +1216,7 @@ test('ChangeTree moves through rows and hunk headers as one vertical list', asyn
   const harness = createHarness()
   const restore = harness.installGlobals()
   try {
-    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.tsx', harness)
     const groups = [{
       id: 'unstaged',
       header: true,
@@ -1341,7 +1341,7 @@ test('ChangeTree focuses a closed next file at the end of a diff', async () => {
   const harness = createHarness()
   const restore = harness.installGlobals()
   try {
-    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.tsx', harness)
     const groups = [{
       id: 'unstaged',
       header: true,
@@ -1419,7 +1419,7 @@ test('ChangeTree moves from a closed file row into the previous open diff', asyn
   const harness = createHarness()
   const restore = harness.installGlobals()
   try {
-    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.tsx', harness)
     const groups = [{
       id: 'unstaged',
       header: true,
@@ -1509,7 +1509,7 @@ test('ChangeTree closes an open file on left before leaving the tree', async () 
   const harness = createHarness()
   const restore = harness.installGlobals()
   try {
-    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.tsx', harness)
     const groups = [{
       id: 'unstaged',
       header: true,
@@ -1597,7 +1597,7 @@ test('VcsView lands keyboard focus on the timeline and completes deferred detail
     const harness = createHarness({ width })
     const restore = harness.installGlobals()
     try {
-      const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+      const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
       const sha1 = 'a'.repeat(40)
       const sha2 = 'b'.repeat(40)
       let resolveCommit2 = null
@@ -1744,7 +1744,7 @@ test('rapid keyboard commit switching while commit and diff bodies abort never t
   const harness = createHarness()
   const restore = harness.installGlobals()
   try {
-    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
     const sha1 = '1'.repeat(40)
     const sha2 = '2'.repeat(40)
     const sha3 = '3'.repeat(40)
@@ -1914,7 +1914,7 @@ test('VcsView keeps one icon turning from a sync click until its refresh returns
   }
   const playedOn = element => played.filter(animation => animation.element === element)
   try {
-    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
     const sha = 'c'.repeat(40)
     let statusCalls = 0
     let releaseStatus = null
@@ -2094,7 +2094,7 @@ test('VcsView layout toggle shows the timeline beside the changes or one column 
       const harness = createHarness({ width: 1000 })
       const restore = harness.installGlobals()
       try {
-        const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+        const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
         harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-columns', t, locale: 'en-US' }))
         await harness.settle()
         const body = harness.document.body
@@ -2168,7 +2168,7 @@ test('VcsView layout toggle shows the timeline beside the changes or one column 
       const harness = createHarness({ width: 1000 })
       const restore = harness.installGlobals()
       try {
-        const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+        const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
         harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-columns', t, locale: 'en-US' }))
         await harness.settle()
         const view = columns(harness.document.body)
@@ -2185,7 +2185,7 @@ test('VcsView layout toggle shows the timeline beside the changes or one column 
       const harness = createHarness({ width: 620 })
       const restore = harness.installGlobals()
       try {
-        const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+        const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
         harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-columns-narrow', t, locale: 'en-US' }))
         await harness.settle()
         const body = harness.document.body
@@ -2311,7 +2311,7 @@ test('floating menus survive internal scroll, close on outside scroll/blur, and 
     return json({ kind: 'text', path: 'a.js', before: true, after: true, hunks: [] })
   }
   try {
-    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
     harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-menu', t, locale: 'en-US' }))
     await harness.settle()
     const body = harness.document.body
@@ -2409,7 +2409,7 @@ test('Timeline +N overflow pill pairs with clickable/keyboard DetailPane ref bad
     return json({ kind: 'text', path: 'a.js', before: true, after: true, hunks: [] })
   }
   try {
-    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
     harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-refs', t, locale: 'en-US' }))
     await harness.settle()
 
@@ -2455,7 +2455,7 @@ test('TopBar repository pill keeps one checked path and returns keyboard focus t
   const harness = createHarness({ width: 300 })
   const restore = harness.installGlobals()
   try {
-    const { TopBar } = await loadClientModule('src/client/TopBar.jsx', harness)
+    const { TopBar } = await loadClientModule('src/client/TopBar.tsx', harness)
     const repositories = [
       { path: '/shared', name: 'shared', enclosing: true },
       { path: '/shared/shared', name: 'shared', enclosing: false },
@@ -2593,7 +2593,7 @@ test('VcsView scopes in-flight writes per repository without locking another rep
     return json({ kind: 'text', path: 'a.js', before: true, after: true, hunks: [] })
   }
   try {
-    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
     harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-multirepo', t, locale: 'en-US' }))
     await harness.settle()
     const body = harness.document.body
@@ -2709,7 +2709,7 @@ test('VcsView stages a line directly, displays mixed file state, and replays the
     }
   }
   try {
-    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
     harness.mount(harness.react.createElement(VcsView, { sessionId: 'stage-session', t }))
     await harness.settle()
     const body = harness.document.body
@@ -2861,7 +2861,7 @@ test('ChangeTree stages a group, a folder, or a file from its gutter and with s 
   const harness = createHarness()
   const restore = harness.installGlobals()
   try {
-    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.tsx', harness)
     const writes = []
     const onStage = async target => { writes.push(target); return true }
     const mount = (groups, { writable = true, stageDisabled = false } = {}) => {
@@ -2959,7 +2959,7 @@ test('ChangeTree keeps the cursor on the focused row when a refresh restores the
   const harness = createHarness()
   const restore = harness.installGlobals()
   try {
-    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.tsx', harness)
     const groups = [
       { id: 'staged', header: true, entries: [{ path: 'docs/a.md', status: 'A' }] },
       { id: 'unstaged', header: true, entries: [{ path: 'src/b.js', status: 'M' }, { path: 'src/c.js', status: 'M' }] },
@@ -2993,7 +2993,7 @@ test('FileDiff split layouts stage the exact side and suppress disabled actions'
     const harness = createHarness({ width: 1000 })
     const restore = harness.installGlobals()
     try {
-      const { FileDiff } = await loadClientModule('src/client/diff/FileDiff.jsx', harness)
+      const { FileDiff } = await loadClientModule('src/client/diff/FileDiff.ts', harness)
       const writes = []
       const state = {
         kind: 'text', path: 'example.txt', before: true, after: true, lineStaging: true,
@@ -3045,7 +3045,7 @@ test('FileDiff multi-line selection bar handles Shift+Click ranges, merged mixed
   const harness = createHarness({ width: 900 })
   const restore = harness.installGlobals()
   try {
-    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.tsx', harness)
     const writes = []
     let leftTree = 0
     const diff = {
@@ -3157,7 +3157,7 @@ test('ChangeTree runs s and u on focused hunk headers and restores hunk focus af
   const harness = createHarness({ width: 900 })
   const restore = harness.installGlobals()
   try {
-    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.tsx', harness)
     const writes = []
     let stagedFirst = false
     const makeDiff = () => ({
@@ -3288,7 +3288,7 @@ test('VcsView combines Git worktree and range choices and isolates diffs by work
     throw new Error(`unexpected route: ${parsed.pathname}`)
   }
   try {
-    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
     harness.mount(harness.react.createElement(VcsView, { sessionId: 'worktree-session', t }))
     await harness.settle()
     const body = harness.document.body
@@ -3540,7 +3540,7 @@ test('VcsView reads checked Jujutsu workspaces as commits and follows a rewritte
     throw new Error(`unexpected route: ${pathname}`)
   }
   try {
-    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
     harness.mount(harness.react.createElement(VcsView, { sessionId: 'jj-range-menu', t }))
     await harness.settle()
     const body = harness.document.body
@@ -3650,9 +3650,9 @@ test('BranchDialog, TagDialog, and CommitDialog cover blocked state, unmerged fo
   const harness = createHarness({ width: 1000 })
   const restore = harness.installGlobals()
   try {
-    const { BranchDialog } = await loadClientModule('src/client/BranchDialogs.jsx', harness)
-    const { TagDialog } = await loadClientModule('src/client/TagDialog.jsx', harness)
-    const { CommitDialog } = await loadClientModule('src/client/CommitDialog.jsx', harness)
+    const { BranchDialog } = await loadClientModule('src/client/BranchDialogs.tsx', harness)
+    const { TagDialog } = await loadClientModule('src/client/TagDialog.tsx', harness)
+    const { CommitDialog } = await loadClientModule('src/client/CommitDialog.tsx', harness)
     const body = harness.document.body
 
     // BranchDialog delete-remote uses danger styling; blocked leaves Cancel active and closes on Escape.
@@ -3840,7 +3840,7 @@ test('VcsView resets reads when a repository switches to another backend', async
   const harness = createHarness({ width: 500 })
   const restore = harness.installGlobals()
   try {
-    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
     harness.mount(harness.react.createElement(VcsView, { sessionId: 'backend-switch', t, locale: 'en-US' }))
     await harness.settle()
     const body = harness.document.body
@@ -3961,7 +3961,7 @@ test('VcsView keeps keyboard navigation flowing across button clicks and Tab act
   const harness = createHarness({ width: 1000 })
   const restore = harness.installGlobals()
   try {
-    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
     harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-buttons', t, locale: 'en-US', focusRequest: 1 }))
     await harness.settle()
     const body = harness.document.body
@@ -4191,7 +4191,7 @@ test('VcsView returns focus cleanly after branch switch, push, and Escape on bra
   const harness = createHarness({ width: 1000 })
   const restore = harness.installGlobals()
   try {
-    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
     harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-branch', t, locale: 'en-US', focusRequest: 1 }))
     await harness.settle()
     const body = harness.document.body
@@ -4310,7 +4310,7 @@ test('VcsView claims keyboard readiness on window focus and visibility without s
       const harness = createHarness({ width: 1000 })
       const restore = harness.installGlobals()
       try {
-        const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+        const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
         harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-hidden', t, locale: 'en-US', visible: false, focusRequest: 1 }))
         await harness.settle()
         assert.equal(harness.document.activeElement, harness.document.body)
@@ -4327,7 +4327,7 @@ test('VcsView claims keyboard readiness on window focus and visibility without s
       const harness = createHarness({ width: 1000 })
       const restore = harness.installGlobals()
       try {
-        const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+        const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
         const ModalShell = ({ showModal, visible = true }) => {
           const children = [
             harness.react.createElement('textarea', { key: 'composer', className: 'external-composer' }),
@@ -4448,7 +4448,7 @@ test('VcsView manages repositories from an empty picker and refreshes after a su
   }
 
   try {
-    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
     const { document, react } = harness
     const body = document.body
     const q = selector => body.querySelector(selector)
@@ -4587,7 +4587,7 @@ test('VcsView leaves repository configuration read-only when the Host reports in
     return { ok: true, status: 200, async json() { return data } }
   }
   try {
-    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
     const { document, react } = harness
     const body = document.body
     harness.mount(react.createElement(VcsView, { sessionId: 'invalid-config', t }))
@@ -4657,7 +4657,7 @@ test('VcsView merges visible invalidations, keeps domains separate, and catches 
   }
 
   try {
-    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
     const { document, react } = harness
     const mount = (visible, focusRequest) => harness.mount(react.createElement('div', null,
       react.createElement('textarea', { className: 'composer' }),
@@ -4771,7 +4771,7 @@ test('Timeline virtualization, paging, ChangeTree hunk entry, header scroll-back
     const harness = createHarness()
     const restore = harness.installGlobals()
     try {
-      const { Timeline, ROW_HEIGHT } = await loadClientModule('src/client/history/Timeline.jsx', harness)
+      const { Timeline, ROW_HEIGHT } = await loadClientModule('src/client/history/Timeline.tsx', harness)
       const commits = Array.from({ length: 50 }, (_, i) => ({
         sha: i.toString(16).padStart(40, '1'),
         parents: [],
@@ -4844,7 +4844,7 @@ test('Timeline virtualization, paging, ChangeTree hunk entry, header scroll-back
     const harness = createHarness()
     const restore = harness.installGlobals()
     try {
-      const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+      const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.tsx', harness)
       const groups = [{
         id: 'unstaged',
         header: true,
@@ -5013,7 +5013,7 @@ test('Timeline virtualization, paging, ChangeTree hunk entry, header scroll-back
     const harnessNarrow = createHarness({ width: 620 })
     const restoreNarrow = harnessNarrow.installGlobals()
     try {
-      const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harnessNarrow)
+      const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harnessNarrow)
       harnessNarrow.mount(harnessNarrow.react.createElement(VcsView, { sessionId: 'session-narrow-empty', t, locale: 'en-US', focusRequest: 1 }))
       await harnessNarrow.settle()
       const body = harnessNarrow.document.body
@@ -5034,7 +5034,7 @@ test('Timeline virtualization, paging, ChangeTree hunk entry, header scroll-back
     const harnessWide = createHarness({ width: 1000 })
     const restoreWide = harnessWide.installGlobals()
     try {
-      const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harnessWide)
+      const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harnessWide)
       harnessWide.mount(harnessWide.react.createElement(VcsView, { sessionId: 'session-cache', t, locale: 'en-US', focusRequest: 1 }))
       await harnessWide.settle()
       assert.equal(commitCalls.get(c1), 1)

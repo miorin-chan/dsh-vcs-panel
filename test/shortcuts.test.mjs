@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { SHORTCUT_DEFAULTS, SHORTCUT_ID, mainSessionId } from '../src/client/shortcuts.js'
+import { SHORTCUT_DEFAULTS, SHORTCUT_ID, mainSessionId } from '../lib/client/shortcuts.js'
 
 test('the shortcut has one identity and platform-primary defaults', () => {
   assert.equal(SHORTCUT_ID, 'vcs.view.toggle')

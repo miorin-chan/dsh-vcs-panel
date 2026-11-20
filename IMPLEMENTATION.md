@@ -18,7 +18,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `GET /api/vcs.repository-config` | `sessionId` | `revision`、`scanDirectories[]`、`repositories[]`（条目含 `path`、`available`）、`backends[]`（条目含 `path`、`vcs`、`available`）、`error?` |
 | `GET /api/vcs.repository-preview` | `sessionId`、`path`、`kind`（`directory` 或 `repository`） | `repositories[]`（相对 `path`、`name`、`vcs`、`availableVcs`）、`truncated` |
 | `POST /api/vcs.repository-config` | JSON `{ sessionId, revision, scanDirectories, repositories, backends? }`（两个路径数组，以及 `{ path, vcs }` 偏好数组） | 同配置 GET |
-| `GET /api/vcs.status` | `sessionId`、`repo`、`worktree?`、`readOnly?`（`1` 跳过 Jujutsu 快照） | `repo`、`vcs`、`capabilities`、`defaultNode`、`branch`、`workingCopy?`、`groups`、`total`、`truncated`、`stageHistory` |
+| `GET /api/vcs.status` | `sessionId`、`repo`、`worktree?`、`readOnly?`（`1` 跳过 Jujutsu 快照） | `repo`、`vcs`、`capabilities`、`defaultNode`、`branch`、`workingCopy?`、`groups`、`total`、`untrackedTotal`、`truncated`、`stageHistory` |
 | `GET /api/vcs.watch` | `sessionId`、`repo?`、`worktree?`（可重复）、`client?` | SSE `ready` 与 `invalidate`（`domains[]`、`origin?`） |
 | `GET /api/vcs.branches` | `sessionId`、`repo` | `branches[]`（`name`、`current`）、`truncated`（仅 `capabilities.branchSwitch` 为真时可用） |
 | `GET /api/vcs.remotes` | `sessionId`、`repo` | `remotes[]`、`truncated`（`capabilities.tagOps` 或 `capabilities.branchOps` 为真时可用） |
@@ -453,16 +453,32 @@ type TurnSummary = {
 
 ## Client 构建、宿主接缝与状态
 
-### 构建与本地化
+### 构建与类型
 
-`scripts/build.mjs` 用 esbuild 将 `src/client/entry.jsx` 打成单文件 CommonJS 产物 `client.js`（`--check`
-校验产物是否最新），仅将宿主模块表提供的 `react` 与 `react/jsx-runtime` 设为 external，
-并在外层包裹 `window.__ModuleLoader__.load({ id, factory })`。
-CSS 以文本打入 bundle，挂载时注入单个 `<style>`，类名统一使用 `vcs-` 前缀。
-八种界面语言各自保存在 `src/client/locales/{zh,en,ja,es,fr,de,ru,pt}.js` 并由 `src/client/locales.js` 导出，
+源码是 TypeScript：宿主半在 `src/host/`，私有宿主模块在 `src/lib/`，客户端半在 `src/client/`。
+`scripts/build.mjs` 用 esbuild 从这些源码产出四组入库产物：
+
+| 源码 | 产物 | 形态 |
+| --- | --- | --- |
+| `src/host/index.ts` | `index.js` | ESM，Node；`../lib/*.js` 说明符改写为 `./lib/*.js` 并保持 external |
+| `src/client/index.tsx` | `client.js` | 单文件 CommonJS，外套 `window.__ModuleLoader__.load({ id, factory })` |
+| `src/lib/**/*.ts` | `lib/**/*.js` | 每个模块单独产出，相对说明符保留 |
+| `src/client/**/*.ts` | `lib/client/**/*.js` | 客户端纯模块镜像，供 `node --test` 直接 import |
+
+`--check` 比对全部产物与源码，产物落后即失败；产物不手改。
+`client.js` 只把宿主模块表提供的 `react`、`react/jsx-runtime` 与 `@deepseek-ai/*` 设为 external，
+其余内联；CSS 以文本打入 bundle，挂载时注入单个 `<style>`，类名统一使用 `vcs-` 前缀。
+客户端镜像不含 `.tsx` 组件：测试从 `lib/client/` 取纯模块行为，
+组件级测试用 esbuild 在内存里编译 `.tsx`（`test/keyboard.test.mjs`）。
+
+`tsc -p tsconfig.json` 以 `strict` 检查 `src/`。DSH 类型包只以 `import type` 使用：服务声明集中在 `src/dsh.d.ts`，
+`Context` 来自 `@deepseek-ai/cordis`，产物里没有 `@deepseek-ai/*` 的运行时 import。
+类型包版本由 `scripts/sync-types.mjs` 钉到运行中的 DSH 与 cordis。
+
+八种界面语言各自保存在 `src/client/locales/{zh,en,ja,es,fr,de,ru,pt}.ts` 并由 `src/client/locales.ts` 导出，
 注册到 `vcs` 命名空间；宿主 locale 服务只做扁平 `{name}` 插值，
 需要按数量变化词形的键以 CLDR 复数类别后缀（`.one` / `.few` / `.many` / `.other`）存放，
-由 `format.js` 的 `formatPlural` / `pluralKey` 按 `Intl.PluralRules` 与各语言提供的类别集合（`PLURAL_CATEGORIES`：
+由 `format.ts` 的 `formatPlural` / `pluralKey` 按 `Intl.PluralRules` 与各语言提供的类别集合（`PLURAL_CATEGORIES`：
 `zh`/`ja` 为 `other`，`en`/`de`/`es`/`fr`/`pt` 为 `one`/`other`，`ru` 为 `one`/`few`/`many`/`other`）选键并格式化数字，
 未知 locale 跟随宿主回退到英文，未声明的类别（如 `es`/`fr`/`pt` 面向简写词的 `many`）回落到 `other`。
 插件列表展示名与描述位于 `locale/*.json`。
@@ -560,6 +576,10 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
   对话框 `<select>` 采用 `appearance: none` 单行截断并配 `.vcs-dialog-select-caret` 居中箭头与右缘渐隐遮罩。
   `DetailPane` 用 `${repo}|${node}|${revision}` 键缓存已读提交详情（`commitCache`，
   上限 `COMMIT_CACHE_LIMIT = 200`），避免反复切换提交重复请求，并在刷新或切仓时清空。
+  时间线工作区行、详情工具栏与「未暂存」分组在增删行数后显示灰色 `U +N`（`.vcs-untracked-stat`）：
+  `N` 取 `untrackedTotal`，未跟踪目录按 Git 返回的条目算一项，
+  展开前后不变；`0` 时隐藏，提示与读屏文本沿用 `status.untracked`；
+  单栏窄详情在工具栏统计被隐藏时另起一行 `.vcs-detail-stat-narrow` 显示同一组数字。
   变更树客户端将 Git 的 `untracked` 条目并入 `unstaged` 分组（可按需展开的未跟踪目录不参与单子目录链压缩），
   生成单一扁平行列表供渲染、roving tabindex 键盘导航与滚动锚点共用；文件默认收起，只有展开的行才请求 `vcs.diff`。
   发起请求时仍按条目自身的 `untracked` 标记还原 `scope`（未跟踪项走 `untracked`，重命名带 `oldPath`）。
@@ -597,6 +617,6 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
   因此源码内嵌并适配 DSH 的 `FileDiff`（`src/client/diff/`），
   配合本地语法 tokenizer 引用宿主 `--shiki-token-*` CSS 变量跟随主题着色。
 - **lane 图算法**：
-  `src/client/history/layout.js` 裁剪移植自 `git-graph-plus` 的 `git-graph-builder.ts`（commit `c6c2a9a`，
+  `src/client/history/layout.ts` 裁剪移植自 `git-graph-plus` 的 `git-graph-builder.ts`（commit `c6c2a9a`，
   源自 SourceGit `PathHelper`），移除本面板不使用的 upstream 可达性与分支自定义配色；不引入第三方运行库，
   也不采用禁止再分发的 `vscode-git-graph`。

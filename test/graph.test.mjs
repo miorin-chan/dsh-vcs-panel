@@ -7,7 +7,7 @@ import {
   buildPathD,
   graphWidth,
   resolveColor,
-} from '../src/client/history/layout.js'
+} from '../lib/client/history/layout.js'
 
 /**
  * Build a minimal `CommitNode` for layout tests.

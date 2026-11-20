@@ -1,0 +1,5 @@
+# pnpm 11 blocks dependency build scripts until they are approved. esbuild's
+# install step only verifies the platform binary that `npm run build` uses, so
+# this checkout approves that one package.
+allowBuilds:
+  esbuild: true

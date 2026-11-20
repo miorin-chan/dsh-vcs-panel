@@ -4,30 +4,30 @@ import assert from 'node:assert/strict'
 import {
   defaultState, isNode, loadState, nodePatch, preferredNode, saveState, sanitizeState,
   SIDEBAR_MIN, SIDEBAR_MAX, storageKey, WORKING_COPY, WORKTREE, worktreeNode,
-} from '../src/client/state.js'
+} from '../lib/client/state.js'
 import {
   branchOpMessage, commitOpMessage, errorMessage, formatCommitTime, formatCount, formatDateTime, lineCounts,
   shortChangeId, shortSha, splitPath, statusKey, switchMessage, syncMessage, tagOpMessage,
-} from '../src/client/format.js'
-import { branchActions, isDestructiveAction, remoteBranchActions } from '../src/client/branch.js'
-import { tagActions } from '../src/client/tag.js'
-import { commitActions, isDestructiveCommitAction } from '../src/client/commit.js'
+} from '../lib/client/format.js'
+import { branchActions, isDestructiveAction, remoteBranchActions } from '../lib/client/branch.js'
+import { tagActions } from '../lib/client/tag.js'
+import { commitActions, isDestructiveCommitAction } from '../lib/client/commit.js'
 import {
   buildNodeRows, buildRows, dirKey, isRowKey, rowBodyId, sectionKey, summarizeEntries,
-} from '../src/client/detail/tree.js'
+} from '../lib/client/detail/tree.js'
 import {
   FOLD_LINES, SPLIT_MIN_WIDTH, STREAM_BUDGET, allFileFolds, budgetFolds, changedLines, commitGroups,
   commitSummary, comparisonBase, diffTarget, estimateHeight, expandedFileFolds, hasUnfoldedFile, isFolded,
   diffTargets, mergedWorktreeGroups, rowAt, streamSections, worktreeGroups,
-} from '../src/client/detail/detail.js'
-import { createQueue } from '../src/client/detail/queue.js'
-import { counterpartKey, isStageable, mergedStageState, STAGE, stageFiles, UNSTAGE } from '../src/client/detail/stage.js'
-import { graphInput, nodeAt, rowOf, worktreeSummary } from '../src/client/history/timeline.js'
-import { attachWorkingCopies, checkedWorktrees, preferredViewNode, sharedRefs, toggleWorktree } from '../src/client/worktrees.js'
-import { ApiError, createApi, queryString } from '../src/client/api.js'
+} from '../lib/client/detail/detail.js'
+import { createQueue } from '../lib/client/detail/queue.js'
+import { counterpartKey, isStageable, mergedStageState, STAGE, stageFiles, UNSTAGE } from '../lib/client/detail/stage.js'
+import { graphInput, nodeAt, rowOf, worktreeSummary } from '../lib/client/history/timeline-model.js'
+import { attachWorkingCopies, checkedWorktrees, preferredViewNode, sharedRefs, toggleWorktree } from '../lib/client/worktrees.js'
+import { ApiError, createApi, queryString } from '../lib/client/api.js'
 import {
   commitBranchRelation, hasSeveralAuthors, indexCommits, messageBody, reachableCommits,
-} from '../src/client/history/commits.js'
+} from '../lib/client/history/commits.js'
 
 /** A Map-backed Storage stand-in. */
 function fakeStorage() {

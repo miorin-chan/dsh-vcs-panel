@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   motionAt, PERIOD, REDUCED_PERIOD, sampleSegment, segmentEasing, startTurning, stopTurning,
-} from '../src/client/turning.js'
+} from '../lib/client/turning.js'
 
 const CRUISE = 360 / PERIOD
 

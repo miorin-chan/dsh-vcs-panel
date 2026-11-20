@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { CRASH_STORAGE_KEY, describeCrash, recordCrash } from '../src/client/crash.js'
+import { CRASH_STORAGE_KEY, describeCrash, recordCrash } from '../lib/client/crash.js'
 
 /** A storage stand-in that records writes. */
 function fakeStorage() {

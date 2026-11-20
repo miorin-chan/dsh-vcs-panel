@@ -1,13 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { pickRepository } from '../src/client/history/timeline.js'
+import { pickRepository } from '../lib/client/history/timeline-model.js'
 import {
   createTurnChangesDefinition, isMutationCall, TURN_CHANGES_KIND, turnChangedFiles, turnChanges,
-} from '../src/client/turn.js'
+} from '../lib/client/turn.js'
 import {
   createTurnSummaryStore, normalizeTurnHead, normalizeTurnSummary,
-} from '../src/client/turn-summary.js'
+} from '../lib/client/turn-summary.js'
 
 /** One tool/call event in turn 3. */
 function call(callId, name, args) {

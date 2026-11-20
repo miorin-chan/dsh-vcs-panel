@@ -4,10 +4,10 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { sep, join } from 'node:path'
 
-import { DICTIONARIES } from '../src/client/locales.js'
+import { DICTIONARIES } from '../lib/client/locales.js'
 import {
   errorMessage, formatPlural, PLURAL_CATEGORIES, pluralCategory, pluralKey, statusKey,
-} from '../src/client/format.js'
+} from '../lib/client/format.js'
 import { ERROR_STATUS } from '../lib/errors.js'
 
 /** Languages DSH supports and this panel must ship. */
@@ -82,7 +82,7 @@ function sourceFiles(directory) {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name)
     if (entry.isDirectory()) files.push(...sourceFiles(path))
-    else if (/\.(js|jsx)$/u.test(entry.name)) files.push(path)
+    else if (/\.(ts|tsx)$/u.test(entry.name) && !entry.name.endsWith('.d.ts')) files.push(path)
   }
   return files
 }
@@ -153,7 +153,7 @@ test('every literal t(key), formatPlural(baseKey), and dynamic key resolves in e
   )
 
   for (const file of sourceFiles(directory)) {
-    if (file.endsWith('locales.js') || file.includes(`${sep}locales${sep}`)) continue
+    if (file.endsWith('locales.ts') || file.includes(`${sep}locales${sep}`)) continue
     const source = readFileSync(file, 'utf8')
     for (const match of source.matchAll(/\bt\('([^']+)'/gu)) usedPlain.add(match[1])
     for (const match of source.matchAll(/\bt\('([^']+)'\)/gu)) {
@@ -275,7 +275,7 @@ test('view labels stay short enough for the Sidebar chip', () => {
 test('every locale module defines each key at most once', () => {
   const dir = fileURLToPath(new URL('../src/client/locales', import.meta.url))
   for (const locale of LOCALES) {
-    const source = readFileSync(join(dir, `${locale}.js`), 'utf8')
+    const source = readFileSync(join(dir, `${locale}.ts`), 'utf8')
     const seen = new Set()
     const duplicates = []
     for (const line of source.split('\n')) {
@@ -298,7 +298,7 @@ test('every dictionary key is referenced in client or capability sources', () =>
     }
   }
   for (const file of sourceFiles(clientDir)) {
-    if (file.endsWith('locales.js') || file.includes(`${sep}locales${sep}`)) continue
+    if (file.endsWith('locales.ts') || file.includes(`${sep}locales${sep}`)) continue
     scan(readFileSync(file, 'utf8'))
   }
   scan(readFileSync(capabilitiesFile, 'utf8'))
