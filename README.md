@@ -33,8 +33,9 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
   in place with sticky headers, unified or split view, and line wrapping (on by default).
 - **Git & Jujutsu native.** Shows staged and unstaged groups (untracked items marked `U`,
   new additions `A`) and ahead/behind in Git.
-  Jujutsu shows change IDs and bookmarks; refreshing snapshots the checked workspaces
-  so their working-copy diffs reflect the files on disk.
+  The visible panel follows local Git changes and updates status and history independently.
+  Jujutsu shows change IDs and bookmarks.
+  Use Refresh to snapshot checked workspaces after external file edits.
 - **Git staging.** Point at or focus a row to show its command in the staging column at the left edge:
   `+` stages a row under **Unstaged**, and `−` unstages a row under **Staged**.
   A half-filled dot marks a file that has changes in both groups; its command stages the remaining changes
@@ -101,8 +102,8 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
   and only Hard discards staged and unstaged changes.
   Timeline rows summarize more than three refs with `+N`, while the commit detail header keeps every ref clickable.
 - **Writes stay explicit.** Git writes start from a staging, sync, branch, remote-branch, tag, or commit action.
-  A conflicting merge, pull, pick, revert, drop, or rebase is aborted;
-  pushes and remote deletions never force anything; Jujutsu only snapshots the working copy on read.
+  A conflicting merge, pull, pick, revert, drop, or rebase is aborted; pushes and remote deletions never force anything.
+  Jujutsu snapshots the working copy on manual refresh or after an Agent turn with changes.
   Follows DSH themes and all 8 UI languages, and loads large histories and diffs on demand.
 
 ## Keyboard

@@ -60,13 +60,13 @@ function WorktreeMeta({ status, statusState, t, locale }) {
 
 /**
  * Render the timeline.
- * @param {{ commits: object[], layout: object, worktrees?: object[], selectedRow: number, onSelectRow: (index: number) => void, onMove: (delta: number) => void, onOpen: () => void, onRefActions?: Function, onCommitActions?: Function, control?: { current: object | null }, t: Function, locale?: string, loading: boolean, loadingMore: boolean, error: object | null, hasMore: boolean, truncated: boolean, onLoadMore: Function, onRetry: Function, initialScrollTop?: number, onScrollOffset?: (top: number) => void }} props - timeline state.
+ * @param {{ commits: object[], layout: object, worktrees?: object[], selectedRow: number, onSelectRow: (index: number) => void, onMove: (delta: number) => void, onOpen: () => void, onRefActions?: Function, onCommitActions?: Function, control?: { current: object | null }, t: Function, locale?: string, loading: boolean, loadingMore: boolean, error: object | null, hasMore: boolean, canLoadMore?: boolean, truncated: boolean, onLoadMore: Function, onRetry: Function, initialScrollTop?: number, onScrollOffset?: (top: number) => void }} props - timeline state.
  */
 export function Timeline({
   commits, layout, worktrees = [], selectedRow, onSelectRow, onMove, onOpen,
   onRefActions, onCommitActions, control, t, locale,
   loading, loadingMore, error, hasMore, truncated, onLoadMore, onRetry,
-  initialScrollTop = 0, onScrollOffset,
+  initialScrollTop = 0, onScrollOffset, canLoadMore = true,
 }) {
   const scrollRef = useRef(null)
   const [scrollTop, setScrollTop] = useState(0)
@@ -363,8 +363,8 @@ export function Timeline({
             <button
               type="button"
               className="vcs-load-more"
-              aria-disabled={loadingMore ? 'true' : undefined}
-              onClick={() => { if (!loadingMore) onLoadMore() }}
+              aria-disabled={loadingMore || !canLoadMore ? 'true' : undefined}
+              onClick={() => { if (!loadingMore && canLoadMore) onLoadMore() }}
             >
               {loadingMore ? t('history.loadingMore') : t('history.loadMore')}
             </button>

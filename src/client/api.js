@@ -59,9 +59,14 @@ function toAbortError(error) {
  * @param {typeof fetch} [options.fetchImpl] - fetch implementation.
  * @param {string} [options.base] - URL prefix; empty means relative to the app.
  * @param {string | null} [options.worktreeOf] - allowed repository anchoring a worktree preview.
+ * @param {string | null} [options.clientId] - identifies writes made by this panel subscription.
+ * @param {typeof EventSource} [options.EventSourceImpl] - subscription transport.
  * @returns {object} the route methods.
  */
-export function createApi(sessionId, { fetchImpl = globalThis.fetch, base = '', worktreeOf = null } = {}) {
+export function createApi(sessionId, {
+  fetchImpl = globalThis.fetch, base = '', worktreeOf = null, clientId = null,
+  EventSourceImpl = globalThis.EventSource,
+} = {}) {
   /** In a preview, the selected root is the worktree, not the allowed repository. */
   const browseTarget = repo => worktreeOf === null ? { repo } : { repo: worktreeOf, worktree: repo }
 
@@ -131,7 +136,10 @@ export function createApi(sessionId, { fetchImpl = globalThis.fetch, base = '', 
         method: 'POST',
         credentials: 'same-origin',
         cache: 'no-store',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          ...(clientId === null ? {} : { 'X-VCS-Client': clientId }),
+        },
         body: JSON.stringify({ sessionId, ...values }),
       })
     } catch {
@@ -148,6 +156,31 @@ export function createApi(sessionId, { fetchImpl = globalThis.fetch, base = '', 
      */
     repositories(signal) {
       return get('/api/vcs.repositories', {}, signal)
+    },
+
+    /** Subscribe while the panel is visible. EventSource reconnects after transport failures. */
+    watch(repo, worktree, onReady, onInvalidate) {
+      if (typeof EventSourceImpl !== 'function') {
+        onReady()
+        return () => {}
+      }
+      const query = queryString({ sessionId, repo, worktree, client: clientId })
+      const source = new EventSourceImpl(`${base}/api/vcs.watch${query}`)
+      source.addEventListener('ready', onReady)
+      source.addEventListener('error', () => {
+        if (source.readyState === EventSourceImpl.CLOSED) onReady()
+      })
+      source.addEventListener('invalidate', event => {
+        let change
+        try {
+          change = JSON.parse(event.data)
+        } catch {
+          return
+        }
+        if (change?.origin === clientId && clientId !== null) return
+        if (Array.isArray(change?.domains)) onInvalidate(change.domains)
+      })
+      return () => { source.close() }
     },
 
     repositoryConfig(signal) {
@@ -168,8 +201,8 @@ export function createApi(sessionId, { fetchImpl = globalThis.fetch, base = '', 
      * @param {AbortSignal} [signal] - cancellation.
      * @returns {Promise<object>} the status.
      */
-    status(repo, signal) {
-      return get('/api/vcs.status', browseTarget(repo), signal)
+    status(repo, signal, { readOnly = false } = {}) {
+      return get('/api/vcs.status', { ...browseTarget(repo), readOnly: readOnly ? 1 : undefined }, signal)
     },
 
     /**

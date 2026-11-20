@@ -18,7 +18,8 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `GET /api/vcs.repository-config` | `sessionId` | `revision`、`scanDirectories[]`、`repositories[]`（条目含 `path`、`available`）、`error?` |
 | `GET /api/vcs.repository-preview` | `sessionId`、`path`、`kind`（`directory` 或 `repository`） | `repositories[]`（相对 `path`、`name`、`vcs`）、`truncated` |
 | `POST /api/vcs.repository-config` | JSON `{ sessionId, revision, scanDirectories, repositories }`（两个路径数组） | 同配置 GET |
-| `GET /api/vcs.status` | `sessionId`、`repo`、`worktree?` | `repo`、`vcs`、`capabilities`、`defaultNode`、`branch`、`workingCopy?`、`groups`、`total`、`truncated`、`stageHistory` |
+| `GET /api/vcs.status` | `sessionId`、`repo`、`worktree?`、`readOnly?`（`1` 跳过 Jujutsu 快照） | `repo`、`vcs`、`capabilities`、`defaultNode`、`branch`、`workingCopy?`、`groups`、`total`、`truncated`、`stageHistory` |
+| `GET /api/vcs.watch` | `sessionId`、`repo?`、`worktree?`（可重复）、`client?` | SSE `ready` 与 `invalidate`（`domains[]`、`origin?`） |
 | `GET /api/vcs.branches` | `sessionId`、`repo` | `branches[]`（`name`、`current`）、`truncated`（仅 `capabilities.branchSwitch` 为真时可用） |
 | `GET /api/vcs.remotes` | `sessionId`、`repo` | `remotes[]`、`truncated`（`capabilities.tagOps` 或 `capabilities.branchOps` 为真时可用） |
 | `GET /api/vcs.untracked` | `sessionId`、`repo`、`worktree?`、`path`（`/` 结尾） | `path`、`entries[]`（`name`、`path`、`type`）、`truncated`（仅 `capabilities.untracked` 为真时可用） |
@@ -33,6 +34,24 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `POST /api/vcs.commit-op` | JSON 请求体 `{ sessionId, repo, action, sha, name?, message?, mode?, checkout? }` | `tag` → `{ tag, sha }`；`branch` → `{ branch, sha, checkedOut?: true }`；`checkout` → `{ sha }`；`cherry-pick` / `revert` / `drop` / `rebase` → `{ sha, current }`；`merge` → `{ sha, current, result }`；`reset` → `{ sha, current, mode }`（仅 `capabilities.commitOps` 为真时可用） |
 | `POST /api/vcs.stage` | JSON 请求体 `{ sessionId, repo, scope, path, oldPath?, fingerprint?, lines? }`，或目录与分组的 `{ sessionId, repo, scope, files }` | `{ scope, path, fileCount? }`（仅 `capabilities.stageOps` 为真时可用） |
 | `POST /api/vcs.stage-history` | JSON 请求体 `{ sessionId, repo, action: 'undo' \| 'redo', id }` | `{ action, stageHistory }`（仅 `capabilities.stageOps` 为真时可用） |
+
+### 自动刷新订阅
+
+- `vcs.watch` 使用同源 SSE。页签与文档可见时建立连接，隐藏或切换范围时关闭连接。
+  `ready` 后客户端补查，以覆盖隐藏期间和连接建立前的变化。
+  自动刷新期间保留上次成功数据。
+- `invalidate` 携带 `working`、`history` 或 `repositories`。
+  客户端防抖合并域。同一域只运行一次读取，期间到达的通知合成一次待处理刷新。
+  写入或对话期间暂缓读取。面板写入带 `X-VCS-Client`，若事件的 `origin` 匹配该面板，它使用操作完成后的显式刷新。
+- Git 用独立的工作树监听与元数据监听。
+  后者覆盖每棵工作树的 `HEAD`、index 和公共引用存储，动态监听当前分支与上游引用，并过滤锁文件与 Watchman cookie。
+  macOS 和 Windows 优先用原生递归监听，其他平台按目录数量设限。
+  超出监听范围的变更可通过会话事件、重新激活或手动刷新发现。
+- Git 状态读取由 Host 按仓库根单飞。
+  写入或工作树变更会使在途读取失效，后续请求等待一次新的共享读取。
+- Jujutsu 监听 `op_heads/heads`，以操作头标识避免重复通知。
+  自动状态请求带 `readOnly=1`，比较按不可变提交 ID 读取。
+  Host 在有变更的会话回合结束后为匹配的已选工作区安排快照，隐藏时留待重新订阅。
 
 ### 输入校验与路径边界
 
@@ -231,9 +250,9 @@ Git 工作树预览保留 Git 的读取能力。单选其他工作树或多选�
   若有远程引用则通过 `remoteNames` 复用最长远程名匹配，给每个引用补上 `remote` 与 `branch`；
   `origin/HEAD` 这类符号引用不标注。
   前端据此只对带这两个字段的远程徽标开放菜单，服务端仍会再次校验。
-- **Jujutsu 多工作区与快照**：Client 串行请求勾选工作区的 `status`，
-  各通过一次 `jj log --no-graph -r @ -T commit_id` 快照；
-  同路径的并发请求复用快照 Promise。 Client 等这些状态请求完成后再读历史。
+- **Jujutsu 多工作区与快照**：手动刷新串行请求勾选工作区的 `status`，
+  各通过一次 `jj log --no-graph -r @ -T commit_id` 快照，完成后再读历史。
+  同路径的并发请求复用快照 Promise。自动状态与历史读取均从已有快照取数据。
   单选入口时读取 `::@ ~ root()`，其他选择用已验证的提交 ID 构造祖先并集；`all` 始终读取 `all() ~ root()`。
   历史不会启动快照；客户端按共享存储中的确切提交 ID 读取详情与 `jj diff --git -r <rev>`，也不触发快照。
   轮末 `head` 仅读取记录的 `change_id`。 `diff` 输出含 NUL 或 `U+FFFD` 时按二进制处理。
@@ -419,7 +438,7 @@ type TurnSummary = {
 | 历史分页 / 最多加载提交数 | 300 条/页，最多 10,000 条 | Host `log` |
 | 单会话保留的轮末头指针 / 客户端空闲轮次摘要缓存 | 2,000 轮 / 500 条 | Host `TurnTracker`、Client `turn-summary` |
 | 单条后端命令 | 30 s 超时（远程抓取与推送 120 s，含钩子），stdout 8 MB，stderr 尾部 16 KB，终止宽限 2 s | Host `CommandRunner`、`lib/sync.js`、`lib/branch-ops.js`、`lib/tag-ops.js`、`lib/commit-ops.js` |
-| Jujutsu 快照频率 | 每次刷新每棵勾选树一次 | Jujutsu 后端 |
+| Jujutsu 快照频率 | 手动刷新每棵勾选树一次，有变更的 Agent 回合快照所在工作区 | Jujutsu 后端与 Host 订阅 |
 | 加载轮廓与进度线的淡入延迟 | 180 ms（`--vcs-skeleton-delay`） | Client `styles.css` |
 | 转动图标：巡航周期 / 起转 / 收尾滑行 | 900 ms 一圈（减少动效 2,400 ms）/ 加速 90° / 250–1,000 ms | Client `turning.js` |
 | 进度线淡出 | 240 ms（`PROGRESS_FADE`） | Client `TopBar.jsx`、`styles.css` |

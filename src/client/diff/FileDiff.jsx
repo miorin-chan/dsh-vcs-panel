@@ -326,12 +326,23 @@ function floatingTop(root, anchor) {
   return Math.max(8, Math.min(maxTop, above))
 }
 
+/** A noncollapsed browser selection that uses any text in this comparison. */
+function nativeDiffSelection(body) {
+  if (body === null) return null
+  const selection = body.ownerDocument?.getSelection?.() ?? globalThis.window?.getSelection?.()
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null
+  for (let index = 0; index < selection.rangeCount; index += 1) {
+    if (selection.getRangeAt(index).intersectsNode?.(body)) return selection
+  }
+  return null
+}
+
 /**
  * The hunks of a text comparison with their line numbers, unified or side by side.
  */
 function TextDiff({
   diff, split, wrap, onStageLines, stageScope, stageDisabled, stageSources, showStageState,
-  onRegisterHunks, onRegisterSelectionClear, t, locale,
+  onRegisterHunks, onRegisterSelectionClear, onInteractionChange, selectionScope, t, locale,
 }) {
   const note = noteOf(diff)
   const { hunks, truncated } = useMemo(() => renderedHunks(diff.hunks), [diff.hunks])
@@ -341,9 +352,25 @@ function TextDiff({
   const onHorizontalScroll = useHorizontalScrollFlag()
   const [selection, setSelection] = useState(null) // { mode: 'gutter' | 'text', side, keys: string[], top: number }
   const dragRef = useRef(null)
+  const gutterReleaseRef = useRef(null)
   const lastAnchorRef = useRef(null) // { side, seq }
   const suppressClickRef = useRef(false)
   const selectingSideRef = useRef(null)
+  const textPointerRef = useRef(null)
+  const selectionRef = useRef(null)
+  const pendingWritesRef = useRef(new Set())
+  const interactionRef = useRef(false)
+
+  const reportInteraction = useCallback(() => {
+    if (onInteractionChange === undefined) return
+    const body = bodyRef.current
+    const active = body !== null && (dragRef.current !== null || gutterReleaseRef.current !== null
+      || textPointerRef.current !== null || selectionRef.current !== null || pendingWritesRef.current.size > 0
+      || nativeDiffSelection(body) !== null)
+    if (active === interactionRef.current) return
+    interactionRef.current = active
+    onInteractionChange(active)
+  }, [onInteractionChange])
 
   const canStage = showStageState || (!truncated && diff.lineStaging === true
     && typeof diff.fingerprint === 'string' && typeof onStageLines === 'function')
@@ -397,23 +424,42 @@ function TextDiff({
     return { stageTargets: maps, targetByKey: byKey, orderedBySide: bySide }
   }, [canStage, hunks, locale, stageScope, t])
 
-  // Clear selection whenever the diff, view mode, or wrap changes.
-  useEffect(() => {
+  // Scope changes and explicit refreshes end a selection before it can act
+  // on a different comparison. Equal background payloads keep `diff` stable.
+  useLayoutEffect(() => {
+    const body = bodyRef.current
     setSelection(null)
     dragRef.current = null
+    textPointerRef.current = null
+    selectingSideRef.current = null
     lastAnchorRef.current = null
-  }, [diff, split, wrap])
+    selectionRef.current = null
+    pendingWritesRef.current = new Set()
+    if (body !== null) delete body.dataset.selectingSide
+    return () => {
+      clearTimeout(gutterReleaseRef.current)
+      gutterReleaseRef.current = null
+      suppressClickRef.current = false
+      if (interactionRef.current) onInteractionChange?.(false)
+      interactionRef.current = false
+      nativeDiffSelection(body)?.removeAllRanges()
+    }
+  }, [diff, split, wrap, selectionScope, onInteractionChange])
+
+  useLayoutEffect(() => {
+    selectionRef.current = selection
+    reportInteraction()
+  }, [selection, reportInteraction])
 
   const clearSelection = useCallback(() => {
-    if (selection === null) return false
+    const native = nativeDiffSelection(bodyRef.current)
+    if (selection === null && native === null && dragRef.current === null) return false
     setSelection(null)
     dragRef.current = null
-    if (selection.mode === 'text' && typeof window !== 'undefined') {
-      const native = window.getSelection?.()
-      if (native !== null && native !== undefined && !native.isCollapsed) native.removeAllRanges?.()
-    }
+    native?.removeAllRanges()
+    reportInteraction()
     return true
-  }, [selection])
+  }, [selection, reportInteraction])
 
   useLayoutEffect(() => {
     if (onRegisterSelectionClear === undefined) return undefined
@@ -448,8 +494,17 @@ function TextDiff({
 
   const applyChanges = useCallback(async (source, lines, meta) => {
     if (!canApply(source) || lines.length === 0) return false
-    return await source.onStageLines(source.fingerprint, lines, meta)
-  }, [canApply])
+    const pendingWrites = pendingWritesRef.current
+    const write = {}
+    pendingWrites.add(write)
+    reportInteraction()
+    try {
+      return await source.onStageLines(source.fingerprint, lines, meta)
+    } finally {
+      pendingWrites.delete(write)
+      reportInteraction()
+    }
+  }, [canApply, reportInteraction])
 
   const hunkSpecs = useMemo(() => hunks.map((_, position) => {
     const targets = stageTargets[position]
@@ -582,7 +637,7 @@ function TextDiff({
     if (typeof window === 'undefined') return undefined
     const onPointerMove = event => {
       const drag = dragRef.current
-      if (drag === null) return
+      if (drag === null || event.pointerId !== drag.pointerId) return
       const doc = bodyRef.current?.ownerDocument
       const hit = doc?.elementFromPoint?.(event.clientX, event.clientY)
       const cell = hit === null || hit === undefined
@@ -596,25 +651,33 @@ function TextDiff({
       drag.moved = true
       applyGutterRange(drag.side, drag.startSeq, seq)
     }
-    const onPointerUp = () => {
+    const onPointerUp = event => {
       const drag = dragRef.current
-      if (drag === null) return
+      if (drag === null || (event.type !== 'blur' && event.pointerId !== drag.pointerId)) return
       dragRef.current = null
       if (drag.moved) {
         suppressClickRef.current = true
-        setTimeout(() => { suppressClickRef.current = false }, 0)
         lastAnchorRef.current = { side: drag.side, seq: drag.currentSeq }
       }
+      // Keep the original line under the pointer until its click can dispatch.
+      clearTimeout(gutterReleaseRef.current)
+      gutterReleaseRef.current = setTimeout(() => {
+        gutterReleaseRef.current = null
+        suppressClickRef.current = false
+        reportInteraction()
+      }, 0)
     }
     window.addEventListener('pointermove', onPointerMove)
     window.addEventListener('pointerup', onPointerUp)
     window.addEventListener('pointercancel', onPointerUp)
+    window.addEventListener('blur', onPointerUp)
     return () => {
       window.removeEventListener('pointermove', onPointerMove)
       window.removeEventListener('pointerup', onPointerUp)
       window.removeEventListener('pointercancel', onPointerUp)
+      window.removeEventListener('blur', onPointerUp)
     }
-  }, [applyGutterRange])
+  }, [applyGutterRange, reportInteraction])
 
   // Inspect native browser text selection for multi-line code drag staging (without disturbing copy).
   const syncTextSelection = useCallback(() => {
@@ -668,26 +731,35 @@ function TextDiff({
   }, [canStage, split, targetByKey])
 
   useEffect(() => {
-    if (!canStage || typeof document === 'undefined') return undefined
+    const doc = bodyRef.current?.ownerDocument
+    const view = doc?.defaultView ?? globalThis.window
+    if (!view || (!canStage && onInteractionChange === undefined)) return undefined
     const onSelectionChange = () => {
       if (dragRef.current !== null) return
-      const native = typeof window === 'undefined' ? null : window.getSelection?.()
-      if (native === null || native === undefined || native.isCollapsed) {
-        setSelection(prev => (prev?.mode === 'text' ? null : prev))
+      if (selectionRef.current?.mode === 'text' && nativeDiffSelection(bodyRef.current) === null) {
+        setSelection(previous => (previous?.mode === 'text' ? null : previous))
       }
+      reportInteraction()
     }
-    const onWindowPointerUp = () => {
-      if (bodyRef.current?.dataset !== undefined) delete bodyRef.current.dataset.selectingSide
-      syncTextSelection()
+    const onWindowPointerUp = event => {
+      if (textPointerRef.current !== null && event.type !== 'blur' && event.pointerId !== textPointerRef.current) return
+      if (bodyRef.current !== null) delete bodyRef.current.dataset.selectingSide
+      if (event.type === 'pointerup') syncTextSelection()
       selectingSideRef.current = null
+      textPointerRef.current = null
+      reportInteraction()
     }
-    document.addEventListener('selectionchange', onSelectionChange)
-    window.addEventListener('pointerup', onWindowPointerUp)
+    doc.addEventListener('selectionchange', onSelectionChange)
+    view.addEventListener('pointerup', onWindowPointerUp)
+    view.addEventListener('pointercancel', onWindowPointerUp)
+    view.addEventListener('blur', onWindowPointerUp)
     return () => {
-      document.removeEventListener('selectionchange', onSelectionChange)
-      window.removeEventListener('pointerup', onWindowPointerUp)
+      doc.removeEventListener('selectionchange', onSelectionChange)
+      view.removeEventListener('pointerup', onWindowPointerUp)
+      view.removeEventListener('pointercancel', onWindowPointerUp)
+      view.removeEventListener('blur', onWindowPointerUp)
     }
-  }, [canStage, syncTextSelection])
+  }, [canStage, onInteractionChange, reportInteraction, syncTextSelection])
 
   const handleNumberPointerDown = (event, target, seq, side) => {
     if (event.button !== undefined && event.button !== 0) return
@@ -695,6 +767,7 @@ function TextDiff({
     event.stopPropagation()
     const source = sourceFor(target.origin.side)
     if (!canApply(source)) return
+    nativeDiffSelection(bodyRef.current)?.removeAllRanges()
     if (event.shiftKey && lastAnchorRef.current !== null && lastAnchorRef.current.side === side) {
       suppressClickRef.current = true
       setTimeout(() => { suppressClickRef.current = false }, 0)
@@ -716,7 +789,8 @@ function TextDiff({
       lastAnchorRef.current = { side, seq }
       return
     }
-    dragRef.current = { side, startSeq: seq, currentSeq: seq, moved: false }
+    dragRef.current = { pointerId: event.pointerId, side, startSeq: seq, currentSeq: seq, moved: false }
+    reportInteraction()
   }
 
   const handleNumberPointerEnter = (seq, side) => {
@@ -749,6 +823,11 @@ function TextDiff({
     if (findAncestor(target, bodyRef.current, node => node?.classList?.contains?.('vcs-diff-selection-bar'))) return
     if (findAncestor(target, bodyRef.current, node => node?.dataset?.lineStageable !== undefined)) return
     if (selection?.mode === 'gutter') setSelection(null)
+    if (onInteractionChange !== undefined && event.button === 0
+      && findAncestor(target, bodyRef.current, node => node?.dataset?.diffRowSeq !== undefined) !== null) {
+      textPointerRef.current = event.pointerId
+      reportInteraction()
+    }
     if (split) {
       const cell = findAncestor(target, bodyRef.current, node => node?.dataset?.diffSide !== undefined)
       const side = cell?.dataset?.diffSide ?? null
@@ -1010,7 +1089,7 @@ function diffSkeleton(label) {
  */
 export function FileDiff({
   state, split, wrap, retry, onStageLines, stageScope, stageDisabled, stageSources, showStageState,
-  onRegisterHunks, onRegisterSelectionClear, t, locale,
+  onRegisterHunks, onRegisterSelectionClear, onInteractionChange, selectionScope, t, locale,
 }) {
   let content
   if (state === undefined || state === 'loading') {
@@ -1033,7 +1112,7 @@ export function FileDiff({
     const oneSided = isOneSided(state)
     content = h(TextDiff, {
       diff: state, split: split && !oneSided, wrap, onStageLines, stageScope, stageDisabled,
-      stageSources, showStageState, onRegisterHunks, onRegisterSelectionClear, t, locale,
+      stageSources, showStageState, onRegisterHunks, onRegisterSelectionClear, onInteractionChange, selectionScope, t, locale,
     })
   }
   return h('div', { className: 'vcs-diff-root' }, content)

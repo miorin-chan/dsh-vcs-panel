@@ -23,6 +23,7 @@
 import { createHandlers } from './lib/handlers.js'
 import { createTurnTracker } from './lib/turns.js'
 import { createBackends } from './lib/vcs/index.js'
+import { createWatchHub } from './lib/watch.js'
 
 export { createHandlers } from './lib/handlers.js'
 export { createTurnTracker } from './lib/turns.js'
@@ -43,6 +44,7 @@ const ROUTES = [
   { path: '/api/vcs.repositories', key: 'repositories', method: 'GET' },
   { path: '/api/vcs.repository-config', handlers: { GET: 'repositoryConfig', POST: 'saveRepositoryConfig' } },
   { path: '/api/vcs.repository-preview', key: 'repositoryPreview', method: 'GET' },
+  { path: '/api/vcs.watch', key: 'watch', method: 'GET' },
   { path: '/api/vcs.status', key: 'status', method: 'GET' },
   { path: '/api/vcs.branches', key: 'branches', method: 'GET' },
   { path: '/api/vcs.remotes', key: 'remotes', method: 'GET' },
@@ -87,7 +89,10 @@ export function apply(ctx, config) {
   const turnTracker = createTurnTracker(ctx, { backends, signal: lifetime.signal })
   ctx.effect(() => turnTracker.attach(), 'dsh-vcs-panel: turn heads')
 
-  const handlers = createHandlers(ctx, { backends, turnTracker })
+  const watchHub = createWatchHub(ctx, { signal: lifetime.signal })
+  ctx.effect(() => watchHub.attach(), 'dsh-vcs-panel: refresh signals')
+
+  const handlers = createHandlers(ctx, { backends, turnTracker, watchHub })
 
   for (const { path, key, method, handlers: byMethod = { [method]: key } } of ROUTES) {
     ctx.effect(

@@ -751,7 +751,12 @@ export function TopBar({
       >
         <LockIcon />
       </span>
-      <IconButton label={t('top.refresh')} title={refreshing ? t('top.refreshing') : undefined} onClick={() => { onRefresh() }} busy={refreshing}>
+      <IconButton
+        label={t(capabilities?.snapshots === true ? 'top.refreshSnapshots' : 'top.refresh')}
+        title={refreshing ? t('top.refreshing') : undefined}
+        onClick={() => { onRefresh() }}
+        busy={refreshing}
+      >
         <Turning turning={refreshing}><RefreshIcon /></Turning>
       </IconButton>
       <ProgressLine

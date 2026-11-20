@@ -5,12 +5,11 @@
  * commits) and one detail pane for the selected node. Host data is read
  * through `api.js`; this component owns request lifecycle, selection, paging,
  * layout, and the sessionStorage-backed state. `focusRequest` signals that the
- * Sidebar opened or revealed the pane, so it can refresh and prepare keyboard
- * navigation.
+ * Sidebar opened or revealed the pane, so it can prepare keyboard navigation.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { createApi } from './api.js'
+import { ApiError, createApi } from './api.js'
 import {
   loadState, nodePatch, saveState, SIDEBAR_MAX, SIDEBAR_MIN, WORKING_COPY, WORKTREE, worktreeNode, worktreePath,
 } from './state.js'
@@ -22,7 +21,7 @@ import {
   errorMessage, formatPlural,
 } from './format.js'
 import {
-  BACK, canClaimFocusFrom, findAncestor, hasAttr, hasClass, isDiscreteActionButton, isEditableTarget,
+  BACK, canClaimFocusFrom, findAncestor, hasClass, isDiscreteActionButton, isEditableTarget,
   isNavigationStop, isOverlayOrMenuTarget, isOverlayTarget, movement, rowStep, zoneOf,
 } from './keys.js'
 import { dirKey } from './detail/tree.js'
@@ -38,6 +37,7 @@ import { TagDialog } from './TagDialog.jsx'
 import { CommitDialog } from './CommitDialog.jsx'
 import { RepositoryConfigDialog } from './RepositoryConfigDialog.jsx'
 import { useRepoActions } from './useRepoActions.js'
+import { useVcsWatch } from './useVcsWatch.js'
 import { TimelineSkeleton, TreeSkeleton } from './skeleton.jsx'
 
 /** Rows per history page. */
@@ -55,6 +55,13 @@ const UNSTAGED_PREFIX = 'unstaged|'
 /** Empty status answer. */
 const IDLE_STATUS = Object.freeze({ status: 'idle', data: null, error: null })
 const NO_WORKTREE_ROWS = Object.freeze([])
+const INITIAL_REVISIONS = Object.freeze({ working: 0, history: 0, repositories: 0 })
+
+function advanceRevisions(previous, domains) {
+  const next = { ...previous }
+  for (const domain of domains) next[domain] += 1
+  return next
+}
 
 /** Empty history answer. */
 function idleLog() {
@@ -92,16 +99,24 @@ export function VcsView({
   const timelineScrollRef = useRef(state.timelineScroll)
   const persistTimer = useRef(null)
 
-  const api = useMemo(() => createApi(sessionId), [sessionId])
+  const [clientId] = useState(() => globalThis.crypto.randomUUID?.()
+    ?? Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''))
+  const api = useMemo(() => createApi(sessionId, { clientId }), [clientId, sessionId])
   const [repositories, setRepositories] = useState({ status: 'loading', list: [], truncated: false, worktreesTruncated: false, error: null })
   const [repositoryManagement, setRepositoryManagement] = useState(null)
   const manageCurrentRepositories = repositoryManagement?.sessionId === sessionId
   const [statuses, setStatuses] = useState({})
   const [settledStatusKey, setSettledStatusKey] = useState(null)
   const [log, setLog] = useState(idleLog)
-  const [revision, setRevision] = useState(0)
-  // The action whose refresh is waiting for status, including 'auto' on activation.
+  const [manual, setManual] = useState(INITIAL_REVISIONS)
+  const [background, setBackground] = useState(INITIAL_REVISIONS)
+  const [settledRepositoriesKey, setSettledRepositoriesKey] = useState(null)
+  const [settledHistoryKey, setSettledHistoryKey] = useState(null)
+  const [detailInteracting, setDetailInteracting] = useState(false)
+  // The toolbar action whose foreground read is in progress.
   const [refreshing, setRefreshing] = useState(null)
+  const refreshingRef = useRef(refreshing)
+  refreshingRef.current = refreshing
   const [width, setWidth] = useState(0)
   // The column the single-column layout shows: 'timeline' or 'detail'.
   const [singleView, setSingleView] = useState('timeline')
@@ -118,7 +133,7 @@ export function VcsView({
   const sessionRef = useRef(sessionId)
   const logKeyRef = useRef('')
   const dragRef = useRef(null)
-  const attemptedDirsRef = useRef(new Set())
+  const attemptedDirsRef = useRef(new Map())
   const directoryRequestsRef = useRef(new Map())
   const perRepoRef = useRef(new Map())
   const pageControllerRef = useRef(null)
@@ -149,7 +164,10 @@ export function VcsView({
   const checkedTrees = useMemo(() => checkedWorktrees(worktrees, state.worktrees), [worktrees, state.worktrees])
   const checkedPaths = checkedTrees.map(tree => tree.path)
   const statusPathsKey = JSON.stringify(checkedPaths.length > 0 ? checkedPaths : state.repo === null ? [] : [state.repo])
-  const statusKey = JSON.stringify([state.repo, revision, statusPathsKey])
+  const statusScope = JSON.stringify([sessionId, state.repo, manual.working, statusPathsKey])
+  const statusKey = JSON.stringify([statusScope, background.working])
+  const repositoriesScope = JSON.stringify([sessionId, manual.repositories])
+  const repositoriesKey = JSON.stringify([repositoriesScope, background.repositories])
   const statusPath = checkedPaths[0] ?? state.repo
   const status = statuses[statusPath] ?? IDLE_STATUS
   const missingTool = status.status === 'error' && status.error?.code === 'vcs-missing'
@@ -157,7 +175,8 @@ export function VcsView({
   const baseCapabilities = repoInfo?.capabilities ?? status.data?.capabilities ?? null
   const commitBased = baseCapabilities?.workingCopy === 'commit'
   const snapshots = baseCapabilities?.snapshots === true
-  const waitingForSnapshots = snapshots && settledStatusKey !== statusKey
+  const waitingForRepositories = refreshing === 'refresh' && settledRepositoriesKey !== repositoriesKey
+  const waitingForSnapshots = snapshots && refreshing === 'refresh' && settledStatusKey !== statusKey
   const capabilities = useMemo(() => showCurrentHead || baseCapabilities === null ? baseCapabilities : {
     ...baseCapabilities, sync: false, branchSwitch: false, branchOps: false, tagOps: false, commitOps: false, stageOps: false,
   }, [baseCapabilities, showCurrentHead])
@@ -168,7 +187,9 @@ export function VcsView({
   const historyPathsKey = !showCurrentHead && (state.ref !== 'all' || snapshots) ? statusPathsKey : '[]'
   const historyWorktrees = useMemo(() => JSON.parse(historyPathsKey), [historyPathsKey])
   const historyScope = JSON.stringify([state.repo, state.ref, state.ref === 'all' ? [] : historyWorktrees])
-  const historyKey = JSON.stringify([historyScope, revision, snapshots ? statusPathsKey : null])
+  const historyReadScope = JSON.stringify([sessionId, historyScope, manual.history, snapshots ? statusPathsKey : null])
+  const historyKey = JSON.stringify([historyReadScope, background.history])
+  const revision = manual.working
   const historyKeyRef = useRef(historyKey)
   historyKeyRef.current = historyKey
   const currentHistory = logKeyRef.current === historyKey
@@ -216,6 +237,7 @@ export function VcsView({
   const detailRoot = selectedWorktree?.path ?? state.repo
   const detailApi = detailRoot === state.repo ? api : siblingApi
   const detailStatus = selectedTree === null ? status : statuses[selectedTree.path] ?? IDLE_STATUS
+  const backgroundDiffRevision = detailStatus.backgroundRevision ?? 0
   const canStage = capabilities?.stageOps === true && selectedWorktree?.path === state.repo
   const anchorHead = showCurrentHead ? worktreeRows[0]?.head ?? null : null
   const graphWorktreesKey = JSON.stringify(worktreeRows.map(({ id, head }) => ({ id, head })))
@@ -321,20 +343,29 @@ export function VcsView({
     if (Object.keys(patch).length > 0) update(patch)
   }, [resetDirectories, update])
 
-  /**
-   * Refresh repositories, status, history, and every open comparison.
-   * `requester` identifies the action that owns the progress indicator.
-   */
+  /** Refresh the domains affected by the explicit action. */
   const refresh = useCallback((requester = 'refresh') => {
+    const domains = requester === 'stage' ? ['working']
+      : requester === 'tag' ? ['history']
+        : requester === 'repositories' ? ['repositories']
+          : requester === 'refresh' ? Object.keys(INITIAL_REVISIONS) : ['working', 'history']
     setRefreshing(requester)
-    if (requester !== 'auto') setNotice(null)
-    pageControllerRef.current?.abort()
-    pageControllerRef.current = null
-    resetDirectories()
-    diffCacheRef.current.clear()
-    commitCacheRef.current.clear()
-    setRevision(value => value + 1)
+    setNotice(null)
+    if (domains.includes('working')) {
+      resetDirectories()
+      diffCacheRef.current.clear()
+    }
+    if (domains.includes('history')) {
+      pageControllerRef.current?.abort()
+      pageControllerRef.current = null
+      commitCacheRef.current.clear()
+    }
+    setManual(previous => advanceRevisions(previous, domains))
   }, [resetDirectories])
+
+  const refreshInBackground = useCallback(domains => {
+    setBackground(previous => advanceRevisions(previous, domains))
+  }, [])
 
   /**
    * Drop everything that described the old HEAD after a checkout: selection,
@@ -487,10 +518,12 @@ export function VcsView({
     return () => { observer.disconnect() }
   }, [])
 
-  // Repositories: reload on mount and refresh.
+  const lastRepositoryScope = useRef(null)
+  // Rediscover repositories independently of working-tree and history reads.
   useEffect(() => {
     const controller = new AbortController()
-    setRepositories(previous => ({ ...previous, status: previous.list.length === 0 ? 'loading' : 'ready', error: null }))
+    const foreground = lastRepositoryScope.current !== repositoriesScope
+    if (foreground) setRepositories(previous => ({ ...previous, status: previous.list.length === 0 ? 'loading' : 'ready', error: null }))
     api.repositories(controller.signal).then(answer => {
       if (controller.signal.aborted) return
       const list = Array.isArray(answer?.repositories) ? answer.repositories : []
@@ -508,58 +541,86 @@ export function VcsView({
         const checked = checkedWorktrees(repositoryWorktrees(nextEntry), previous).map(tree => tree.path)
         if (!samePaths(checked, previous)) update({ worktrees: checked })
       }
-      if (list.length === 0) setRefreshing(null)
+      if (foreground && list.length === 0) setRefreshing(null)
     }).catch(error => {
       if (error?.name === 'AbortError' || controller.signal.aborted) return
-      setRepositories({ status: 'error', list: [], truncated: false, worktreesTruncated: false, error })
-      setRefreshing(null)
+      if (foreground) {
+        setRepositories({ status: 'error', list: [], truncated: false, worktreesTruncated: false, error })
+        setRefreshing(null)
+      }
+    }).finally(() => {
+      if (controller.signal.aborted) return
+      lastRepositoryScope.current = repositoriesScope
+      setSettledRepositoriesKey(repositoriesKey)
+      if (foreground) setRefreshing(action => action === 'repositories' ? null : action)
     })
     return () => { controller.abort() }
-  }, [api, revision, switchRepo, update])
+  }, [api, repositoriesKey, repositoriesScope, switchRepo, update])
 
-  // Snapshotting backends serialize refreshes of the shared store so working
-  // copies don't create concurrent operations in the same repository.
+  const lastStatusScope = useRef(null)
+  // Jujutsu status snapshots only for the manual refresh button. Snapshot reads
+  // serialize within the shared store; other status reads can run in parallel.
   useEffect(() => {
-    if (!repositoryReady) return undefined
+    if (!repositoryReady || waitingForRepositories) return undefined
     const controller = new AbortController()
     const paths = JSON.parse(statusPathsKey)
-    if (snapshots) setSettledStatusKey(null)
-    setStatuses(previous => Object.fromEntries(paths.map(path => {
+    const foreground = lastStatusScope.current !== statusScope
+    const snapshot = snapshots && foreground && refreshingRef.current === 'refresh'
+    if (foreground) setStatuses(previous => Object.fromEntries(paths.map(path => {
       const data = previous[path]?.data ?? null
-      return [path, { status: data === null ? 'loading' : 'refreshing', data, error: null }]
+      return [path, { status: data === null ? 'loading' : 'refreshing', data, error: null, backgroundRevision: previous[path]?.backgroundRevision }]
     })))
     let cursor = 0
+    const backgroundResults = {}
     async function readStatus() {
       while (!controller.signal.aborted && cursor < paths.length) {
         const path = paths[cursor++]
         const reader = path === state.repo ? api : siblingApi
         try {
-          const data = await reader.status(path, controller.signal)
+          const data = await reader.status(path, controller.signal, { readOnly: snapshots && !snapshot })
           if (controller.signal.aborted) return
-          setStatuses(previous => ({ ...previous, [path]: { status: 'ready', data, error: null } }))
+          const next = { status: 'ready', data, error: null }
+          if (foreground) {
+            setStatuses(previous => ({ ...previous, [path]: { ...next, backgroundRevision: previous[path]?.backgroundRevision } }))
+          } else backgroundResults[path] = { ...next, backgroundRevision: background.working }
         } catch (error) {
           if (error?.name === 'AbortError' || controller.signal.aborted) return
-          setStatuses(previous => ({ ...previous, [path]: { status: 'error', data: previous[path]?.data ?? null, error } }))
+          const next = { status: 'error', data: null, error }
+          if (foreground) setStatuses(previous => ({
+            ...previous, [path]: { ...previous[path], ...next, data: previous[path]?.data ?? null },
+          }))
+          else backgroundResults[path] = next
         }
       }
     }
-    const concurrency = snapshots ? 1 : STATUS_CONCURRENCY
+    const concurrency = snapshot ? 1 : STATUS_CONCURRENCY
     Promise.all(Array.from({ length: Math.min(paths.length, concurrency) }, readStatus)).then(() => {
       if (controller.signal.aborted) return
-      if (snapshots) setSettledStatusKey(statusKey)
-      setRefreshing(null)
+      lastStatusScope.current = statusScope
+      setSettledStatusKey(statusKey)
+      if (foreground) {
+        setRefreshing(action => action === 'tag' || action === 'repositories' ? action : null)
+      } else {
+        setStatuses(previous => {
+          const next = { ...previous }
+          for (const [path, result] of Object.entries(backgroundResults)) {
+            if (result.status === 'ready' || previous[path]?.data == null) next[path] = result
+          }
+          return next
+        })
+      }
     })
     return () => { controller.abort() }
-  }, [api, repositoryReady, siblingApi, snapshots, state.repo, statusKey, statusPathsKey])
+  }, [api, background.working, repositoryReady, siblingApi, snapshots, state.repo, statusKey, statusPathsKey, statusScope, waitingForRepositories])
 
   useEffect(() => {
-    if (!repositoryReady) return
+    if (!repositoryReady || detailInteracting) return
     const current = stateRef.current
     const node = preferredViewNode(current, treeViews, status.data, commitBased)
     if (node !== null && node !== current.node) {
       selectNode(node, current.nodeChosen && (current.node === WORKTREE || current.node === WORKING_COPY))
     }
-  }, [commitBased, repositoryReady, selectNode, status.data, treeViews])
+  }, [commitBased, detailInteracting, repositoryReady, selectNode, status.data, treeViews])
 
   // Keep an all-range timeline in place when only its working states change.
   useEffect(() => {
@@ -577,79 +638,70 @@ export function VcsView({
     abortDirectoryRequests()
   }, [abortDirectoryRequests])
 
-  // First history page, invalidated by refresh.
+  const lastHistoryScope = useRef(null)
+  const loadedHistoryLength = useRef(0)
+  loadedHistoryLength.current = log.commits.length
+  const validHistoryRange = baseCapabilities === null || !Array.isArray(baseCapabilities.ranges)
+    || baseCapabilities.ranges.some(range => range.value === state.ref)
+  // A background history read keeps the previous graph usable and replaces all
+  // loaded pages together, so readers beyond the first page keep their place.
   useEffect(() => {
-    if (!repositoryReady || waitingForSnapshots) return undefined
-    if (baseCapabilities !== null && Array.isArray(baseCapabilities.ranges) && !baseCapabilities.ranges.some(range => range.value === state.ref)) return undefined
-    if (logKeyRef.current === historyKey) return undefined
+    if (!repositoryReady || waitingForRepositories || waitingForSnapshots || !validHistoryRange || logKeyRef.current === historyKey) return undefined
     const controller = new AbortController()
-    let settled = false
-    setLog(previous => ({ ...previous, status: 'loading', loadingMore: false, error: null }))
-    api.log(state.repo, { ref: state.ref, worktrees: historyWorktrees, skip: 0, limit: PAGE_SIZE }, controller.signal).then(page => {
-      if (controller.signal.aborted) return
-      settled = true
+    const signal = controller.signal
+    const foreground = lastHistoryScope.current !== historyReadScope
+    const targetLength = foreground ? PAGE_SIZE : Math.max(PAGE_SIZE, loadedHistoryLength.current)
+    setLog(previous => ({ ...previous, ...(foreground ? { status: 'loading', error: null } : {}), loadingMore: false }))
+    async function readHistory() {
+      const commits = []
+      let worktreeHeads = null
+      let truncated = false
+      let hasMore = false
+      do {
+        const boundary = commits.at(-1)
+        const remaining = targetLength - commits.length
+        const limit = boundary === undefined ? PAGE_SIZE : Math.min(PAGE_SIZE, remaining + 2)
+        const page = await api.log(state.repo, {
+          ref: state.ref, worktrees: historyWorktrees, skip: boundary === undefined ? 0 : commits.length - 1, limit,
+        }, signal)
+        if (signal.aborted) return
+        const heads = Array.isArray(page?.worktreeHeads) ? page.worktreeHeads : null
+        const rows = Array.isArray(page?.commits) ? page.commits : []
+        if (boundary === undefined) worktreeHeads = heads
+        else if (rows[0]?.sha !== boundary.sha || JSON.stringify(heads) !== JSON.stringify(worktreeHeads)) {
+          throw new ApiError('internal', 'The repository changed while reading history.', 409)
+        }
+        const results = boundary === undefined ? rows : rows.slice(1)
+        commits.push(...results.slice(0, remaining))
+        truncated = page?.truncated === true && results.length <= remaining
+        hasMore = results.length > remaining || (rows.length >= limit && !truncated)
+      } while (hasMore && commits.length < targetLength)
       logKeyRef.current = historyKey
-      const commits = Array.isArray(page?.commits) ? page.commits : []
-      setLog({
-        status: 'ready',
-        commits,
-        worktreeHeads: Array.isArray(page?.worktreeHeads) ? page.worktreeHeads : null,
-        error: null,
-        truncated: page?.truncated === true,
-        hasMore: commits.length >= PAGE_SIZE && page?.truncated !== true,
-        loadingMore: false,
-      })
-    }).catch(error => {
-      if (error?.name === 'AbortError' || controller.signal.aborted) return
-      logKeyRef.current = ''
-      setLog({ ...idleLog(), status: 'error', error })
+      setLog({ status: 'ready', commits, worktreeHeads, error: null, truncated, hasMore, loadingMore: false })
+    }
+    readHistory().catch(error => {
+      if (error?.name === 'AbortError' || signal.aborted) return
+      setLog(previous => ({ ...(foreground ? idleLog() : previous), status: 'error', error }))
+    }).finally(() => {
+      if (signal.aborted) return
+      lastHistoryScope.current = historyReadScope
+      setSettledHistoryKey(historyKey)
+      if (foreground) setRefreshing(action => action === 'tag' ? null : action)
     })
-    return () => {
-      controller.abort()
-      if (!settled && logKeyRef.current === historyKey) logKeyRef.current = ''
-    }
-  }, [api, baseCapabilities, historyKey, historyWorktrees, repositoryReady, state.repo, state.ref, waitingForSnapshots])
+    return () => { controller.abort() }
+  }, [api, historyKey, historyReadScope, historyWorktrees, repositoryReady, state.repo, state.ref, validHistoryRange, waitingForRepositories, waitingForSnapshots])
 
-  const handledFocusRequest = useRef(focusRequest)
-  const canAutoRefresh = useRef(false)
-  canAutoRefresh.current = visible && !hasOpenOverlay && !actions.repoBusy && refreshing === null
-    && repositories.status !== 'loading'
-    && !Object.values(statuses).some(entry => entry.status === 'loading' || entry.status === 'refreshing')
-
-  // The first mount already loads the data. On later activations, group the
-  // pane, window, and document events that can accompany a single focus change.
-  useEffect(() => {
-    const opened = handledFocusRequest.current !== focusRequest
-    handledFocusRequest.current = focusRequest
-    if (!visible) return undefined
-    let frame = null
-    const queueRefresh = () => {
-      if (frame !== null || !canAutoRefresh.current || document.visibilityState !== 'visible') return
-      frame = requestAnimationFrame(() => {
-        frame = null
-        if (canAutoRefresh.current && document.visibilityState === 'visible') refresh('auto')
-      })
-    }
-    const onFocusIn = ({ target, relatedTarget }) => {
-      // A missing origin can be focus restoration after a render or window switch.
-      if (relatedTarget == null) return
-      const root = rootRef.current
-      const pane = findAncestor(root, null, node => (
-        hasAttr(node, 'data-dockkit-pane') || hasAttr(node, 'data-dockkit-float')
-      )) ?? root
-      if (pane?.contains(target) && !pane.contains(relatedTarget)) queueRefresh()
-    }
-    document.addEventListener('focusin', onFocusIn)
-    document.addEventListener('visibilitychange', queueRefresh)
-    window.addEventListener('focus', queueRefresh)
-    if (opened) queueRefresh()
-    return () => {
-      if (frame !== null) cancelAnimationFrame(frame)
-      document.removeEventListener('focusin', onFocusIn)
-      document.removeEventListener('visibilitychange', queueRefresh)
-      window.removeEventListener('focus', queueRefresh)
-    }
-  }, [focusRequest, refresh, sessionId, visible])
+  useVcsWatch({
+    api,
+    repo: repositoryReady ? state.repo : null,
+    pathsKey: repositoryReady ? statusPathsKey : '[]',
+    visible: visible && settledRepositoriesKey !== null && sessionRef.current === sessionId,
+    blocked: actions.repoBusy || hasOpenOverlay || refreshing !== null,
+    repositories: settledRepositoriesKey !== repositoriesKey,
+    working: repositoryReady && settledStatusKey !== statusKey,
+    history: repositoryReady && validHistoryRange && settledHistoryKey !== historyKey,
+    onRefresh: refreshInBackground,
+  })
 
   // A different Session may reuse this component instance; reload its state.
   useEffect(() => {
@@ -836,50 +888,52 @@ export function VcsView({
   }, [api])
 
   /** Load the direct children of one untracked directory. */
-  const expandUntracked = useCallback(async (key, path) => {
+  const expandUntracked = useCallback(async (key, path, silent = false) => {
     if (!repositoryReady || detailRoot === null || directoryRequestsRef.current.has(key)) return
     const controller = new AbortController()
     directoryRequestsRef.current.set(key, controller)
-    attemptedDirsRef.current.add(key)
-    setLoadingDirs(previous => ({ ...previous, [key]: true }))
+    attemptedDirsRef.current.set(key, backgroundDiffRevision)
+    if (!silent) setLoadingDirs(previous => ({ ...previous, [key]: true }))
     try {
       const answer = await detailApi.untracked(detailRoot, path, controller.signal)
       if (controller.signal.aborted) return
       const entries = Array.isArray(answer.entries) ? answer.entries : []
       setDirChildren(previous => ({ ...previous, [key]: entries }))
-      if (answer.truncated === true) {
+      if (!silent && answer.truncated === true) {
         setNotice({ tone: 'error', text: formatPlural(t, 'changes.untrackedTruncated', entries.length, locale) })
       }
     } catch (error) {
       if (error?.name === 'AbortError' || controller.signal.aborted) return
-      update({ dirs: omit(stateRef.current.dirs, key) })
-      setNotice({ tone: 'error', text: errorMessage(t, error) })
+      if (!silent) {
+        update({ dirs: omit(stateRef.current.dirs, key) })
+        setNotice({ tone: 'error', text: errorMessage(t, error) })
+      }
     } finally {
       if (directoryRequestsRef.current.get(key) === controller) {
         directoryRequestsRef.current.delete(key)
-        setLoadingDirs(previous => omit(previous, key))
+        if (!silent) setLoadingDirs(previous => omit(previous, key))
       }
     }
-  }, [detailApi, detailRoot, repositoryReady, t, locale, update])
+  }, [backgroundDiffRevision, detailApi, detailRoot, repositoryReady, t, locale, update])
 
-  // Re-open persisted untracked directories once their repository's status is
-  // known. The directories live in the unstaged group now; a path that is no
-  // longer an untracked directory is simply dropped.
+  // Revalidate visible untracked folders, including descendants from previously
+  // loaded listings. A cached collapsed folder is revalidated when expanded.
   useEffect(() => {
-    if (selectedWorktree === null || detailStatus.data === null) return
-    const loadable = new Set(
-      (detailStatus.data.groups?.untracked ?? [])
-        .filter(entry => entry.directory === true)
-        .map(entry => dirKey('unstaged', entry.path)),
-    )
+    if (!showDetail || selectedWorktree === null || detailStatus.data === null) return
+    const loadable = (detailStatus.data.groups?.untracked ?? [])
+      .filter(entry => entry.directory === true).map(entry => dirKey('unstaged', entry.path))
     for (const key of Object.keys(state.dirs)) {
-      if (!key.startsWith(UNSTAGED_PREFIX)) continue
-      if (!loadable.has(key)) continue
-      if (dirChildren[key] !== undefined || loadingDirs[key] === true) continue
-      if (attemptedDirsRef.current.has(key)) continue
-      void expandUntracked(key, `${key.slice(UNSTAGED_PREFIX.length)}/`)
+      if (!key.startsWith(UNSTAGED_PREFIX) || attemptedDirsRef.current.get(key) === backgroundDiffRevision) continue
+      const ancestor = loadable.find(root => key === root || key.startsWith(`${root}/`))
+      if (ancestor === undefined || state.dirs[ancestor] !== true) continue
+      const cached = dirChildren[key] !== undefined
+      const parent = key.slice(0, key.lastIndexOf('/'))
+      if (!cached && key !== ancestor && !dirChildren[parent]?.some(entry => dirKey('unstaged', entry.path) === key)) continue
+      const segments = key.slice(ancestor.length + 1).split('/').slice(0, -1)
+      if (segments.some((_, index) => state.dirs[`${ancestor}/${segments.slice(0, index + 1).join('/')}`] !== true)) continue
+      void expandUntracked(key, `${key.slice(UNSTAGED_PREFIX.length)}/`, cached)
     }
-  }, [selectedWorktree, state.dirs, detailStatus.data, dirChildren, loadingDirs, expandUntracked])
+  }, [backgroundDiffRevision, detailStatus.data, dirChildren, expandUntracked, loadingDirs, selectedWorktree, showDetail, state.dirs])
 
   /** Toggle a group or directory row; an untracked directory loads on open. */
   const toggleRow = useCallback(row => {
@@ -1076,7 +1130,7 @@ export function VcsView({
       if (controller.signal.aborted || historyKeyRef.current !== historyKey) return
       if (JSON.stringify(page?.worktreeHeads ?? null) !== JSON.stringify(log.worktreeHeads)) {
         setLog(previous => ({ ...previous, loadingMore: false }))
-        refresh()
+        refreshInBackground(['history'])
         return
       }
       const nextCommits = Array.isArray(page?.commits) ? page.commits : []
@@ -1095,7 +1149,7 @@ export function VcsView({
     } finally {
       if (pageControllerRef.current === controller) pageControllerRef.current = null
     }
-  }, [api, currentHistory, historyKey, historyWorktrees, log.commits.length, log.worktreeHeads, log.hasMore, log.loadingMore, refresh, state.repo, state.ref, t, waitingForSnapshots])
+  }, [api, currentHistory, historyKey, historyWorktrees, log.commits.length, log.worktreeHeads, log.hasMore, log.loadingMore, refreshInBackground, state.repo, state.ref, t, waitingForSnapshots])
 
   /** Keep focus on the active navigation stop across primary clicks on discrete buttons. */
   const onMouseDown = event => {
@@ -1211,7 +1265,7 @@ export function VcsView({
         <div className="vcs-center">
           <p className="vcs-empty-title">{missing ? t('error.vcsMissing') : t('repositories.error')}</p>
           <p className="vcs-note">{missing ? t('error.vcsMissingHint') : errorMessage(t, repositories.error)}</p>
-          <button type="button" className="vcs-button" onClick={refresh}>{t('error.retry')}</button>
+          <button type="button" className="vcs-button" onClick={() => { refresh() }}>{t('error.retry')}</button>
         </div>
       </div>
     )
@@ -1261,7 +1315,7 @@ export function VcsView({
         onRefMode={ref => { update({ ref }) }}
         onRefresh={() => { refresh() }}
         refreshing={refreshing === 'refresh'}
-        revalidating={refreshing === 'auto' || Object.values(statuses).some(entry => entry.status === 'refreshing')}
+        revalidating={Object.values(statuses).some(entry => entry.status === 'refreshing')}
         onSync={() => { void actions.sync() }}
         syncing={actions.syncing || refreshing === 'sync'}
         staging={actions.staging || refreshing === 'stage'}
@@ -1310,7 +1364,7 @@ export function VcsView({
         <div className="vcs-center">
           <p className="vcs-empty-title">{t('error.vcsMissing')}</p>
           <p className="vcs-note">{t('error.vcsMissingHint')} {errorMessage(t, status.error)}</p>
-          <button type="button" className="vcs-button" onClick={refresh}>{t('error.retry')}</button>
+          <button type="button" className="vcs-button" onClick={() => { refresh() }}>{t('error.retry')}</button>
         </div>
       ) : (
         <div className="vcs-main">
@@ -1328,13 +1382,14 @@ export function VcsView({
                 control={timelineControl}
                 t={t}
                 locale={locale}
-                loading={log.status === 'loading' || waitingForSnapshots}
+                loading={log.status === 'loading' || waitingForSnapshots || (log.error !== null && settledHistoryKey !== historyKey)}
                 loadingMore={log.loadingMore}
                 error={log.error}
                 hasMore={log.hasMore}
                 truncated={log.truncated}
                 onLoadMore={() => { void loadMore() }}
-                onRetry={refresh}
+                canLoadMore={currentHistory && !waitingForSnapshots}
+                onRetry={() => { refreshInBackground(['history']) }}
                 onRefActions={capabilities?.branchOps === true || capabilities?.tagOps === true
                   ? actions.onRefActions
                   : undefined}
@@ -1413,7 +1468,9 @@ export function VcsView({
                   isLoaded={sha => commitIndex.has(sha)}
                   onMissing={onMissing}
                   onSettled={onDetailSettled}
-                  revision={revision}
+                  revision={selectedTree === null ? manual.history : revision}
+                  backgroundDiffRevision={selectedTree === null ? undefined : backgroundDiffRevision}
+                  onInteractionChange={setDetailInteracting}
                   cache={diffCacheRef.current}
                   commitCache={commitCacheRef.current}
                   initialAnchor={anchorRef.current}
@@ -1442,7 +1499,7 @@ export function VcsView({
           onCancel={closeRepositoryManagement}
           onSaved={() => {
             closeRepositoryManagement()
-            refresh()
+            refresh('repositories')
           }}
           t={t}
         />

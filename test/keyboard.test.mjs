@@ -867,7 +867,7 @@ test('keyboard navigation past in-flight diffs that abort mid-body never crashes
     await harness.settle()
 
     assert.equal(
-      [...cache.keys()].some(key => key.includes('|a.js|')),
+      [...cache.values()].some(({ diff }) => diff?.path === 'a.js'),
       false,
       'an aborted diff must not be cached as null',
     )
@@ -878,9 +878,153 @@ test('keyboard navigation past in-flight diffs that abort mid-body never crashes
     await harness.settle()
 
     assert.equal(aAttempts, 2)
-    assert.equal([...cache.keys()].some(key => key.includes('|a.js|')), true)
+    assert.equal([...cache.values()].some(({ diff }) => diff?.path === 'a.js'), true)
     const treeEl = harness.document.body.querySelector('.vcs-tree')
     assert.equal(treeEl.querySelectorAll('[data-diff-hunk-header]').length, 2)
+  } finally {
+    harness.unmount()
+    restore()
+  }
+})
+
+test('background Diff preserves an active gutter selection and sends its original fingerprint when staging', async () => {
+  const harness = createHarness()
+  const restore = harness.installGlobals()
+  try {
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const groups = [{ id: 'unstaged', header: true, entries: [{ path: 'notes.txt', status: 'M', added: 2 }] }]
+    const rows = buildNodeRows(groups)
+    const cache = new Map()
+    const changes = []
+    const writes = []
+    const mount = (backgroundDiffRevision, nextRows = rows, revision = 0) => {
+      harness.mount(harness.react.createElement(ChangeTree, {
+        api, repo: '/repo', rev: null, rows: nextRows, budget: new Map(),
+        before: nextRows.length === 0 ? harness.react.createElement('p', { 'data-clean': '' }) : null,
+        folds: { 'unstaged|notes.txt': false }, revision, backgroundDiffRevision, cache,
+        initialAnchor: null, onReading() {}, onToggleRow() {}, onBulkFold() {}, onLeave() {},
+        onInteractionChange, onStage, control, t, locale: 'en-US',
+      }))
+    }
+    const control = { current: null }
+    const onInteractionChange = active => changes.push(active)
+    let finishStage
+    const onStage = target => {
+      writes.push(target)
+      return new Promise(resolve => { finishStage = resolve })
+    }
+    let fingerprint = 'before'
+    const api = {
+      async diff() {
+        return {
+          kind: 'text', path: 'notes.txt', before: true, after: true, lineStaging: true, fingerprint,
+          hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 2, lines: ['+first', '+second'] }],
+        }
+      },
+    }
+    mount(0)
+    harness.intersections[0].trigger(() => true)
+    await harness.settle()
+    const tree = harness.document.body.querySelector('.vcs-tree')
+    const line = tree.querySelector('[data-diff-line]')
+    const gutter = tree.querySelectorAll('[data-line-stageable]')
+    tree.scrollTop = 21
+    gutter[0].props.onPointerDown({ button: 0, pointerId: 1, preventDefault() {}, stopPropagation() {} })
+    gutter[1].props.onPointerEnter()
+    assert.equal(changes.at(-1), true)
+
+    mount(1)
+    await harness.settle()
+    assert.equal(tree.querySelector('[data-diff-line]') === line, true)
+    assert.equal(tree.scrollTop, 21)
+    assert.equal(tree.querySelectorAll('[data-line-selected]').length, 2)
+
+    fingerprint = 'after'
+    mount(2)
+    await harness.settle()
+    harness.dispatchWindow('pointerup', { type: 'pointerup', pointerId: 1 })
+    await harness.settle()
+    const stage = tree.querySelector('[data-stage-selection="stage"]')
+    assert.ok(stage)
+    harness.mouseClick(stage)
+    assert.equal(writes[0].fingerprint, 'before')
+    assert.deepEqual(writes[0].lines, [{ hunk: 0, line: 0 }, { hunk: 0, line: 1 }])
+
+    mount(3, [])
+    assert.equal(tree.querySelector('[data-diff-line]') === line, true, 'a clean status preserves the pending staging row')
+    assert.equal(tree.querySelector('[data-clean]'), null)
+    assert.equal(changes.at(-1), true)
+    finishStage(false)
+    await harness.settle()
+    assert.equal(tree.querySelector('[data-diff-line]'), null)
+    assert.ok(tree.querySelector('[data-clean]'))
+    assert.equal(changes.at(-1), false)
+  } finally {
+    harness.unmount()
+    restore()
+  }
+})
+
+test('background Diff keeps native text selected and manual refresh discards the buffered comparison', async () => {
+  const harness = createHarness()
+  const restore = harness.installGlobals()
+  try {
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const rows = buildNodeRows([{ id: 'unstaged', entries: [{ path: 'notes.txt', status: 'M', added: 1 }] }])
+    const cache = new Map()
+    const control = { current: null }
+    let requests = 0
+    let content = '+before'
+    let resolveDiff
+    const api = {
+      diff() {
+        requests += 1
+        return new Promise(resolve => {
+          resolveDiff = () => resolve({
+            kind: 'text', path: 'notes.txt', before: true, after: true,
+            hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: [content] }],
+          })
+        })
+      },
+    }
+    const mount = (backgroundDiffRevision, revision) => harness.mount(harness.react.createElement(ChangeTree, {
+      api, repo: '/repo', rev: null, rows, budget: new Map(), folds: { 'unstaged|notes.txt': false },
+      revision, backgroundDiffRevision, cache, initialAnchor: null,
+      onReading() {}, onToggleRow() {}, onBulkFold() {}, onLeave() {}, control, t, locale: 'en-US',
+    }))
+    mount(0, 0)
+    harness.intersections[0].trigger(() => true)
+    await harness.settle()
+    resolveDiff()
+    await harness.settle()
+    const body = harness.document.body.querySelector('.vcs-diff-body')
+    const row = () => body.querySelector('[data-diff-line]')
+    let removed = false
+    harness.window.getSelection = () => ({
+      isCollapsed: removed,
+      rangeCount: 1,
+      getRangeAt: () => ({ intersectsNode: element => element === body }),
+      removeAllRanges() { removed = true },
+    })
+    harness.dispatchDocument('selectionchange')
+    mount(1, 0)
+    await harness.settle()
+    content = '+buffered'
+    resolveDiff()
+    await harness.settle()
+    assert.equal(requests, 2)
+    assert.equal(textOf(row()).includes('before'), true)
+    assert.equal(removed, false)
+
+    mount(1, 1)
+    await harness.settle()
+    assert.equal(removed, true)
+    assert.equal(textOf(row()).includes('before'), true, 'the manual read did not adopt the old buffered answer')
+    content = '+manual'
+    resolveDiff()
+    await harness.settle()
+    assert.equal(requests, 3)
+    assert.equal(textOf(row()).includes('manual'), true)
   } finally {
     harness.unmount()
     restore()
@@ -3337,6 +3481,7 @@ test('VcsView reads checked Jujutsu workspaces as commits and follows a rewritte
   let offered = true
   let blockSnapshot = false
   let releaseSnapshot = null
+  const snapshotReads = []
   const json = body => ({ ok: true, status: 200, async json() { return body } })
   globalThis.fetch = async (url, init) => {
     const { pathname, searchParams: params } = new URL(url, 'http://127.0.0.1')
@@ -3350,6 +3495,7 @@ test('VcsView reads checked Jujutsu workspaces as commits and follows a rewritte
     if (pathname === '/api/vcs.status') {
       const selected = params.get('worktree')
       statusReads.push(selected)
+      if (params.get('readOnly') !== '1') snapshotReads.push(selected)
       if (selected === sibling && !offered) {
         return { ok: false, status: 400, async json() { return { error: { code: 'not-a-repo' } } } }
       }
@@ -3434,7 +3580,8 @@ test('VcsView reads checked Jujutsu workspaces as commits and follows a rewritte
     harness.keyClick(other, ' ')
     await harness.settle()
     assert.deepEqual(statusReads, [null, null, sibling])
-    assert.equal(historyReads.length, readsBeforeOther, 'history waits until the sibling snapshot settles')
+    assert.equal(historyReads.length, readsBeforeOther + 1, 'history can read while sibling status is pending')
+    assert.deepEqual(snapshotReads, [], 'mount and selection only read existing snapshots')
     assert.equal(harness.document.activeElement, other)
     blockSnapshot = false
     releaseSnapshot()
@@ -3472,14 +3619,17 @@ test('VcsView reads checked Jujutsu workspaces as commits and follows a rewritte
     harness.keyDown(ranges()[0], 'Escape')
 
     preview = { ...preview, sha: 'd'.repeat(40), subject: 'Preview after snapshot' }
-    harness.mouseClick(body.querySelector('[aria-label="top.refresh"]'))
+    const refreshSnapshots = body.querySelector('[aria-label="top.refreshSnapshots"]')
+    harness.mouseClick(refreshSnapshots)
     await harness.settle()
     assert.equal(textOf(body.querySelector('.vcs-node-title')), preview.subject)
     assert.equal(copies()[0].attributes.get('aria-current'), 'true')
     assert.equal(statusReads.at(-1), sibling)
+    assert.deepEqual(snapshotReads, [sibling])
     offered = false
-    harness.mouseClick(body.querySelector('[aria-label="top.refresh"]'))
+    harness.mouseClick(refreshSnapshots)
     await harness.settle()
+    assert.deepEqual(snapshotReads, [sibling, null], 'discover removed workspaces before manual snapshotting')
     assert.deepEqual(historyReads.at(-1), { ref: 'all', paths: [] })
     assert.equal(textOf(body.querySelector('.vcs-node-title')), 'Source work')
     assert.equal(body.querySelector('.vcs-worktree-row'), null)
@@ -4337,16 +4487,28 @@ test('VcsView leaves repository configuration read-only when the Host reports in
   }
 })
 
-test('VcsView refreshes working changes and history on opening or regaining focus', async () => {
+test('VcsView merges visible invalidations, keeps domains separate, and catches up after hiding', async () => {
   const harness = createHarness()
   const restore = harness.installGlobals()
   const previousFetch = globalThis.fetch
+  const previousEventSource = globalThis.EventSource
+  const sources = []
+  globalThis.EventSource = class extends EventTarget {
+    constructor(url) {
+      super()
+      this.url = url
+      this.closed = false
+      sources.push(this)
+    }
+    close() { this.closed = true }
+  }
   const reads = []
   const repo = { path: '/repo', name: 'repo', enclosing: true, vcs: 'git', capabilities: GIT_CAPABILITIES }
   let file = 'before.js'
+  let nestedFile = 'old.txt'
   let pendingStatus = null
   globalThis.fetch = async url => {
-    const route = new URL(url, 'http://127.0.0.1').pathname
+    const { pathname: route, searchParams } = new URL(url, 'http://127.0.0.1')
     reads.push(route)
     let data
     if (route === '/api/vcs.repositories') {
@@ -4356,8 +4518,16 @@ test('VcsView refreshes working changes and history on opening or regaining focu
       data = {
         repo, vcs: 'git', capabilities: GIT_CAPABILITIES, total: 1,
         branch: { name: 'main', oid: null, unborn: true },
-        groups: { staged: [], unstaged: [{ path: file, status: 'M', added: 1, deleted: 0 }], untracked: [] },
+        groups: {
+          staged: [], unstaged: [{ path: file, status: 'M', added: 1, deleted: 0 }],
+          untracked: [{ path: 'outer/', directory: true }],
+        },
       }
+    } else if (route === '/api/vcs.untracked') {
+      const path = searchParams.get('path')
+      assert.ok(path === 'outer/' || path === 'outer/inner/')
+      data = { entries: path === 'outer/' ? [{ name: 'inner/', path: 'outer/inner/', type: 'directory' }]
+        : [{ name: nestedFile, path: `outer/inner/${nestedFile}`, type: 'file' }] }
     } else {
       assert.equal(route, '/api/vcs.log')
       data = { commits: [] }
@@ -4373,73 +4543,104 @@ test('VcsView refreshes working changes and history on opening or regaining focu
       react.createElement('section', { 'data-dockkit-pane': 'right' },
         react.createElement(VcsView, { sessionId: 'session-refresh', t, visible, focusRequest })),
     ))
-    const expectRead = path => {
-      assert.deepEqual(reads.splice(0).sort(), ['/api/vcs.log', '/api/vcs.repositories', '/api/vcs.status'])
-      assert.ok(document.body.querySelector(`[data-row-key="merged|${path}"]`), path)
+    const settleWatch = async () => {
+      await harness.settle()
+      await new Promise(resolve => { setTimeout(resolve, 180) })
+      await harness.settle()
     }
+    const takeReads = () => reads.splice(0).sort()
+    const all = ['/api/vcs.log', '/api/vcs.repositories', '/api/vcs.status']
+    const row = path => document.body.querySelector(`[data-row-key="merged|${path}"]`)
+    const emit = (source, ...domains) => source.dispatchEvent(new MessageEvent('invalidate', { data: JSON.stringify({ domains }) }))
 
     mount(true, 1)
     await harness.settle()
-    expectRead('before.js')
-    const pane = document.body.querySelector('[data-dockkit-pane]')
-    const composer = document.body.querySelector('.composer')
+    assert.deepEqual(takeReads(), all)
+    assert.ok(row(file))
+    const watch = sources.at(-1)
+    assert.match(watch.url, /repo=%2Frepo/u)
+    document.body.querySelector('.composer').focus()
+    pendingStatus = Promise.withResolvers()
+    emit(watch, 'working')
+    emit(watch, 'working')
+    await settleWatch()
+    assert.deepEqual(takeReads(), ['/api/vcs.status'])
+    assert.ok(row('before.js'), 'the previous rows stay mounted during the read')
+    emit(watch, 'history')
+    emit(watch, 'working')
+    await settleWatch()
+    assert.deepEqual(takeReads(), ['/api/vcs.log'], 'history can update while one working read is in flight')
+    const finishStatus = pendingStatus.resolve
+    pendingStatus = null
+    file = 'after-composer.js'
+    finishStatus()
+    await settleWatch()
+    assert.deepEqual(takeReads(), ['/api/vcs.status'], 'the working read gets one trailing request')
+    assert.ok(row(file))
+    assert.equal(document.activeElement, document.body.querySelector('.composer'))
 
     mount(false, 1)
-    harness.dispatchWindow('focus')
-    harness.dispatchDocument('visibilitychange')
     await harness.settle()
-    assert.deepEqual(reads, [], 'a hidden panel skips window events')
+    assert.equal(watch.closed, true)
+    harness.dispatchWindow('focus')
+    await settleWatch()
+    assert.deepEqual(takeReads(), [])
 
     file = 'after-terminal.js'
     mount(true, 2)
     await harness.settle()
-    expectRead(file)
+    const resumed = sources.at(-1)
+    resumed.dispatchEvent(new Event('ready'))
+    await settleWatch()
+    assert.deepEqual(takeReads(), all)
+    assert.ok(row(file))
 
-    const root = document.body.querySelector('.vcs-root')
-    harness.dispatchDocument('focusin', { target: root, relatedTarget: pane })
-    await harness.settle()
-    assert.deepEqual(reads, [], 'moving to a control within the pane does not reload it')
-
-    file = 'after-composer.js'
-    harness.dispatchDocument('focusin', { target: pane, relatedTarget: composer })
-    await harness.settle()
-    expectRead(file)
-
-    file = 'after-reveal.js'
-    mount(true, 3)
-    await harness.settle()
-    expectRead(file)
-
-    file = 'after-window.js'
-    pendingStatus = Promise.withResolvers()
     document.visibilityState = 'hidden'
     harness.dispatchDocument('visibilitychange')
+    await harness.settle()
+    assert.equal(resumed.closed, true)
     harness.dispatchWindow('focus')
-    await harness.settle()
-    assert.deepEqual(reads, [], 'a background page skips focus events')
-
-    document.visibilityState = 'visible'
-    harness.dispatchDocument('visibilitychange')
-    harness.dispatchWindow('focus')
-    await harness.settle()
-    harness.dispatchWindow('focus')
-    await harness.settle()
-    pendingStatus.resolve()
-    await harness.settle()
-    expectRead(file)
+    await settleWatch()
+    assert.deepEqual(takeReads(), [])
 
     file = 'after-browser-tab.js'
-    document.visibilityState = 'hidden'
-    harness.dispatchDocument('visibilitychange')
     document.visibilityState = 'visible'
     harness.dispatchDocument('visibilitychange')
     await harness.settle()
-    expectRead(file)
+    const currentWatch = sources.at(-1)
+    currentWatch.dispatchEvent(new Event('ready'))
+    await settleWatch()
+    assert.deepEqual(takeReads(), all)
+    assert.ok(row(file))
+
+    const directory = key => document.body.querySelector(`[data-row-key="unstaged|${key}"]`)
+    harness.mouseClick(directory('outer'))
+    await harness.settle()
+    harness.mouseClick(directory('outer/inner'))
+    await harness.settle()
+    assert.ok(row('outer/inner/old.txt'))
+    takeReads()
+    nestedFile = 'new.txt'
+    emit(currentWatch, 'working')
+    await settleWatch()
+    assert.deepEqual(takeReads(), ['/api/vcs.status', '/api/vcs.untracked', '/api/vcs.untracked'])
+    assert.ok(row('outer/inner/new.txt'))
+    assert.equal(row('outer/inner/old.txt'), null)
+    harness.mouseClick(directory('outer/inner'))
+    await harness.settle()
+    nestedFile = 'while-closed.txt'
+    emit(currentWatch, 'working')
+    await settleWatch()
+    assert.deepEqual(takeReads(), ['/api/vcs.status', '/api/vcs.untracked'])
+    harness.mouseClick(directory('outer/inner'))
+    await harness.settle()
+    assert.ok(row('outer/inner/while-closed.txt'))
   } finally {
     pendingStatus?.resolve()
     harness.unmount()
     restore()
     globalThis.fetch = previousFetch
+    globalThis.EventSource = previousEventSource
   }
 })
 

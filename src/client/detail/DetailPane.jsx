@@ -202,8 +202,8 @@ export function DetailPane({
   folds, onToggleFold, onSetFolds, split, wrap, onToggleSplit, onToggleWrap,
   mergeStaging = true, onToggleStageLayout,
   singleColumn, onBack, onLeaveNav, onSelectCommit, isLoaded, onMissing, onSettled,
-  revision, cache, commitCache, initialAnchor, onReading, control, capabilities, onRefActions, onStage, stageDisabled, t, locale,
-  onStageHistory, worktree = null, workingCopies = [], snapshotError = null, showCurrentHead = true,
+  revision, backgroundDiffRevision, cache, commitCache, initialAnchor, onReading, control, capabilities, onRefActions, onStage, stageDisabled, t, locale,
+  onStageHistory, onInteractionChange, worktree = null, workingCopies = [], snapshotError = null, showCurrentHead = true,
 }) {
   const isWorktree = worktree !== null
   const canMergeStaging = isWorktree && capabilities?.staging === true
@@ -281,9 +281,10 @@ export function DetailPane({
   // directory never changes which other files stay folded.
   const allSections = useMemo(() => streamSections(groups, dirChildren, rev), [dirChildren, groups, rev])
   const budget = useMemo(() => budgetFolds(allSections), [allSections])
+  const rowExpansion = useMemo(() => ({ collapsed, dirs }), [collapsed, dirs])
   const rows = useMemo(
-    () => buildNodeRows(groups, { collapsed, dirs, dirChildren, loadingDirs }),
-    [collapsed, dirChildren, dirs, groups, loadingDirs],
+    () => buildNodeRows(groups, { ...rowExpansion, dirChildren, loadingDirs }),
+    [dirChildren, groups, loadingDirs, rowExpansion],
   )
   const someUnfolded = useMemo(
     () => hasUnfoldedFile(allSections, folds),
@@ -519,11 +520,13 @@ export function DetailPane({
         repo={repo}
         rev={rev}
         rows={rows}
+        rowExpansion={rowExpansion}
         budget={budget}
         folds={folds}
         split={showSplit}
         wrap={wrap}
         revision={revision}
+        backgroundDiffRevision={backgroundDiffRevision}
         cache={cache}
         initialAnchor={initialAnchor}
         onReading={onReading}
@@ -534,6 +537,7 @@ export function DetailPane({
         partiallyStaged={partiallyStaged}
         onStage={isWorktree ? onStage : undefined}
         stageDisabled={stageDisabled}
+        onInteractionChange={onInteractionChange}
         before={before}
         t={t}
         locale={locale}

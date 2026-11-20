@@ -524,6 +524,334 @@ test('repositories is empty rather than an error when the cwd is not in a reposi
 
 const REPOSITORY_CONFIG_ROUTE = '/api/vcs.repository-config'
 const REPOSITORY_PREVIEW_ROUTE = '/api/vcs.repository-preview'
+const WATCH_ROUTE = '/api/vcs.watch'
+
+/** Consume frames from the registered watch route while retaining a pending read across assertions. */
+async function watchStream(t, handler, params) {
+  const controller = new AbortController()
+  t.after(() => controller.abort())
+  const response = await handler(new Request(`http://127.0.0.1${route(WATCH_ROUTE, params)}`, { signal: controller.signal }))
+  assert.equal(response.status, 200)
+  assert.match(response.headers.get('content-type'), /^text\/event-stream/u)
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let pending
+  async function next(timeout = 4_000) {
+    pending ??= reader.read()
+    let timer
+    try {
+      const result = await Promise.race([pending, new Promise(resolve => { timer = setTimeout(() => resolve(null), timeout) })])
+      if (result === null) return null
+      pending = undefined
+      if (result.done) return { event: 'closed' }
+      const [, event, data] = /^event: (\w+)\ndata: (.*)\n\n$/u.exec(decoder.decode(result.value))
+      return { event, data: JSON.parse(data) }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  assert.deepEqual(await next(), { event: 'ready', data: {} })
+  return {
+    next,
+    abort: () => controller.abort(),
+    cancel: () => reader.cancel(),
+    async domain(domain) {
+      let frame
+      do {
+        frame = await next()
+        assert.equal(frame?.event, 'invalidate', `expected an invalidation for ${domain}`)
+      } while (!frame.data.domains.includes(domain))
+      return frame.data
+    },
+  }
+}
+
+function watchingHost(session, overrides) {
+  const routes = new Map()
+  const listeners = new Map()
+  const cleanups = []
+  apply(createHost({
+    sessions: { get: id => id === session.id ? session : undefined },
+    effect(register) { cleanups.push(register()) },
+    on(event, listener) {
+      if (!listeners.has(event)) listeners.set(event, new Set())
+      listeners.get(event).add(listener)
+      return () => listeners.get(event).delete(listener)
+    },
+    connection: { fetch: { register(route) { routes.set(route.path, route.fetch); return () => routes.delete(route.path) } } },
+    ...overrides,
+  }))
+  return {
+    routes,
+    dispose() { for (const off of cleanups.reverse()) off() },
+    event(type, data, seq) {
+      for (const listener of listeners.get('session/event') ?? []) listener(session, { type, data, seq })
+    },
+  }
+}
+
+function watchFixture(t, vcs = 'git', overrides) {
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'vcs-watch-')))
+  const root = join(scratch, 'root')
+  mkdirSync(root)
+  if (vcs === 'git') {
+    initRepo(root)
+    writeFileSync(join(root, '.gitignore'), '*.ignored\n')
+    mkdirSync(join(root, 'folder'))
+    writeFileSync(join(root, 'folder', 'file.txt'), 'original\n')
+    git(root, ['add', '-A'])
+    git(root, ['commit', '-qm', 'initial'])
+  } else if (vcs === 'jj') {
+    jj(root, ['git', 'init'])
+  }
+  const sessionId = 'watch-session'
+  const host = watchingHost({ id: sessionId, header: { cwd: root } }, overrides)
+  t.after(() => {
+    host.dispose()
+    rmSync(scratch, { recursive: true, force: true })
+  })
+  return { ...host, scratch, root, params: { sessionId, repo: root }, handler: host.routes.get(WATCH_ROUTE) }
+}
+
+test('watch validates targets and streams selected Git worktree and shared metadata changes', { timeout: 16_000 }, async t => {
+  const { handler, params, root, scratch } = watchFixture(t)
+  const linked = join(scratch, 'linked')
+  git(root, ['worktree', 'add', '-qb', 'alternate', linked])
+  git(root, ['remote', 'add', 'upstream', scratch])
+  git(root, ['config', 'branch.alternate.remote', 'upstream'])
+  git(root, ['config', 'branch.alternate.merge', 'refs/heads/alternate'])
+  for (const [input, code] of [
+    [{ ...params, sessionId: 'other' }, 'no-session'],
+    [{ ...params, repo: scratch }, 'not-a-repo'],
+    [{ ...params, worktree: [linked, linked] }, 'bad-request'],
+    [{ ...params, worktree: scratch }, 'not-a-repo'],
+    [{ sessionId: params.sessionId, worktree: [linked] }, 'bad-request'],
+  ]) assert.equal((await call(handler, route(WATCH_ROUTE, input))).body.error.code, code)
+
+  const stream = await watchStream(t, handler, { ...params, worktree: [linked] })
+  writeFileSync(join(root, 'folder', 'file.txt'), 'unselected\n')
+  writeFileSync(join(linked, 'skip.ignored'), 'ignored\n')
+  writeFileSync(join(linked, '.watchman-cookie-noise'), '')
+  writeFileSync(join(root, '.git', 'refs', 'heads', 'noise.lock'), '')
+  writeFileSync(join(root, '.git', 'refs', 'heads', '.watchman-cookie-noise'), '')
+  writeFileSync(join(root, '.git', 'index.lock'), '')
+  assert.equal(await stream.next(500), null)
+  rmSync(join(root, '.git', 'index.lock'))
+
+  writeFileSync(join(linked, 'folder', 'file.txt'), 'linked save\n')
+  assert.deepEqual((await stream.domain('working')).domains, ['working'])
+  git(linked, ['add', 'folder/file.txt'])
+  assert.deepEqual((await stream.domain('working')).domains, ['working'])
+
+  git(root, ['update-ref', 'refs/remotes/upstream/alternate', 'HEAD'])
+  const loose = await stream.domain('history')
+  assert.ok(loose.domains.includes('working'), 'a loose upstream tracking ref invalidates ahead/behind')
+  git(root, ['pack-refs', '--all'])
+  const packed = await stream.domain('history')
+  assert.ok(packed.domains.includes('working'), 'packed refs also invalidate ahead/behind')
+
+  git(root, ['worktree', 'add', '-qb', 'added-worktree', join(scratch, 'added-worktree')])
+  await stream.domain('repositories')
+  stream.abort()
+  let frame
+  do { frame = await stream.next() } while (frame?.event === 'invalidate')
+  assert.equal(frame?.event, 'closed')
+})
+
+test('watch refreshes Git status and history when a reftable changes', async t => {
+  const { handler, params, root } = watchFixture(t, 'plain')
+  try {
+    execFileSync('git', ['init', '-q', '-b', 'main', '--ref-format=reftable'], { cwd: root, env: GIT_ENV, stdio: 'pipe' })
+  } catch {
+    t.skip('Git does not support reftable repositories')
+    return
+  }
+  git(root, ['config', 'user.email', 'test@example.com'])
+  git(root, ['config', 'user.name', 'Test User'])
+  git(root, ['commit', '--allow-empty', '-qm', 'initial'])
+  git(root, ['remote', 'add', 'origin', root])
+  git(root, ['config', 'branch.main.remote', 'origin'])
+  git(root, ['config', 'branch.main.merge', 'refs/heads/main'])
+  const stream = await watchStream(t, handler, params)
+  git(root, ['update-ref', 'refs/remotes/origin/main', 'HEAD'])
+  const { domains } = await stream.domain('history')
+  assert.ok(domains.includes('working'))
+})
+
+test('watch holds write notifications behind the route lock and preserves uncovered domains', { timeout: 12_000 }, async t => {
+  let release
+  let started
+  const entered = new Promise(resolve => { started = resolve })
+  const gate = new Promise(resolve => { release = resolve })
+  t.after(() => release())
+  const { handler, params, root, routes } = watchFixture(t, 'git', {
+    subprocess: {
+      ...fakeSubprocess,
+      spawn(spec) {
+        const handle = fakeSubprocess.spawn(spec)
+        if (!spec.argv.includes('switch')) return handle
+        started()
+        return { ...handle, done: Promise.all([handle.done, gate]).then(([outcome]) => outcome) }
+      },
+    },
+  })
+  const [owner, other] = await Promise.all([
+    watchStream(t, handler, { ...params, client: 'panel-owner' }),
+    watchStream(t, handler, { ...params, client: 'panel-other' }),
+  ])
+  function switchTo(branch) {
+    return routes.get('/api/vcs.switch')(new Request('http://127.0.0.1/api/vcs.switch', {
+      method: 'POST', body: JSON.stringify({ ...params, branch }),
+      headers: { 'content-type': 'application/json', 'X-VCS-Client': 'panel-owner' },
+    }))
+  }
+  assert.equal((await switchTo('main')).status, 200)
+  assert.deepEqual(await owner.domain('history'), { domains: ['working', 'history'], origin: 'panel-owner' })
+  assert.deepEqual(await other.domain('history'), { domains: ['working', 'history'] })
+
+  git(root, ['branch', 'alternate'])
+  await Promise.all([owner.domain('history'), other.domain('history')])
+  const write = switchTo('alternate')
+  await entered
+  writeFileSync(join(root, 'folder', 'file.txt'), 'external save during the panel write\n')
+  mkdirSync(join(root, '.dsh')) // An unrelated discovery invalidation must still reach the writer.
+  assert.equal(await owner.next(450), null)
+  release()
+  assert.equal((await write).status, 200)
+  for (const stream of [owner, other]) {
+    const result = await stream.domain('history')
+    assert.ok(result.domains.includes('working'))
+    assert.ok(result.domains.includes('repositories'))
+    assert.equal(result.origin, undefined)
+    assert.equal(await stream.next(250), null)
+  }
+})
+
+test('Git status shares one subprocess across requests and lets a caller abort independently', { timeout: 8_000 }, async t => {
+  let release
+  let entered
+  let started = 0
+  let aborted = 0
+  const firstStart = new Promise(resolve => { entered = resolve })
+  const gate = new Promise(resolve => { release = resolve })
+  t.after(() => release())
+  const { params, routes } = watchFixture(t, 'git', {
+    subprocess: {
+      ...fakeSubprocess,
+      spawn(spec) {
+        const handle = fakeSubprocess.spawn(spec)
+        if (!spec.argv.includes('status')) return handle
+        started += 1
+        entered()
+        spec.signal?.addEventListener('abort', () => { aborted += 1 }, { once: true })
+        return { ...handle, done: Promise.all([handle.done, gate]).then(([outcome]) => outcome) }
+      },
+    },
+  })
+  const handler = routes.get('/api/vcs.status')
+  const status = signal => handler(new Request(`http://127.0.0.1${route('/api/vcs.status', params)}`, { signal }))
+  const first = new AbortController()
+  const original = status(first.signal)
+  await firstStart
+  const next = status()
+  await new Promise(resolve => setTimeout(resolve, 125))
+  assert.equal(started, 1)
+  first.abort()
+  await assert.rejects(original, { name: 'AbortError' })
+  assert.equal(aborted, 0)
+  release()
+  assert.equal((await next).status, 200)
+  assert.equal((await status()).status, 200)
+  assert.equal(started, 2)
+})
+
+test('a working invalidation queues a fresh Git status behind the older read', { timeout: 8_000 }, async t => {
+  let release
+  let firstStatus
+  let statusReads = 0
+  const scanned = new Promise(resolve => { firstStatus = resolve })
+  const gate = new Promise(resolve => { release = resolve })
+  t.after(() => release())
+  const { handler: watch, params, root, routes } = watchFixture(t, 'git', {
+    subprocess: {
+      ...fakeSubprocess,
+      spawn(spec) {
+        const handle = fakeSubprocess.spawn(spec)
+        if (!spec.argv.includes('status') || ++statusReads > 1) return handle
+        return {
+          ...handle,
+          done: handle.done.then(async outcome => { firstStatus(); await gate; return outcome }),
+        }
+      },
+    },
+  })
+  const stream = await watchStream(t, watch, params)
+  const status = () => call(routes.get('/api/vcs.status'), route('/api/vcs.status', params))
+  const original = status()
+  await scanned
+  writeFileSync(join(root, 'folder', 'file.txt'), 'external save after first scan\n')
+  await stream.domain('working')
+  const fresh = status()
+  await new Promise(resolve => setTimeout(resolve, 125))
+  assert.equal(statusReads, 1)
+  release()
+  assert.equal((await original).body.total, 0)
+  assert.equal((await fresh).body.total, 1)
+  assert.equal(statusReads, 2)
+})
+
+test('watch with no repository streams repository discovery and handles reader cancellation', async t => {
+  const { handler, params, root } = watchFixture(t, 'plain')
+  const stream = await watchStream(t, handler, { sessionId: params.sessionId })
+  initRepo(root)
+  assert.deepEqual(await stream.domain('repositories'), { domains: ['repositories'] })
+  await stream.cancel()
+  assert.equal((await stream.next()).event, 'closed')
+})
+
+test('watch observes external Jujutsu operation heads and snapshots a hidden changed turn once across streams', { skip: !HAS_JJ, timeout: 12_000 }, async t => {
+  let snapshots = 0
+  const summaries = new Map()
+  const { handler, params, event, root, routes } = watchFixture(t, 'jj', {
+    workspaceChanges: { summary: (_sessionId, seq) => summaries.get(seq) },
+    subprocess: {
+      ...fakeSubprocess,
+      spawn(spec) {
+        if (spec.argv.some(arg => arg.includes('commit_id')) && !spec.argv.includes('--ignore-working-copy')) snapshots += 1
+        return fakeSubprocess.spawn(spec)
+      },
+    },
+  })
+  const active = await watchStream(t, handler, params)
+  jj(root, ['describe', '-m', 'external description'])
+  await active.domain('history')
+  assert.equal(snapshots, 0)
+
+  event('tool/call', { turn: 1, name: 'read', callId: 'r' })
+  event('tool/result', { turn: 1, message: { source: { callId: 'r' } } })
+  event('tool/call', { turn: 1, name: 'edit', callId: 'error' })
+  event('tool/result', { turn: 1, message: { isError: true, source: { callId: 'error' } } })
+  event('turn/end', { turn: 1 })
+  assert.equal(await active.next(400), null)
+  await active.cancel()
+
+  const before = recordedJjHead(root)
+  writeFileSync(join(root, 'written.txt'), 'changed by a tool\n')
+  event('turn/end', { turn: 2 })
+  event('workspace/changes', { turn: 2 }, 11)
+  summaries.set(11, { cwd: root, total: 1, files: [{ path: 'written.txt' }] })
+  assert.equal(recordedJjHead(root), before, 'a hidden stream defers the changed turn')
+
+  const [first, second] = await Promise.all([watchStream(t, handler, params), watchStream(t, handler, params)])
+  await Promise.all([first.domain('history'), second.domain('history')])
+  const status = await call(routes.get('/api/vcs.status'), route('/api/vcs.status', { ...params, readOnly: 1 }))
+  assert.notEqual(status.body.workingCopy.commitId, before)
+  event('workspace/changes', { turn: 2 }, 12)
+  summaries.set(12, summaries.get(11))
+  event('turn/end', { turn: 2 })
+  assert.equal(await first.next(400), null)
+  assert.equal(snapshots, 1)
+})
 
 /** Run the registered Host routes against an isolated multi-repository workspace. */
 function repositoryDiscoveryFixture(t) {
@@ -2249,9 +2577,20 @@ test('Jujutsu reads keep the working-copy commit unchanged', { skip: !HAS_JJ }, 
   assert.equal(afterFile, beforeFile)
 })
 
-test('Jujutsu status snapshots a new working-copy change on refresh', { skip: !HAS_JJ }, async () => {
+test('Jujutsu status snapshots on manual refresh and leaves operation heads untouched on a readonly refresh', { skip: !HAS_JJ }, async () => {
+  const before = recordedJjHead(jjPath)
+  const recordedOperation = () => jj(jjPath, ['--ignore-working-copy', 'op', 'log', '--no-graph', '-n', '1', '-T', 'id'])
+  const operation = recordedOperation()
   writeFileSync(join(jjPath, 'late.txt'), 'late\n')
   try {
+    const readonly = await call(
+      handlers.status,
+      route('/api/vcs.status', { sessionId: 's-jj', repo: jjPath, readOnly: 1 }),
+    )
+    assert.equal(readonly.status, 200)
+    assert.equal(readonly.body.workingCopy.commitId, before)
+    assert.equal(recordedOperation(), operation)
+
     const { status, body } = await call(
       handlers.status,
       route('/api/vcs.status', { sessionId: 's-jj', repo: jjPath }),
@@ -2358,6 +2697,7 @@ test('apply registers every GET and POST route inside the fence and honors enabl
   apply(ctx, undefined)
   assert.deepEqual(routes.filter(r => r.path !== REPOSITORY_CONFIG_ROUTE && r.path !== REPOSITORY_PREVIEW_ROUTE).map(r => r.path), [
     '/api/vcs.repositories',
+    '/api/vcs.watch',
     '/api/vcs.status',
     '/api/vcs.branches',
     '/api/vcs.remotes',

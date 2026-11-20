@@ -464,6 +464,50 @@ test('createApi builds exact Host routes', async () => {
   assert.equal(calls[8], '/api/vcs.turn?sessionId=session+1&turn=4')
 })
 
+test('watch handles reconnect, ignores own writes, and closes its subscription', async () => {
+  let source
+  const requests = []
+  const api = createApi('session 1', {
+    clientId: 'local-panel',
+    EventSourceImpl: class extends EventTarget {
+      constructor(url) {
+        super()
+        this.url = url
+        this.closed = false
+        source = this
+      }
+      close() { this.closed = true }
+    },
+    fetchImpl: async (url, init) => {
+      requests.push({ url, init })
+      return Response.json({})
+    },
+  })
+  let ready = 0
+  const invalidations = []
+  const close = api.watch('/repo', ['/tree 1', '/tree 2'], () => { ready += 1 }, domains => invalidations.push(domains))
+  const target = new URL(source.url, 'http://127.0.0.1')
+  assert.equal(target.pathname, '/api/vcs.watch')
+  assert.equal(target.searchParams.get('sessionId'), 'session 1')
+  assert.equal(target.searchParams.get('repo'), '/repo')
+  assert.equal(target.searchParams.get('client'), 'local-panel')
+  assert.deepEqual(target.searchParams.getAll('worktree'), ['/tree 1', '/tree 2'])
+  source.dispatchEvent(new Event('ready'))
+  source.dispatchEvent(new Event('ready'))
+  for (const data of ['bad json', '{}', '{"domains":["working"],"origin":"local-panel"}', '{"domains":["history"]}']) {
+    source.dispatchEvent(new MessageEvent('invalidate', { data }))
+  }
+  assert.equal(ready, 2)
+  assert.deepEqual(invalidations, [['history']])
+  close()
+  assert.equal(source.closed, true)
+
+  await api.status('/repo', undefined, { readOnly: true })
+  await api.sync('/repo')
+  assert.match(requests[0].url, /&readOnly=1$/)
+  assert.equal(requests[1].init.headers['X-VCS-Client'], 'local-panel')
+})
+
 test('worktree content reads carry the allowed repository and the selected checkout separately', async () => {
   const calls = []
   const api = createApi('s', {

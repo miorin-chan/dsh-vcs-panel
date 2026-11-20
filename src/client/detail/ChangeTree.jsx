@@ -28,6 +28,7 @@ import { Bar, barWidth } from '../skeleton.jsx'
 import {
   MAX_PARALLEL, changedLines, diffTargets, estimateHeight, isFolded, rowAt,
 } from './detail.js'
+import { adoptComparison, keepsActiveFiles } from './comparison.js'
 import { createQueue } from './queue.js'
 import { StageAction } from './StageAction.js'
 import { StageCheckbox } from './StageCheckbox.js'
@@ -52,7 +53,7 @@ const GUTTER_WIDTH = 22
 
 /** The identity of one comparison request. */
 function targetKey(target) {
-  return `${target.scope}|${target.path}|${target.oldPath ?? ''}|${target.rev ?? ''}`
+  return JSON.stringify([target.scope, target.path, target.oldPath, target.rev])
 }
 
 /** Store one answer, evicting the oldest past {@link CACHE_LIMIT}. */
@@ -96,13 +97,27 @@ function ancestorKeys(key) {
  * do not jump when the answer arrives.
  */
 const FileBody = memo(function FileBody({
-  fileKey, group, entry, rev, near, folded, foldReason, request, revision,
-  split, wrap, onStage, stageDisabled, onRegisterHunks, onRegisterSelectionClear, t, locale,
+  fileKey, group, entry, repo, rev, near, folded, foldReason, request, revision, backgroundDiffRevision,
+  split, wrap, onStage, stageDisabled, onRegisterHunks, onRegisterSelectionClear, onInteractionChange, interacting, t, locale,
 }) {
-  const [answer, setAnswer] = useState(null)
+  const [shown, setShown] = useState(null)
+  const [loaded, setLoaded] = useState(null)
   const [attempt, setAttempt] = useState(0)
   const targets = diffTargets(group, entry, rev)
   const targetsKey = targets.map(targetKey).join('\0')
+  // A Jujutsu working copy uses commit targets. New snapshots have new SHAs,
+  // so these cache entries can be shared with the immutable commit details.
+  const worktreeRevision = rev === null ? backgroundDiffRevision : undefined
+  const comparison = useMemo(() => ({ load: request, repo, revision, worktreeRevision, targetsKey, attempt }),
+    [request, repo, revision, worktreeRevision, targetsKey, attempt])
+  const answer = shown?.request.repo === repo ? shown : null
+  const targetChanged = answer !== null && answer.request.targetsKey !== targetsKey
+  const backgroundUpdate = answer !== null && answer.request.load === request && answer.request.revision === revision && (
+    answer.request.worktreeRevision !== worktreeRevision
+    || (rev !== null && backgroundDiffRevision !== undefined && targetChanged)
+  )
+  const selectionTargets = backgroundUpdate ? answer.request.targetsKey : targetsKey
+  const selectionScope = useMemo(() => ({ request, revision, selectionTargets }), [request, revision, selectionTargets])
   const hunksBySourceRef = useRef(new Map())
   const clearBySourceRef = useRef(new Map())
 
@@ -157,6 +172,22 @@ const FileBody = memo(function FileBody({
     }
   }, [fileKey, onRegisterSelectionClear])
 
+  const reportSourceInteraction = useMemo(() => {
+    if (onInteractionChange === undefined) return () => undefined
+    const active = new Set()
+    const callbacks = new Map()
+    return sourceIndex => {
+      if (!callbacks.has(sourceIndex)) {
+        callbacks.set(sourceIndex, interacting => {
+          if (interacting) active.add(sourceIndex)
+          else active.delete(sourceIndex)
+          onInteractionChange(fileKey, active.size > 0)
+        })
+      }
+      return callbacks.get(sourceIndex)
+    }
+  }, [fileKey, onInteractionChange])
+
   useLayoutEffect(() => {
     if (!folded) return undefined
     hunksBySourceRef.current.clear()
@@ -174,32 +205,35 @@ const FileBody = memo(function FileBody({
   }, [fileKey, onRegisterHunks, onRegisterSelectionClear])
 
   useEffect(() => {
-    if (folded || !near) return undefined
-    if (answer !== null && answer.revision === revision && answer.attempt === attempt && answer.targetsKey === targetsKey) {
-      return undefined
-    }
-    // Apply both answers together so a refresh cannot mix different revisions.
+    if (folded || !near || loaded?.request === comparison) return undefined
+    // Settle both sources together so a merged file cannot mix revisions.
     const results = new Map()
-    const cancel = targets.map(target => request(target, revision, result => {
-      results.set(target.scope, { ...result, target })
+    const cancel = targets.map(target => request(target, revision, worktreeRevision, result => {
+      results.set(target.scope, { ...result, target: targetKey(target), source: target })
       if (results.size === targets.length) {
-        setAnswer({ results: targets.map(source => results.get(source.scope)), revision, attempt, targetsKey })
+        setLoaded({ results: targets.map(source => results.get(source.scope)), request: comparison })
       }
     }))
     return () => { for (const stop of cancel) stop?.() }
-    // `answer` and `targets` are keyed by `revision`, `attempt`, and `targetsKey`.
+    // `comparison` keys both `targets` and `loaded`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folded, near, revision, attempt, request, targetsKey])
+  }, [folded, near, comparison])
 
+  useLayoutEffect(() => {
+    const next = adoptComparison(shown, loaded, comparison, backgroundUpdate && interacting)
+    if (next !== shown) setShown(next)
+  }, [shown, loaded, comparison, backgroundUpdate, interacting])
+
+  const results = answer?.results
   const combined = useMemo(() => {
-    const [staged, unstaged] = answer?.results ?? []
+    const [staged, unstaged] = results ?? []
     if (group !== 'merged' || staged?.diff?.kind !== 'text' || unstaged?.diff?.kind !== 'text'
       || staged.diff.indexOid === undefined || staged.diff.indexOid !== unstaged.diff.indexOid
       || staged.diff.hunks.length === 0 || unstaged.diff.hunks.length === 0 || staged.diff.coarse || unstaged.diff.coarse) return null
     const diff = mergeDiffs(staged.diff, unstaged.diff)
     const length = diff.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0)
     return length <= MAX_RENDERED_LINES ? diff : null
-  }, [answer, group])
+  }, [results, group])
 
   if (folded) {
     if (foldReason === undefined) return null
@@ -212,39 +246,42 @@ const FileBody = memo(function FileBody({
       </div>
     )
   }
-  const busy = stageDisabled || answer.targetsKey !== targetsKey || answer.revision !== revision
+  const busy = stageDisabled || answer.request.load !== request || answer.request.revision !== revision
+    || (targetChanged && !backgroundUpdate)
   const retry = () => { setAttempt(value => value + 1) }
   const stageLines = target => onStage === undefined ? undefined : (fingerprint, lines, meta) => onStage({ ...target, fingerprint, lines }, meta)
   if (combined !== null) {
-    const stageSources = Object.fromEntries(answer.results.map(({ target, diff }) => [target.scope, {
+    const stageSources = Object.fromEntries(results.map(({ source, diff }) => [source.scope, {
       fingerprint: diff.lineStaging === true ? diff.fingerprint : undefined,
-      onStageLines: stageLines(target),
+      onStageLines: stageLines(source),
     }]))
     return <FileDiff state={combined} split={split} wrap={wrap} retry={retry} stageSources={stageSources}
-      stageDisabled={busy} showStageState={true}
+      stageDisabled={busy} showStageState={true} selectionScope={selectionScope}
       onRegisterHunks={registerSourceHunks(0)} onRegisterSelectionClear={registerSourceClear(0)}
-      t={t} locale={locale} />
+      onInteractionChange={reportSourceInteraction(0)} t={t} locale={locale} />
   }
-  const renderDiff = ({ status, diff, target }, sourceIndex) => (
+  const renderDiff = ({ status, diff, source }, sourceIndex) => (
     <FileDiff
       state={status === 'ready' ? diff : status}
       split={split}
       wrap={wrap}
       retry={retry}
-      onStageLines={stageLines(target)}
-      stageScope={target.scope}
+      onStageLines={stageLines(source)}
+      stageScope={source.scope}
       stageDisabled={busy}
       showStageState={group === 'merged'}
+      selectionScope={selectionScope}
       onRegisterHunks={registerSourceHunks(sourceIndex)}
       onRegisterSelectionClear={registerSourceClear(sourceIndex)}
+      onInteractionChange={reportSourceInteraction(sourceIndex)}
       t={t}
       locale={locale}
     />
   )
-  if (answer.results.length === 1) return renderDiff(answer.results[0], 0)
-  return answer.results.map((result, sourceIndex) => (
-    <div className="vcs-diff-source" key={result.target.scope}>
-      <div className="vcs-diff-source-label">{t(result.target.scope === 'staged' ? 'changes.staged' : 'changes.unstaged')}</div>
+  if (results.length === 1) return renderDiff(results[0], 0)
+  return results.map((result, sourceIndex) => (
+    <div className="vcs-diff-source" key={result.source.scope}>
+      <div className="vcs-diff-source-label">{t(result.source.scope === 'staged' ? 'changes.staged' : 'changes.unstaged')}</div>
       {renderDiff(result, sourceIndex)}
     </div>
   ))
@@ -255,10 +292,42 @@ const FileBody = memo(function FileBody({
  * @param {object} props - rows, expansion data, and panel state.
  */
 export function ChangeTree({
-  api, repo, rev, rows, budget, folds, split, wrap, revision, cache,
-  initialAnchor, onReading, onToggleRow, onBulkFold, onLeave, control, before = null, onStage, partiallyStaged, stageDisabled, t, locale,
+  api, repo, rev, rows: nextRows, rowExpansion, budget, folds, split, wrap, revision, backgroundDiffRevision, cache,
+  initialAnchor, onReading, onToggleRow, onBulkFold, onLeave, control, before = null, onStage,
+  partiallyStaged, stageDisabled, onInteractionChange, t, locale,
 }) {
   const scrollRef = useRef(null)
+  const displayedTree = useRef(null)
+  const [activeFiles, setActiveFiles] = useState(() => new Set())
+  const reportInteraction = useCallback((key, active) => {
+    setActiveFiles(previous => {
+      if (previous.has(key) === active) return previous
+      const next = new Set(previous)
+      if (active) next.add(key)
+      else next.delete(key)
+      return next
+    })
+  }, [])
+
+  const interacting = activeFiles.size > 0
+  const interactionListener = useRef(onInteractionChange)
+  useLayoutEffect(() => { interactionListener.current = onInteractionChange }, [onInteractionChange])
+  useLayoutEffect(() => {
+    if (interacting) interactionListener.current?.(true)
+    return () => { if (interacting) interactionListener.current?.(false) }
+  }, [interacting])
+
+  // A status update can remove a file or move it under a different compressed
+  // directory. Keep its DOM mounted until the current interaction can end.
+  const previous = displayedTree.current
+  const holdTree = backgroundDiffRevision !== undefined && previous !== null
+    && previous.revision === revision && previous.api === api && previous.repo === repo
+    && previous.rowExpansion === rowExpansion
+    && !keepsActiveFiles(previous.rows, nextRows, activeFiles)
+  const rows = holdTree ? previous.rows : nextRows
+  useLayoutEffect(() => {
+    if (!holdTree) displayedTree.current = { rows, rowExpansion, revision, api, repo, before }
+  }, [holdTree, rows, rowExpansion, revision, api, repo, before])
   const rowEls = useRef(new Map())
   const bodyEls = useRef(new Map())
   const sectionEls = useRef(new Map())
@@ -391,10 +460,14 @@ export function ChangeTree({
     }
   }, [])
 
+  const cacheRef = useRef(cache)
+  cacheRef.current = cache
+
   /** Ask for one comparison through the cache and the queue; returns a canceller. */
-  const request = useCallback((target, answerRevision, onAnswer) => {
-    const key = `${repo}|${targetKey(target)}|${answerRevision}`
-    const cached = cache.get(key)
+  const request = useCallback((target, answerRevision, worktreeRevision, onAnswer) => {
+    const requestCache = cacheRef.current
+    const key = JSON.stringify([repo, targetKey(target), answerRevision, worktreeRevision])
+    const cached = requestCache.get(key)
     if (cached !== undefined) {
       onAnswer(cached)
       return undefined
@@ -411,7 +484,7 @@ export function ChangeTree({
           return
         }
         const result = { status: 'ready', diff }
-        remember(cache, key, result)
+        remember(requestCache, key, result)
         onAnswer(result)
       }, error => {
         if (error?.name === 'AbortError' || controller.signal.aborted) return
@@ -424,7 +497,7 @@ export function ChangeTree({
       cancel()
       controller.abort()
     }
-  }, [api, cache, queue, repo])
+  }, [api, queue, repo])
 
   // Files near the viewport, as the browser reports them.
   useEffect(() => {
@@ -1449,9 +1522,10 @@ export function ChangeTree({
     const bodyId = rowBodyId(row.key)
     const statusClass = row.entry.untracked === true ? 'vcs-status-untracked' : `vcs-status-${row.entry.status}`
     const staging = rowStaging(row)
-    // The file stage the row body writes: lines and hunks act on their own comparison.
-    const stage = onStage === undefined || staging === null || staging.conflict ? undefined
-      : (target, meta) => runStage(row, target, staging.merged ? undefined : counterpartKey(row.key), meta)
+    // A line or hunk write belongs to the displayed comparison. The Host
+    // validates its fingerprint even if newer status now reports a conflict.
+    const stage = onStage === undefined ? undefined
+      : (target, meta) => runStage(row, target, row.group === 'merged' ? undefined : counterpartKey(row.key), meta)
     return (
       <section
         key={row.key}
@@ -1499,12 +1573,16 @@ export function ChangeTree({
             fileKey={row.key}
             group={row.group}
             entry={row.entry}
+            repo={repo}
             rev={rev}
             near={everyNear || near.get(row.key) === true}
             folded={!expanded}
             foldReason={foldReason}
             request={request}
             revision={revision}
+            backgroundDiffRevision={backgroundDiffRevision}
+            interacting={activeFiles.has(row.key)}
+            onInteractionChange={backgroundDiffRevision === undefined ? undefined : reportInteraction}
             split={split}
             wrap={wrap}
             onStage={stage}
@@ -1565,7 +1643,7 @@ export function ChangeTree({
       onKeyDown={onKeyDown}
       onScroll={onScroll}
     >
-      {before}
+      {holdTree ? previous.before : before}
       {renderRows()}
     </div>
   )
