@@ -15,9 +15,9 @@ const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), select:not([di
 
 /**
  * Render one modal dialog.
- * @param {{ titleId: string, busy: boolean, onCancel: Function, onSubmit: Function, children: unknown }} props - dialog identity and handlers.
+ * @param {{ titleId: string, busy: boolean, onCancel: Function, onSubmit: Function, children: unknown, className?: string }} props - dialog identity and handlers.
  */
-export function Dialog({ titleId, busy, onCancel, onSubmit, children }) {
+export function Dialog({ titleId, busy, onCancel, onSubmit, children, className = '' }) {
   const rootRef = useRef(null)
 
   useEffect(() => {
@@ -58,7 +58,7 @@ export function Dialog({ titleId, busy, onCancel, onSubmit, children }) {
     >
       <form
         ref={rootRef}
-        className="vcs-dialog"
+        className={className ? `vcs-dialog ${className}` : 'vcs-dialog'}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

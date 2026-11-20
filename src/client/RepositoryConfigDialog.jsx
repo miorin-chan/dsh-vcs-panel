@@ -2,39 +2,44 @@ import { useEffect, useRef, useState } from 'react'
 
 import { Dialog } from './Dialog.jsx'
 import { errorMessage } from './format.js'
+import { Chevron } from './ui.jsx'
 
 function sameEntries(a, b) {
   return a.length === b.length && a.every((entry, index) => entry.path === b[index].path)
 }
 
 function ConfigEntries({ title, entries, disabled, onRemove, t }) {
+  if (entries.length === 0) return null
   return (
     <section className="vcs-repository-section">
       <h4>{title}</h4>
-      {entries.length === 0 ? <p>{t('repositoryConfig.none')}</p> : (
-        <ul>
-          {entries.map(entry => (
-            <li key={entry.path}>
-              <div><code>{entry.path}</code>{entry.available ? null : <small>{t('repositoryConfig.unavailable')}</small>}</div>
-              <button type="button" className="vcs-button" disabled={disabled}
-                aria-label={t('repositoryConfig.removePath', { path: entry.path })} onClick={() => onRemove(entry.path)}>
-                {t('repositoryConfig.remove')}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <ul>
+        {entries.map(entry => (
+          <li key={entry.path}>
+            <div><code>{entry.path}</code>{entry.available ? null : <small className="vcs-repository-unavailable">{t('repositoryConfig.unavailable')}</small>}</div>
+            <button type="button" className="vcs-button vcs-repository-remove" disabled={disabled}
+              aria-label={t('repositoryConfig.removePath', { path: entry.path })} onClick={() => onRemove(entry.path)}>
+              {t('repositoryConfig.remove')}
+            </button>
+          </li>
+        ))}
+      </ul>
     </section>
   )
 }
 
 function RepositorySources({ cwd, repositories, t }) {
+  const [expanded, setExpanded] = useState(false)
   if (repositories.length === 0) return null
   const root = cwd?.replaceAll('\\', '/').replace(/\/+$/u, '')
   return (
-    <section className="vcs-repository-section">
-      <h4>{t('repositoryConfig.discovered')}</h4>
-      <ul className="vcs-repository-sources" tabIndex={0} aria-label={t('repositoryConfig.discovered')}>
+    <section className="vcs-repository-section vcs-repository-discovered">
+      <button type="button" className="vcs-button vcs-repository-disclosure" aria-expanded={expanded}
+        aria-controls="vcs-repository-sources" onClick={() => setExpanded(value => !value)}>
+        <span>{t('repositoryConfig.discovered')} <span className="vcs-repository-count">({repositories.length})</span></span>
+        <Chevron open={expanded} />
+      </button>
+      <ul id="vcs-repository-sources" hidden={!expanded}>
         {repositories.map(repository => {
           const path = repository.path.replaceAll('\\', '/')
           const relativePath = root !== undefined && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : repository.path
@@ -77,6 +82,8 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
   const [preview, setPreview] = useState(null)
   const [previewError, setPreviewError] = useState(null)
   const [previewing, setPreviewing] = useState(false)
+  const [addedPath, setAddedPath] = useState(null)
+  const relativePath = path.startsWith('/') ? path : path.replace(/^(?:\.\/)+/u, '').replace(/\/+$/u, '')
 
   useEffect(() => {
     const controller = new AbortController()
@@ -102,8 +109,8 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
     !sameEntries(draft.scanDirectories, config.scanDirectories) || !sameEntries(draft.repositories, config.repositories)
   )
   const property = kind === 'directory' ? 'scanDirectories' : 'repositories'
-  const duplicate = draft?.[property].some(entry => entry.path === path)
-  const canPreview = editing && path !== '' && !duplicate && !previewing
+  const duplicate = draft?.[property].some(entry => entry.path === relativePath)
+  const canPreview = editing && relativePath !== '' && !duplicate && !previewing
   const canAdd = editing && preview !== null && (kind === 'directory' || preview.repositories.length === 1)
   const canSave = editing && changed
 
@@ -119,6 +126,7 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
     headingRef.current?.focus()
     clearPreview()
     setPath('')
+    setAddedPath(null)
     setConfig(null)
     setDraft(null)
     setLoadError(null)
@@ -128,12 +136,13 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
 
   const checkPath = async () => {
     if (!canPreview) return
+    setAddedPath(null)
     clearPreview()
     const controller = new AbortController()
     previewRef.current = controller
     setPreviewing(true)
     try {
-      const result = await api.repositoryPreview(path, kind, controller.signal)
+      const result = await api.repositoryPreview(relativePath, kind, controller.signal)
       if (!controller.signal.aborted) setPreview(result)
     } catch (error) {
       if (!controller.signal.aborted) setPreviewError(error)
@@ -149,14 +158,16 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
     if (!canAdd) return
     setDraft(previous => ({
       ...previous,
-      [property]: [...previous[property], { path, available: true }],
+      [property]: [...previous[property], { path: relativePath, available: true }],
     }))
     clearPreview()
+    setAddedPath(relativePath)
     setPath('')
     pathRef.current?.focus()
   }
 
   const remove = (field, removedPath) => {
+    if (addedPath === removedPath) setAddedPath(null)
     setDraft(previous => ({ ...previous, [field]: previous[field].filter(entry => entry.path !== removedPath) }))
     pathRef.current?.focus()
   }
@@ -166,6 +177,7 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
     const controller = lifetime.current
     savingRef.current = true
     headingRef.current?.focus()
+    setAddedPath(null)
     clearPreview()
     setSaving(true)
     setSaveError(null)
@@ -188,26 +200,19 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
   }
 
   return (
-    <Dialog titleId="vcs-repository-config-title" busy={saving} onCancel={onCancel} onSubmit={save}>
+    <Dialog className="vcs-repository-dialog" titleId="vcs-repository-config-title" busy={saving} onCancel={onCancel} onSubmit={save}>
       <h3 ref={headingRef} className="vcs-dialog-title" id="vcs-repository-config-title" tabIndex={-1} data-autofocus="">
         {t('repositoryConfig.manage')}
       </h3>
       {cwd ? <p className="vcs-dialog-text vcs-repository-scope" title={cwd}>{t('repositoryConfig.scope', { path: cwd })}</p> : null}
       <div className="vcs-repository-body">
         {config === null && loadError === null ? <p className="vcs-dialog-busy" role="status">{t('repositoryConfig.loading')}</p> : null}
-        {draft === null ? null : (
-          <>
-            <ConfigEntries title={t('repositoryConfig.directories')} entries={draft.scanDirectories} disabled={!editing}
-              onRemove={removedPath => remove('scanDirectories', removedPath)} t={t} />
-            <ConfigEntries title={t('repositoryConfig.repositories')} entries={draft.repositories} disabled={!editing}
-              onRemove={removedPath => remove('repositories', removedPath)} t={t} />
-          </>
-        )}
         {editable ? (
-          <>
+          <section className="vcs-repository-editor">
             <label className="vcs-dialog-label" htmlFor="vcs-repository-config-kind">{t('repositoryConfig.addRule')}</label>
             <select id="vcs-repository-config-kind" className="vcs-dialog-input vcs-repository-kind" disabled={!editing} value={kind} onChange={event => {
               clearPreview()
+              setAddedPath(null)
               setKind(event.target.value)
             }}>
               <option value="directory">{t('repositoryConfig.directory')}</option>
@@ -215,8 +220,10 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
             </select>
             <label className="vcs-dialog-label" htmlFor="vcs-repository-config-path">{t('repositoryConfig.path')}</label>
             <input ref={pathRef} id="vcs-repository-config-path" className="vcs-dialog-input" disabled={!editing} value={path}
+              aria-describedby={kind === 'directory' ? 'vcs-repository-config-hint' : undefined}
               onChange={event => {
                 clearPreview()
+                setAddedPath(null)
                 setPath(event.target.value)
               }}
               onKeyDown={event => {
@@ -224,8 +231,17 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
                 event.preventDefault()
                 void checkPath()
               }} />
+            {kind === 'directory' ? <p id="vcs-repository-config-hint" className="vcs-repository-hint">{t('repositoryConfig.directoryHint')}</p> : null}
+            <div role="status" className="vcs-repository-feedback">
+              {previewing ? t('repositoryConfig.previewing') : null}
+              {preview !== null && (preview.repositories.length === 0 ? t('repositoryConfig.noMatches') : (
+                <>{t('repositoryConfig.previewResult')} ({preview.repositories.length})</>
+              ))}
+              {preview?.truncated ? <> {t('repositoryConfig.previewTruncated')}</> : null}
+              {addedPath !== null ? t('repositoryConfig.addedDraft', { path: addedPath }) : null}
+            </div>
             <div className="vcs-dialog-actions vcs-repository-add-actions">
-              <button type="button" className="vcs-button" disabled={!canPreview} onClick={checkPath}>
+              <button type="button" className="vcs-button" aria-disabled={!canPreview} onClick={checkPath}>
                 {t('repositoryConfig.preview')}
               </button>
               <button type="button" className="vcs-button" disabled={!canAdd} onClick={add}>
@@ -233,26 +249,34 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
               </button>
             </div>
             {duplicate ? <p className="vcs-dialog-text">{t('repositoryConfig.duplicate')}</p> : null}
-            {previewing ? <p className="vcs-dialog-busy" role="status">{t('repositoryConfig.previewing')}</p> : null}
             {previewError === null ? null : <p className="vcs-dialog-error" role="alert">{errorMessage(t, previewError)}</p>}
-            {preview === null ? null : (
-              <section className="vcs-repository-section" aria-live="polite">
-                <h4>{t('repositoryConfig.previewResult')}</h4>
-                {preview.repositories.length === 0 ? <p>{t('repositoryConfig.noMatches')}</p> : (
-                  <ul>{preview.repositories.map(entry => <li key={entry.path}><code>{entry.path}</code></li>)}</ul>
-                )}
-                {preview.truncated ? <p>{t('repositoryConfig.previewTruncated')}</p> : null}
+            {preview?.repositories.length ? (
+              <section className="vcs-repository-section vcs-repository-preview">
+                <ul tabIndex={0} aria-label={t('repositoryConfig.previewResult')}>
+                  {preview.repositories.map(entry => <li key={entry.path}><code>{entry.path}</code></li>)}
+                </ul>
               </section>
-            )}
-          </>
+            ) : null}
+          </section>
         ) : null}
+        {draft === null || configError ? null : (
+          <>
+            {draft.scanDirectories.length === 0 && draft.repositories.length === 0 ? (
+              <p className="vcs-repository-empty">{t('repositoryConfig.none')}</p>
+            ) : null}
+            <ConfigEntries title={t('repositoryConfig.directories')} entries={draft.scanDirectories} disabled={!editing}
+              onRemove={removedPath => remove('scanDirectories', removedPath)} t={t} />
+            <ConfigEntries title={t('repositoryConfig.repositories')} entries={draft.repositories} disabled={!editing}
+              onRemove={removedPath => remove('repositories', removedPath)} t={t} />
+          </>
+        )}
         <RepositorySources repositories={repositories} t={t} />
       </div>
       {saving ? <p className="vcs-dialog-busy" role="status">{t('repositoryConfig.saving')}</p> : null}
       {loadError ?? configError ?? saveError ? (
         <p className="vcs-dialog-error" role="alert">{errorMessage(t, loadError ?? configError ?? saveError)}</p>
       ) : null}
-      <div className="vcs-dialog-actions">
+      <div className="vcs-dialog-actions vcs-repository-footer">
         {conflict || configError || loadError ? (
           <button type="button" className="vcs-button" onClick={reload}>
             {conflict ? t('repositoryConfig.discardReload') : t('error.retry')}
@@ -261,7 +285,7 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
         <button type="button" className="vcs-button" aria-disabled={saving} onClick={() => { if (!saving) onCancel() }}>
           {t('branch.cancel')}
         </button>
-        <button type="submit" className="vcs-button" disabled={!canSave}>{t('repositoryConfig.save')}</button>
+        <button type="submit" className="vcs-button vcs-repository-save" disabled={!canSave}>{t('repositoryConfig.save')}</button>
       </div>
     </Dialog>
   )
