@@ -200,7 +200,7 @@ export function DetailPane({
   api, repo, node, summary, status, statusState, statusError,
   dirChildren, loadingDirs, dirs, collapsed, onToggleDir,
   folds, onToggleFold, onSetFolds, split, wrap, onToggleSplit, onToggleWrap,
-  mergeStaging = false, onToggleStageLayout,
+  mergeStaging = true, onToggleStageLayout,
   singleColumn, onBack, onLeaveNav, onSelectCommit, isLoaded, onMissing, onSettled,
   revision, cache, commitCache, initialAnchor, onReading, control, capabilities, onRefActions, onStage, stageDisabled, t, locale,
   onStageHistory, worktree = null, workingCopies = [], snapshotError = null, showCurrentHead = true,

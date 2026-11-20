@@ -417,7 +417,7 @@ export function VcsView({
     const savedRef = saved?.ref
     const ref = ranges?.some(range => range.value === savedRef)
       ? savedRef
-      : (nextCapabilities?.defaultRange ?? 'HEAD')
+      : (nextCapabilities?.defaultRange ?? 'all')
     setStatuses({})
     setSingleView('timeline')
     setNotice(null)

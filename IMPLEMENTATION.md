@@ -102,7 +102,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `workingCopy` / `workingCopyNode` | `'row'` / `null` | `'commit'` / `'@'` |
 | `staging` / `untracked` / `aheadBehind` / `sync` / `branchSwitch` / `branchOps` / `tagOps` / `commitOps` / `stageOps` | `true` | `false` |
 | `changeId` / `snapshots` | `false` | `true` |
-| `ranges`（`defaultRange`） | **`HEAD`**、`all` | **`@`**、`all` |
+| `ranges`（`defaultRange`） | `HEAD`、**`all`** | `@`、**`all`** |
 
 Git 工作树预览保留 Git 的读取能力。单选其他工作树或多选时，Client 将 `sync`、`branchSwitch`、`branchOps`、`tagOps`、`commitOps` 与 `stageOps` 置为 `false`，不提供写入目标；其他工作树的 `status` 也返回只读能力。
 
@@ -295,13 +295,13 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 
 ### 状态持久化与锚点恢复
 
-会话状态保存在 `sessionStorage` 的 `vcs:<sessionId>`，包含 `repo`、`worktrees`、`node`、`nodeChosen`、`ref`、`dirs`、`collapsed`、`folds`、`anchor`（`{ key, offset }`）、`split`、`wrap`、`twoColumns`（默认 `true`，只有显式 `false` 表示单栏）、`sidebarWidth` 与 `timelineScroll`；内存另外按仓库记住切换前的勾选、选中节点、目录折叠与历史范围。页签身份与右侧栏布局由宿主的 `sidebarRight` 存储按会话保存，应用重启后恢复；面板自己的阅读状态（含时间线宽度）单独保存。
+会话状态保存在 `sessionStorage` 的 `vcs:<sessionId>`，包含 `repo`、`worktrees`、`node`、`nodeChosen`、`ref`（默认 `all`）、`dirs`、`collapsed`、`folds`、`anchor`（`{ key, offset }`）、`split`、`wrap`、`mergeStaging`、`twoColumns`（`wrap`、`mergeStaging`、`twoColumns` 均默认 `true`，只有显式 `false` 才关闭）、`sidebarWidth` 与 `timelineScroll`；内存另外按仓库记住切换前的勾选、选中节点、目录折叠与历史范围。页签身份与右侧栏布局由宿主的 `sidebarRight` 存储按会话保存，应用重启后恢复；面板自己的阅读状态（含时间线宽度）单独保存。
 
 `repo` 保存仓库入口，`worktrees` 保存当前仓库勾选的路径。恢复时只保留目录仍可用的项，选集为空则回到入口树。
 Git 工作区行与 Jujutsu 工作副本提交都可用 `worktree:<path>` 选中。旧的单工作区节点 `worktree` / `@` 在恢复时归一为对应的工作树节点。
 工作区状态和 diff 分别按根路径加载；详情跨工作树切换时取消旧目录展开请求并重置目录阅读状态，避免串用同名文件和目录。
 
-`folds` 只为用户显式操作过的文件保存布尔值：空记录表示文件全部收起，也就是详情的默认形态。行键前缀白名单为 `staged|`、`unstaged|`、`commit|`；`sanitizeState` 在读取时丢弃未知字段与旧版遗留的 `untracked|` 键。数据刷新、折叠全部文件或收起吸顶文件头时，统一先记录锚点行与行内像素偏移，重排后恢复；锚点行未渲染时沿“文件行 → 父目录链 → 分组行”降级。
+`folds` 只为用户显式操作过的文件保存布尔值：空记录表示文件全部收起，也就是详情的默认形态。行键前缀白名单为 `staged|`、`unstaged|`、`merged|`、`merged-dir|`、`commit|`；`sanitizeState` 在读取时丢弃未知字段与旧版遗留的 `untracked|` 键。数据刷新、折叠全部文件或收起吸顶文件头时，统一先记录锚点行与行内像素偏移，重排后恢复；锚点行未渲染时沿“文件行 → 父目录链 → 分组行”降级。
 
 顶部栏的菜单只保留临时打开状态。仓库与工作树菜单共用 `HeaderPicker`，本地分支菜单每次打开时重读，期间保留上一份列表。
 工作树菜单的范围选项由 `capabilities.ranges` 提供，选择更新同一个 `ref`。

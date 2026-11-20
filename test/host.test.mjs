@@ -729,7 +729,7 @@ test('selected history walks divergent HEADs once and all history includes unsel
   const unselectedHead = commit(detached, 'unselected-only')
   initRepo(unrelated)
   const read = (params = {}) => call(handlers.log, route('/api/vcs.log', { ...repo, ...params }))
-  const selection = { worktree: [source, linked, duplicate] }
+  const selection = { ref: 'HEAD', worktree: [source, linked, duplicate] }
   const selected = await read(selection)
   assert.equal(selected.status, 200)
   assert.equal(selected.body.commits.length, 3)
@@ -740,9 +740,9 @@ test('selected history walks divergent HEADs once and all history includes unsel
   assert.equal(selected.body.commits.at(-1).sha, common)
   const page = await read({ ...selection, limit: 2, skip: 1 })
   assert.deepEqual(page.body.commits.map(entry => entry.sha), selected.body.commits.slice(1).map(entry => entry.sha))
-  const single = await read({ worktree: [linked] })
+  const single = await read({ ref: 'HEAD', worktree: [linked] })
   assert.deepEqual(single.body.commits.map(entry => entry.sha), [linkedHead, common])
-  const all = await read({ ref: 'all' })
+  const all = await read()
   assert.deepEqual(new Set(all.body.commits.map(entry => entry.sha)), new Set([mainHead, linkedHead, common, unselectedHead]))
 
   const denied = await read({ worktree: [source, unrelated] })
@@ -1253,6 +1253,13 @@ test('log answers an unborn branch with an empty page', async () => {
   assert.equal(status, 200)
   assert.deepEqual(body, { commits: [], truncated: false, nextSkip: null })
 
+  const head = await call(
+    handlers.log,
+    route('/api/vcs.log', { sessionId: 's-unborn', repo: unbornPath, ref: 'HEAD' }),
+  )
+  assert.equal(head.status, 200)
+  assert.deepEqual(head.body, { commits: [], truncated: false, nextSkip: null })
+
   const all = await call(
     handlers.log,
     route('/api/vcs.log', { sessionId: 's-unborn', repo: unbornPath, ref: 'all' }),
@@ -1507,7 +1514,7 @@ test('repositories identifies a Jujutsu workspace and exposes its capabilities',
   assert.equal(repo.capabilities.tagOps, false)
   assert.equal(repo.capabilities.commitOps, false)
   assert.deepEqual(repo.capabilities.ranges.map(range => range.value), ['@', 'all'])
-  assert.equal(repo.capabilities.defaultRange, '@')
+  assert.equal(repo.capabilities.defaultRange, 'all')
 })
 
 test('Jujutsu status reports the working-copy commit and its summary', { skip: !HAS_JJ }, async () => {
@@ -1626,11 +1633,11 @@ test('registered Jujutsu workspaces share one history and keep their own snapsho
   assert.equal(preview.body.workingCopy.summary.changed, 1)
   const linkedHead = preview.body.workingCopy.commitId
   assert.notEqual(linkedHead, oldLinked)
-  const siblingOnly = await log({ worktree: [linked] })
+  const siblingOnly = await log({ ref: '@', worktree: [linked] })
   assert.equal(siblingOnly.status, 200)
   assert.deepEqual(siblingOnly.body.worktreeHeads, [{ path: linked, head: linkedHead }])
   assert.deepEqual(siblingOnly.body.commits.map(commit => commit.subject), ['review preview', 'parent'])
-  const allWhilePreviewing = await log({ worktree: [linked], ref: 'all' })
+  const allWhilePreviewing = await log({ worktree: [linked] })
   assert.equal(allWhilePreviewing.status, 200)
   assert.ok(allWhilePreviewing.body.commits.some(commit => commit.sha === nested))
   const detail = await call(handlers.commit, route('/api/vcs.commit', { ...repo, sha: linkedHead }))
@@ -1647,7 +1654,7 @@ test('registered Jujutsu workspaces share one history and keep their own snapsho
   const base = await status()
   assert.equal(base.status, 200)
   const sourceHead = base.body.workingCopy.commitId
-  const selection = { worktree: [source, linked] }
+  const selection = { ref: '@', worktree: [source, linked] }
   const both = await log(selection)
   assert.equal(both.status, 200)
   assert.equal(both.body.commits.length, 3, 'the shared parent is not duplicated')
@@ -1723,8 +1730,11 @@ test('without the Jujutsu workspace template, the session still sees independent
   ])
   const history = await call(older.log, route('/api/vcs.log', repo))
   assert.equal(history.status, 200)
-  assert.equal(history.body.commits[0].subject, 'source work')
-  assert.equal(history.body.commits[0].workingCopy, true)
+  assert.ok(history.body.commits.some(commit => commit.subject === 'source work' && commit.workingCopy === true))
+  const selected = await call(older.log, route('/api/vcs.log', { ...repo, ref: '@' }))
+  assert.equal(selected.status, 200)
+  assert.equal(selected.body.commits[0].subject, 'source work')
+  assert.equal(selected.body.commits[0].workingCopy, true)
 })
 
 test('Jujutsu commit detail carries change id, refs, and file stats', { skip: !HAS_JJ }, async () => {

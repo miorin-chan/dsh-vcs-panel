@@ -47,7 +47,12 @@ test('defaultState is fresh each time', () => {
   assert.deepEqual(first, second)
   assert.equal(first.node, null)
   assert.equal(first.nodeChosen, false)
+  assert.equal(first.ref, 'all')
   assert.equal(first.anchor, null)
+  assert.equal(first.split, false)
+  assert.equal(first.wrap, true)
+  assert.equal(first.mergeStaging, true)
+  assert.equal(first.twoColumns, true)
   assert.equal(first.sidebarWidth, 320)
 })
 
@@ -108,13 +113,15 @@ test('sanitizeState drops the old untracked row keys and keeps current ones', ()
   assert.equal(sanitizeState({ anchor: { key: 'unknown|a', offset: 1 } }).anchor, null)
 })
 
-test('sanitizeState keeps the timeline beside the changes unless one column was asked for', () => {
-  assert.equal(defaultState().twoColumns, true)
-  assert.equal(sanitizeState({}).twoColumns, true, 'older state without the field keeps two columns')
-  assert.equal(sanitizeState({ twoColumns: false }).twoColumns, false)
-  assert.equal(sanitizeState({ twoColumns: true }).twoColumns, true)
-  assert.equal(sanitizeState({ twoColumns: 0 }).twoColumns, true, 'only an explicit false asks for one column')
-  assert.equal(sanitizeState({ twoColumns: 'false' }).twoColumns, true)
+test('sanitizeState keeps default-on preferences unless an explicit false turns them off', () => {
+  for (const field of ['wrap', 'mergeStaging', 'twoColumns']) {
+    assert.equal(defaultState()[field], true, `${field} defaults on`)
+    assert.equal(sanitizeState({})[field], true, `older state without ${field} keeps it on`)
+    assert.equal(sanitizeState({ [field]: false })[field], false, `explicit false disables ${field}`)
+    assert.equal(sanitizeState({ [field]: true })[field], true, `explicit true keeps ${field} on`)
+    assert.equal(sanitizeState({ [field]: 0 })[field], true, `only an explicit false disables ${field}`)
+    assert.equal(sanitizeState({ [field]: 'false' })[field], true)
+  }
 })
 
 test('sanitizeState rejects malformed selections, anchors, and ranges', () => {
@@ -129,7 +136,8 @@ test('sanitizeState rejects malformed selections, anchors, and ranges', () => {
   assert.equal(state.node, null)
   assert.equal(state.nodeChosen, false, 'a choice without a node is no choice')
   assert.equal(state.anchor, null)
-  assert.equal(state.ref, 'HEAD')
+  assert.equal(state.ref, 'all')
+  assert.equal(sanitizeState({ ref: 'HEAD' }).ref, 'HEAD')
   assert.equal(state.sidebarWidth, SIDEBAR_MIN)
   assert.equal(state.timelineScroll, 0)
   assert.equal(sanitizeState({ anchor: { key: 'a', offset: Number.NaN } }).anchor, null)

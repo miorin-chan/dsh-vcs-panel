@@ -51,14 +51,14 @@ export function defaultState() {
     worktrees: [],
     node: null,
     nodeChosen: false,
-    ref: 'HEAD',
+    ref: 'all',
     dirs: {},
     collapsed: {},
     folds: {},
     anchor: null,
     split: false,
-    wrap: false,
-    mergeStaging: false,
+    wrap: true,
+    mergeStaging: true,
     twoColumns: true,
     sidebarWidth: 320,
     timelineScroll: 0,
@@ -140,9 +140,9 @@ export function sanitizeState(raw) {
   state.folds = booleanKeys(raw.folds)
   state.anchor = anchorOrNull(raw.anchor)
   state.split = raw.split === true
-  state.wrap = raw.wrap === true
-  state.mergeStaging = raw.mergeStaging === true
-  // Two columns are the default; only an explicit `false` asks for one at a time.
+  // Line wrap, merged staging, and two columns are the defaults; only an explicit `false` turns them off.
+  state.wrap = raw.wrap !== false
+  state.mergeStaging = raw.mergeStaging !== false
   state.twoColumns = raw.twoColumns !== false
   if (typeof raw.sidebarWidth === 'number' && Number.isFinite(raw.sidebarWidth)) {
     state.sidebarWidth = clamp(Math.round(raw.sidebarWidth), SIDEBAR_MIN, SIDEBAR_MAX)
