@@ -562,6 +562,28 @@ test('the change tree exposes disclosure semantics and one tab stop', () => {
   assert.match(css, /\.vcs-tree\[data-grouped\] \.vcs-tree-file-head-wrap \{\s*top: var\(--vcs-row-height\);/u)
 })
 
+test('long refs, menu items, and dialog selects keep single-line ellipsis and stay readable', () => {
+  const read = path => readFileSync(new URL(`../src/client/${path}`, import.meta.url), 'utf8')
+  const css = read('styles.css')
+  const menu = read('RefActionsMenu.jsx')
+
+  // text-overflow: ellipsis does not apply to flex containers; ref pills must
+  // be inline-block and action menu labels must sit inside .vcs-menu-item-name.
+  assert.match(css, /\.vcs-ref \{\s*display: inline-block;[\s\S]*?text-overflow: ellipsis;/u)
+  assert.match(menu, /<span className="vcs-menu-item-name">\{label\}<\/span>/u)
+  assert.match(css, /\.vcs-menu-item-name \{[\s\S]*?min-width: 0;[\s\S]*?text-overflow: ellipsis;/u)
+
+  // Long remote names in dialog <select> stay on one truncated line with a
+  // visible caret instead of wrapping out of the fixed-height control.
+  assert.match(css, /select\.vcs-dialog-input \{[\s\S]*?appearance: none;[\s\S]*?padding-right: 26px;[\s\S]*?overflow: hidden;[\s\S]*?text-overflow: ellipsis;[\s\S]*?white-space: nowrap;/u)
+
+  // Timeline ref pills shrink before pushing +N and SHA offscreen, while detail
+  // toolbar ref pills keep their width inside a horizontally scrollable strip.
+  assert.match(css, /\.vcs-timeline-meta > \.vcs-ref:not\(\.vcs-ref-more, \.vcs-ref-head\) \{\s*flex: 0 1 auto;/u)
+  assert.match(css, /\.vcs-detail-refs \{[\s\S]*?overflow-x: auto;/u)
+  assert.match(css, /\.vcs-detail-refs > \.vcs-ref \{\s*flex: none;/u)
+})
+
 test('SidebarVcsView passes visible and bumps focusRequest on visibility transitions even at revision 0', () => {
   const createRunner = () => {
     const hooks = []

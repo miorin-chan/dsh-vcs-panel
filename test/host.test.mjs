@@ -3360,6 +3360,18 @@ test('commit actions add lightweight and annotated tags and create branches with
   assert.equal(light.status, 200)
   assert.equal(git(action.repo, ['cat-file', '-t', 'refs/tags/light']), 'commit')
 
+  // Even when the user enables tag.gpgSign globally, a lightweight tag (no message)
+  // passes --no-sign instead of letting Git invoke an editor or GPG signer.
+  git(action.repo, ['config', 'tag.gpgSign', 'true'])
+  git(action.repo, ['config', 'gpg.program', 'false'])
+  const lightWithGpgSign = await postCommitOp(action.handlers.commitOp, {
+    ...body, action: 'tag', sha: action.baseSha, name: 'light-unsigned',
+  })
+  assert.equal(lightWithGpgSign.status, 200)
+  assert.equal(git(action.repo, ['cat-file', '-t', 'refs/tags/light-unsigned']), 'commit')
+  git(action.repo, ['config', '--unset', 'tag.gpgSign'])
+  git(action.repo, ['config', '--unset', 'gpg.program'])
+
   const exists = await postCommitOp(action.handlers.commitOp, {
     ...body, action: 'tag', sha: action.mainSha, name: 'v9',
   })

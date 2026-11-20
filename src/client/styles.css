@@ -239,6 +239,7 @@
 
 .vcs-menu-item-name {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -373,9 +374,6 @@
 
 .vcs-ref-ops-item {
   height: 28px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .vcs-ref-ops-item[aria-disabled='true'] {
@@ -486,6 +484,8 @@
 .vcs-dialog-input {
   box-sizing: border-box;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   height: 30px;
   margin: 0 0 8px;
   padding: 0 8px;
@@ -495,6 +495,39 @@
   color: var(--dsw-alias-label-primary);
   font: inherit;
   font-size: 12px;
+}
+
+.vcs-dialog-select {
+  position: relative;
+  display: block;
+  margin: 0 0 8px;
+}
+
+.vcs-dialog-select > select.vcs-dialog-input {
+  margin: 0;
+}
+
+.vcs-dialog-select-caret {
+  position: absolute;
+  inset-block: 1px;
+  right: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 30px;
+  padding-right: 7px;
+  border-radius: 0 calc(var(--dsw-radius-sm, 6px) - 1px) calc(var(--dsw-radius-sm, 6px) - 1px) 0;
+  background: linear-gradient(90deg, transparent, var(--dsw-alias-bg-layer-1) 10px);
+  color: var(--dsw-alias-label-secondary);
+  pointer-events: none;
+}
+
+select.vcs-dialog-input {
+  appearance: none;
+  padding-right: 26px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .vcs-dialog-input:disabled {
@@ -739,9 +772,27 @@
   flex: none;
 }
 
-.vcs-timeline-meta > :is(.vcs-timeline-author, .vcs-worktree-ref),
-.vcs-timeline-meta > :last-child {
+/* Let non-HEAD ref pills yield before pushing the +N counter and SHA off the row;
+   the checked-out HEAD pill keeps its width (capped) so current branch stays readable. */
+.vcs-timeline-meta > .vcs-ref:not(.vcs-ref-more, .vcs-ref-head) {
   flex: 0 1 auto;
+  min-width: 0;
+}
+
+.vcs-timeline-meta > .vcs-ref.vcs-ref-head {
+  flex: none;
+  max-width: 110px;
+}
+
+.vcs-timeline-meta > :is(.vcs-worktree-ref, :last-child) {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vcs-timeline-meta > :is(.vcs-timeline-author, .vcs-timeline-time) {
+  flex: 0 100 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -818,14 +869,15 @@
 /* Ref badges -------------------------------------------------------------- */
 
 .vcs-ref {
-  display: inline-flex;
-  align-items: center;
+  display: inline-block;
+  box-sizing: border-box;
   max-width: 140px;
   padding: 0 6px;
   border: 0.5px solid transparent;
   border-radius: 999px;
   font-size: 11px;
   line-height: 15px;
+  vertical-align: middle;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -936,13 +988,26 @@
 
 .vcs-detail-refs {
   display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
   gap: 4px;
   min-width: 0;
-  overflow: hidden;
+  padding: 3px 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.vcs-detail-refs::-webkit-scrollbar {
+  display: none;
+}
+
+.vcs-detail-refs > .vcs-ref {
+  flex: none;
 }
 
 .vcs-detail-base {
-  flex: 0 1 auto;
+  flex: 0 100 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--dsw-alias-label-secondary);

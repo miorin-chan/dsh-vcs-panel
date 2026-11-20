@@ -435,15 +435,17 @@ export function DetailPane({
             {typeof commitState.commit?.changeId === 'string' && commitState.commit.changeId !== '' ? (
               <code className="vcs-detail-change" title={t('commit.changeId')}>{shortChangeId(commitState.commit.changeId)}</code>
             ) : null}
-            <span className="vcs-detail-refs">
-              {displayedRefs.map(reference => (
-                <RefBadge
-                  key={`${reference.kind}:${reference.name}`}
-                  reference={reference}
-                  onRefActivate={onRefActions}
-                />
-              ))}
-            </span>
+            {displayedRefs.length === 0 ? null : (
+              <span className="vcs-detail-refs">
+                {displayedRefs.map(reference => (
+                  <RefBadge
+                    key={`${reference.kind}:${reference.name}`}
+                    reference={reference}
+                    onRefActivate={onRefActions}
+                  />
+                ))}
+              </span>
+            )}
             {commitCounts === null ? null : (
               <span className="vcs-detail-stat">
                 <span className="vcs-dim">{formatPlural(t, 'detail.fileCount', commitCounts.count, locale)}</span>

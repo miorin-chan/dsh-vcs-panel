@@ -149,7 +149,7 @@ export function RefActionsMenu({ target, busy, t, onChoose, onClose }) {
               title={disabledReason ?? label}
               onClick={() => { if (!disabled) onChoose(action) }}
             >
-              {label}
+              <span className="vcs-menu-item-name">{label}</span>
             </button>
           </div>
         )

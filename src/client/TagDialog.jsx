@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { Dialog } from './Dialog.jsx'
 import { errorMessage, formatPlural } from './format.js'
+import { Chevron } from './ui.jsx'
 
 /**
  * Render the open tag dialog.
@@ -65,17 +66,21 @@ export function TagDialog({ request, error, busy, blocked = false, remotes, onCa
       {pushing ? (
         <>
           <label className="vcs-dialog-label" htmlFor="vcs-tag-remote">{t('tag.remote')}</label>
-          <select
-            ref={remoteRef}
-            id="vcs-tag-remote"
-            className="vcs-dialog-input"
-            value={remote}
-            disabled={busy || loading || failed || empty}
-            data-autofocus={remotes.status === 'ready' && remotes.list.length > 0 ? '' : undefined}
-            onChange={event => { setRemote(event.currentTarget.value) }}
-          >
-            {remotes.list.map(name => <option key={name} value={name}>{name}</option>)}
-          </select>
+          <span className="vcs-dialog-select">
+            <select
+              ref={remoteRef}
+              id="vcs-tag-remote"
+              className="vcs-dialog-input"
+              value={remote}
+              title={remote || undefined}
+              disabled={busy || loading || failed || empty}
+              data-autofocus={remotes.status === 'ready' && remotes.list.length > 0 ? '' : undefined}
+              onChange={event => { setRemote(event.currentTarget.value) }}
+            >
+              {remotes.list.map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
+            <span className="vcs-dialog-select-caret" aria-hidden="true"><Chevron open /></span>
+          </span>
           {loading ? <p className="vcs-dialog-busy" role="status">{t('tag.remotesLoading')}</p> : null}
           {failed ? <p className="vcs-dialog-error" role="alert">{errorMessage(t, remotes.error)}</p> : null}
           {empty ? <p className="vcs-dialog-warning" role="alert">{t('tag.noRemotes')}</p> : null}

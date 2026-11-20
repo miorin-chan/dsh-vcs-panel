@@ -14,6 +14,7 @@ import { useState } from 'react'
 import { Dialog } from './Dialog.jsx'
 import { errorMessage } from './format.js'
 import { COMMIT_BUSY_KEYS } from './commit.js'
+import { Chevron } from './ui.jsx'
 
 /** Copy for each commit dialog kind. */
 const DIALOG_COPY = {
@@ -144,16 +145,19 @@ export function CommitDialog({ request, error, busy, blocked = false, onCancel, 
       {request.kind === 'reset' ? (
         <>
           <label className="vcs-dialog-label" htmlFor="vcs-reset-mode">{t('commit.resetMode')}</label>
-          <select
-            id="vcs-reset-mode"
-            className="vcs-dialog-input"
-            value={mode}
-            disabled={busy}
-            data-autofocus=""
-            onChange={event => { setMode(event.currentTarget.value) }}
-          >
-            {RESET_MODES.map(entry => <option key={entry.value} value={entry.value}>{t(entry.label)}</option>)}
-          </select>
+          <span className="vcs-dialog-select">
+            <select
+              id="vcs-reset-mode"
+              className="vcs-dialog-input"
+              value={mode}
+              disabled={busy}
+              data-autofocus=""
+              onChange={event => { setMode(event.currentTarget.value) }}
+            >
+              {RESET_MODES.map(entry => <option key={entry.value} value={entry.value}>{t(entry.label)}</option>)}
+            </select>
+            <span className="vcs-dialog-select-caret" aria-hidden="true"><Chevron open /></span>
+          </span>
           <p className={mode === 'hard' ? 'vcs-dialog-warning' : 'vcs-dialog-busy'} role={mode === 'hard' ? 'alert' : undefined}>
             {t(RESET_HINT_KEYS[mode] ?? 'commit.resetSoftHint')}
           </p>
