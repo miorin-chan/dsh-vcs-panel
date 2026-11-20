@@ -25,6 +25,12 @@ import {
 } from './detail.js'
 import { ChangeTree } from './ChangeTree.jsx'
 
+/* The arrow turns back on itself: a U-turn, not a corner with a stub. */
+const STAGE_HISTORY_PATHS = {
+  undo: 'M6.17 2.5 2.5 6.17l3.67 3.66M2.5 6.17h7.33a3.67 3.67 0 0 1 0 7.33H7',
+  redo: 'M9.83 2.5 13.5 6.17l-3.67 3.66M13.5 6.17H6.17a3.67 3.67 0 0 0 0 7.33H9',
+}
+
 function StageHistoryButton({ action, entry, busy, onAction, t, locale }) {
   const undo = action === 'undo'
   const label = t(undo ? 'stage.undo' : 'stage.redo')
@@ -61,8 +67,8 @@ function StageHistoryButton({ action, entry, busy, onAction, t, locale }) {
       >
         <svg className="vcs-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path
-            d={undo ? 'M6 3 2.5 6.5 6 10M3 6.5h6.5a4 4 0 0 1 4 4V13' : 'm10 3 3.5 3.5L10 10m3-3.5H6.5a4 4 0 0 0-4 4V13'}
-            stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"
+            d={STAGE_HISTORY_PATHS[action]}
+            stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"
           />
         </svg>
       </button>
