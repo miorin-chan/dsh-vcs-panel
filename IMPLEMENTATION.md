@@ -282,7 +282,7 @@ type TurnSummary = {
 
 ### 构建与本地化
 
-`scripts/build.mjs` 用 esbuild 将 `src/client/entry.jsx` 打成单文件 CommonJS 产物 `client.js`（`--check` 校验产物是否最新），仅将宿主模块表提供的 `react` 与 `react/jsx-runtime` 设为 external，并在外层包裹 `window.__ModuleLoader__.load({ id, factory })`。CSS 以文本打入 bundle，挂载时注入单个 `<style>`，类名统一使用 `vcs-` 前缀。八种界面语言各自保存在 `src/client/locales/{zh,en,ja,es,fr,de,ru,pt}.js` 并由 `src/client/locales.js` 导出，注册到 `vcs` 命名空间；插件列表展示名与描述位于 `locale/*.json`。
+`scripts/build.mjs` 用 esbuild 将 `src/client/entry.jsx` 打成单文件 CommonJS 产物 `client.js`（`--check` 校验产物是否最新），仅将宿主模块表提供的 `react` 与 `react/jsx-runtime` 设为 external，并在外层包裹 `window.__ModuleLoader__.load({ id, factory })`。CSS 以文本打入 bundle，挂载时注入单个 `<style>`，类名统一使用 `vcs-` 前缀。八种界面语言各自保存在 `src/client/locales/{zh,en,ja,es,fr,de,ru,pt}.js` 并由 `src/client/locales.js` 导出，注册到 `vcs` 命名空间；宿主 locale 服务只做扁平 `{name}` 插值，需要按数量变化词形的键以 CLDR 复数类别后缀（`.one` / `.few` / `.many` / `.other`）存放，由 `format.js` 的 `formatPlural` / `pluralKey` 按 `Intl.PluralRules` 与各语言提供的类别集合（`PLURAL_CATEGORIES`：`zh`/`ja` 为 `other`，`en`/`de`/`es`/`fr`/`pt` 为 `one`/`other`，`ru` 为 `one`/`few`/`many`/`other`）选键并格式化数字，未知 locale 跟随宿主回退到英文，未声明的类别（如 `es`/`fr`/`pt` 面向简写词的 `many`）回落到 `other`。插件列表展示名与描述位于 `locale/*.json`。
 
 ### 宿主接缝
 

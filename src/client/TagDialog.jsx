@@ -11,13 +11,13 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { Dialog } from './Dialog.jsx'
-import { errorMessage } from './format.js'
+import { errorMessage, formatPlural } from './format.js'
 
 /**
  * Render the open tag dialog.
- * @param {{ request: { kind: 'delete'|'push', tag: string } | null, error: object | null, busy: boolean, blocked?: boolean, remotes: { status: string, list: string[], truncated: boolean, error: object | null }, onCancel: Function, onConfirm: Function, t: Function }} props - dialog, remote-list, and action state.
+ * @param {{ request: { kind: 'delete'|'push', tag: string } | null, error: object | null, busy: boolean, blocked?: boolean, remotes: { status: string, list: string[], truncated: boolean, error: object | null }, onCancel: Function, onConfirm: Function, t: Function, locale?: string }} props - dialog, remote-list, and action state.
  */
-export function TagDialog({ request, error, busy, blocked = false, remotes, onCancel, onConfirm, t }) {
+export function TagDialog({ request, error, busy, blocked = false, remotes, onCancel, onConfirm, t, locale }) {
   const [remote, setRemote] = useState('')
   const remoteRef = useRef(null)
 
@@ -79,7 +79,7 @@ export function TagDialog({ request, error, busy, blocked = false, remotes, onCa
           {loading ? <p className="vcs-dialog-busy" role="status">{t('tag.remotesLoading')}</p> : null}
           {failed ? <p className="vcs-dialog-error" role="alert">{errorMessage(t, remotes.error)}</p> : null}
           {empty ? <p className="vcs-dialog-warning" role="alert">{t('tag.noRemotes')}</p> : null}
-          {remotes.truncated ? <p className="vcs-dialog-busy">{t('tag.remotesTruncated', { count: remotes.list.length })}</p> : null}
+          {remotes.truncated ? <p className="vcs-dialog-busy">{formatPlural(t, 'tag.remotesTruncated', remotes.list.length, locale)}</p> : null}
         </>
       ) : null}
       {error !== null ? <p className="vcs-dialog-error" role="alert">{errorMessage(t, error)}</p> : null}

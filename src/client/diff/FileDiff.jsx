@@ -17,7 +17,7 @@
 
 import { createElement as h, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StageCheckbox } from '../detail/StageCheckbox.js'
-import { formatCount } from '../format.js'
+import { formatCount, formatPlural } from '../format.js'
 import { findAncestor, hasAttr } from '../keys.js'
 import { highlightLines } from './highlight.js'
 
@@ -362,7 +362,7 @@ function TextDiff({ diff, split, wrap, onStageLines, stageScope, stageDisabled, 
   }
   if (truncated) {
     children.push(h('p', { key: 'truncated', className: 'vcs-diff-note', 'data-diff-truncated': '' },
-      t('diff.truncated', { count: formatCount(MAX_RENDERED_LINES, locale) })))
+      formatPlural(t, 'diff.truncated', MAX_RENDERED_LINES, locale)))
   }
   if (split && !wrap) {
     children.push(h(SplitColumns, { key: 'columns', hunks, highlights, stageControl, stageHunk, t }))

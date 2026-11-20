@@ -18,7 +18,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { FileDiff, isValidDiff, MAX_RENDERED_LINES } from '../diff/FileDiff.jsx'
 import { mergeDiffs } from '../diff/merge.js'
-import { formatCount, lineCounts, splitPath, statusKey } from '../format.js'
+import { formatCount, formatPlural, lineCounts, splitPath, statusKey } from '../format.js'
 import {
   BACK, DOWN, findAncestor, FORWARD, hasAttr, hasClass, isDiscreteActionButton, isEditableTarget,
   isNavigationStop, isOverlayOrMenuTarget, movement, rowStep, unmodified, UP,
@@ -64,7 +64,7 @@ function remember(cache, key, value) {
 
 /** The localized reason a folded file gives when the folding budget kept it closed. */
 function foldedText(reason, entry, t, locale) {
-  if (reason === 'large') return t('stream.foldedLarge', { count: formatCount(changedLines(entry), locale) })
+  if (reason === 'large') return formatPlural(t, 'stream.foldedLarge', changedLines(entry), locale)
   return t('stream.foldedBudget')
 }
 
@@ -1229,7 +1229,7 @@ export function ChangeTree({
             <Chevron open={row.expanded} />
             <span className="vcs-tree-group-name">{t(`changes.${row.group}`)}</span>
             <span className="vcs-tree-spacer" />
-            <span className="vcs-tree-stat vcs-dim">{t('detail.fileCount', { count: formatCount(row.count, locale) })}</span>
+            <span className="vcs-tree-stat vcs-dim">{formatPlural(t, 'detail.fileCount', row.count, locale)}</span>
             {totalStat(row.added, row.deleted)}
           </button>
         </div>

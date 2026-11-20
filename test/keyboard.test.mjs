@@ -1870,7 +1870,7 @@ test('VcsView keeps one icon turning from a sync click until its refresh returns
       await new Promise(resolve => { setTimeout(resolve, 300) })
       await harness.settle()
       assert.equal(progress.attributes.get('data-sweeping'), undefined, 'the sweep stops once the fade is over')
-      assert.match(body.querySelector('.vcs-notice')?.props?.children ?? '', /^sync\.pushedMany/u)
+      assert.match(body.querySelector('.vcs-notice')?.props?.children ?? '', /^sync\.pushed\.other/u)
     } finally {
       globalThis.fetch = savedFetch
     }
@@ -3274,6 +3274,21 @@ test('BranchDialog, TagDialog, and CommitDialog cover blocked state, unmerged fo
     assert.equal(body.querySelectorAll('.vcs-button')[1].attributes.get('aria-disabled'), 'true')
     body.querySelectorAll('.vcs-button')[0].props.onClick()
     assert.equal(tagCancelled, 1)
+
+    // TagDialog pluralizes and formats truncated remote counts for the active locale.
+    harness.mount(harness.react.createElement(TagDialog, {
+      request: { kind: 'push', tag: 'v1.0' },
+      error: null,
+      busy: false,
+      blocked: false,
+      remotes: { status: 'ready', list: ['origin', 'upstream'], truncated: true, error: null },
+      onCancel: () => {},
+      onConfirm: () => {},
+      t,
+      locale: 'ru',
+    }))
+    await harness.settle()
+    assert.equal(textOf(body.querySelector('.vcs-dialog-busy')), 'tag.remotesTruncated.few:{"count":"2"}')
 
     // CommitDialog reset only marks Hard as danger and shows commit preview.
     const sha = 'f'.repeat(40)

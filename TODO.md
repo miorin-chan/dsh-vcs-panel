@@ -72,16 +72,14 @@
   刷新后若焦点仍在某一行，光标留在该行（修复自动刷新把光标移到顶部阅读行、`u` 误取消整组暂存的问题）。
   Host 夹具覆盖目录与分组的暂存、取消暂存、未跟踪目录、撤销重做、拒绝与冲突；组件夹具覆盖暂存列、`s` / `u`、合并视图三态与只读树。
   在运行中的 DSH Web（临时 `DSH_HOME`、真实 Git 夹具）实测了目录与单文件命令、`s` / `u`、撤销提示、合并视图目录复选框、窄栏与深色主题。
+- 2026-11-19：计数文案改为按语言复数规则选词：确认宿主 `@deepseek-ai/dsh-client-locale` 仅做扁平 `{name}` 插值、不内置复数规则，
+  因此在 `src/client/format.js` 新增 `PLURAL_CATEGORIES`、`pluralCategory`、`pluralKey` 与 `formatPlural`（基于 `Intl.PluralRules`，未知 locale 回退英文、未声明类别回落 `other`）。
+  将 15 个随数量变化的文案键改为 `.one` / `.few` / `.many` / `.other` 复数键并合并此前零散的 `turn.fileChanged`、`sync.pushedOne` / `pushedMany` 与 `sync.pulledOne` / `pulledMany` 分支（4 个标签/括号计数键 `top.worktreeSelection`、`history.count`、`stage.stageSelected`、`stage.unstageSelected` 在 8 种语言均不随数量变格，保持单键并在测试中显式登记），同时为 `TagDialog` 补传 `locale`。
+  `test/i18n.test.mjs` 校验 8 种语言全部复数键形式齐全、占位符一致、无直引叶键，并覆盖 0、1、2、5、21（俄语三种整数形式）、大数与回退情形。
+  在运行中的 DSH Web（一次性 `DSH_HOME`、`fixture` 仓库）核对了英文 `1 file` / `5 files` / `8 files` 与俄语 `1 файл` / `4 файла` / `5 файлов` / `8 изменений`。
 - 具体改动见 `CHANGELOG.md`；完成过程与夹具证据留在工作区任务记录里，不进本仓库。
 
 ## 任务
-
-### T1 计数文案的单复数（agent）
-
-- 问题：带 `{count}` 的文案不区分单复数，例如英文 `detail.fileCount` 显示 “1 files”；`src/client/locales/en.js` 有 19 个这样的键。
-- 先查明：文案经宿主的 locale 服务插值（`src/client/entry.jsx` 的 `ctx.locale.bind`），确认它是否支持复数形式；不支持时在插件内用 `Intl.PluralRules` 选择复数键。
-- 完成标准：8 种语言在 0、1、2、5、21 时选用正确形式（俄语区分三种）；`test/i18n.test.mjs` 检查每个复数键的形式齐全；
-  `npm run check` 通过；在 DSH Web 里核对一处文件数。
 
 ### T2 菜单与对话框的运行中复核（agent，DSH Web）
 

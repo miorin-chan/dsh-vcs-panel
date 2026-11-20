@@ -19,7 +19,7 @@ import {
   Arrow, BranchIcon, CheckIcon, Chevron, IconButton, LockIcon, RefreshIcon, RefBadge, SyncIcon,
   TimelineBesideIcon, Turning, WorkingCopyBadge,
 } from './ui.jsx'
-import { errorMessage, formatCount, shortChangeId } from './format.js'
+import { errorMessage, formatCount, formatPlural, shortChangeId } from './format.js'
 import { BRANCH_BUSY_KEYS } from './branch.js'
 import { TAG_BUSY_KEYS } from './tag.js'
 import { COMMIT_BUSY_KEYS } from './commit.js'
@@ -232,7 +232,7 @@ function BranchSwitcher({
           ))}
           {branchesTruncated ? (
             <p className="vcs-picker-menu-note">
-              {t('switch.truncated', { count: formatCount(branches.length, locale) })}
+              {formatPlural(t, 'switch.truncated', branches.length, locale)}
             </p>
           ) : null}
         </div>

@@ -72,6 +72,112 @@ export function formatCount(value, locale) {
 }
 
 /**
+ * CLDR plural categories each shipped dictionary supplies for a pluralized key.
+ *
+ * DSH's locale service does flat `{name}` interpolation with no plural rules.
+ * `es`, `fr`, and `pt` omit CLDR's `many` category because it only applies to
+ * compact words ("1 million de ..."), not digit-formatted counts; any category
+ * outside the resolved dictionary's set falls back to `other`.
+ */
+export const PLURAL_CATEGORIES = Object.freeze({
+  zh: Object.freeze(['other']),
+  ja: Object.freeze(['other']),
+  en: Object.freeze(['one', 'other']),
+  de: Object.freeze(['one', 'other']),
+  es: Object.freeze(['one', 'other']),
+  fr: Object.freeze(['one', 'other']),
+  pt: Object.freeze(['one', 'other']),
+  ru: Object.freeze(['one', 'few', 'many', 'other']),
+})
+
+const pluralRulesCache = new Map()
+
+/**
+ * Resolve the shipped dictionary and BCP 47 tag used to select a plural form.
+ *
+ * Unknown locales (including an external language pack whose fallback ends at
+ * English, or an omitted locale in tests) fall back to English so the selected
+ * plural key always matches the dictionary DSH will read. Regional variants of
+ * a shipped language keep their full tag for `Intl.PluralRules` while clamping
+ * to the primary dictionary's shipped categories.
+ * @param {string | undefined} locale - active BCP 47 locale tag.
+ * @returns {{ dict: string, tag: string }} dictionary id and PluralRules tag.
+ */
+function resolvePluralLocale(locale) {
+  if (typeof locale !== 'string') return { dict: 'en', tag: 'en' }
+  const trimmed = locale.trim().replaceAll('_', '-')
+  const normalized = trimmed.toLowerCase()
+  if (normalized === '') return { dict: 'en', tag: 'en' }
+  if (Object.hasOwn(PLURAL_CATEGORIES, normalized)) return { dict: normalized, tag: normalized }
+  const primary = normalized.split('-')[0]
+  if (Object.hasOwn(PLURAL_CATEGORIES, primary)) return { dict: primary, tag: trimmed }
+  return { dict: 'en', tag: 'en' }
+}
+
+/** Cached `Intl.PluralRules` instance for a validated BCP 47 tag. */
+function pluralRulesFor(tag) {
+  let rules = pluralRulesCache.get(tag)
+  if (rules === undefined) {
+    rules = new Intl.PluralRules(tag)
+    if (pluralRulesCache.size >= 32) pluralRulesCache.clear()
+    pluralRulesCache.set(tag, rules)
+  }
+  return rules
+}
+
+/**
+ * Pick the CLDR plural category for a count within the categories shipped by
+ * the resolved dictionary.
+ * @param {number} count - the numeric count.
+ * @param {string} [locale] - active BCP 47 locale tag; defaults to `'en'`.
+ * @returns {'one' | 'few' | 'many' | 'other'} plural category present in the dictionary.
+ */
+export function pluralCategory(count, locale) {
+  const { dict, tag } = resolvePluralLocale(locale)
+  const allowed = PLURAL_CATEGORIES[dict]
+  if (allowed.length === 1) return allowed[0]
+  if (typeof count !== 'number' || !Number.isFinite(count)) return 'other'
+  let category = 'other'
+  try {
+    category = pluralRulesFor(tag).select(count)
+  } catch {
+    try {
+      category = pluralRulesFor(dict).select(count)
+    } catch {
+      category = count === 1 ? 'one' : 'other'
+    }
+  }
+  return allowed.includes(category) ? category : 'other'
+}
+
+/**
+ * Resolve the pluralized dictionary key for a base key and numeric count.
+ * @param {string} baseKey - plural base key, e.g. `'detail.fileCount'`.
+ * @param {number} count - the numeric count.
+ * @param {string} [locale] - active BCP 47 locale tag.
+ * @returns {string} full dictionary key ending in a CLDR plural category.
+ */
+export function pluralKey(baseKey, count, locale) {
+  return `${baseKey}.${pluralCategory(count, locale)}`
+}
+
+/**
+ * Translate a pluralized count phrase, selecting the locale's plural form and
+ * formatting `{count}` with the active locale's digit grouping.
+ * @param {Function} t - the panel's translate function.
+ * @param {string} baseKey - plural base key, e.g. `'detail.fileCount'`.
+ * @param {number} count - the numeric count.
+ * @param {string} [locale] - active BCP 47 locale tag.
+ * @param {Record<string, string>} [vars] - additional template variables.
+ * @returns {string} localized, pluralized copy.
+ */
+export function formatPlural(t, baseKey, count, locale, vars) {
+  const formatted = formatCount(count, locale)
+  const params = vars === undefined ? { count: formatted } : { ...vars, count: formatted }
+  return t(pluralKey(baseKey, count, locale), params)
+}
+
+/**
  * Format an instant as a date and a time.
  * @param {number} ms - epoch milliseconds.
  * @param {string} [locale] - BCP 47 locale; browser default when omitted.
@@ -202,10 +308,8 @@ export function syncMessage(t, result, locale) {
   const upstream = typeof result?.upstream === 'string' ? result.upstream : ''
   const pushed = Number.isSafeInteger(result?.pushed) ? result.pushed : 0
   const pulled = Number.isSafeInteger(result?.pulled) ? result.pulled : 0
-  if (pushed === 1) return t('sync.pushedOne', { upstream })
-  if (pushed > 1) return t('sync.pushedMany', { upstream, count: formatCount(pushed, locale) })
-  if (pulled === 1) return t('sync.pulledOne', { upstream })
-  if (pulled > 1) return t('sync.pulledMany', { upstream, count: formatCount(pulled, locale) })
+  if (pushed > 0) return formatPlural(t, 'sync.pushed', pushed, locale, { upstream })
+  if (pulled > 0) return formatPlural(t, 'sync.pulled', pulled, locale, { upstream })
   return t('sync.level', { upstream })
 }
 

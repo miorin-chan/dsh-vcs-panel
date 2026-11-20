@@ -15,7 +15,7 @@ import { graphWidth, Graph } from './Graph.jsx'
 import { DEFAULT_ROW_HEIGHT } from './layout.js'
 import { hasSeveralAuthors } from './commits.js'
 import { worktreeSummary } from './timeline.js'
-import { errorMessage, formatCommitTime, formatCount, shortChangeId, shortSha } from '../format.js'
+import { errorMessage, formatCommitTime, formatCount, formatPlural, shortChangeId, shortSha } from '../format.js'
 import { DOWN, findAncestor, FORWARD, hasClass, isDiscreteActionButton, isEditableTarget, movement, unmodified, UP } from '../keys.js'
 import { RefBadge, WorkingCopyBadge } from '../ui.jsx'
 import { Bar, TimelineSkeleton } from '../skeleton.jsx'
@@ -52,7 +52,7 @@ function WorktreeMeta({ status, statusState, t, locale }) {
   if (summary.changed === 0) return <span>{t('changes.clean')}</span>
   return (
     <>
-      <span>{t('timeline.changes', { count: formatCount(summary.changed, locale) })}</span>
+      <span>{formatPlural(t, 'timeline.changes', summary.changed, locale)}</span>
       <LineStat added={summary.added} deleted={summary.deleted} locale={locale} />
     </>
   )
@@ -214,7 +214,7 @@ export function Timeline({
           <code className="vcs-timeline-sha" title={commit.sha}>{shortId}</code>
           {workingSummary?.changed > 0 ? (
             <>
-              <span>{t('timeline.changes', { count: formatCount(workingSummary.changed, locale) })}</span>
+              <span>{formatPlural(t, 'timeline.changes', workingSummary.changed, locale)}</span>
               <LineStat added={workingSummary.added} deleted={workingSummary.deleted} locale={locale} />
             </>
           ) : null}
@@ -358,7 +358,7 @@ export function Timeline({
           <span className="vcs-timeline-count">
             {t('history.count', { count: `${formatCount(commits.length, locale)}${hasMore ? '+' : ''}` })}
           </span>
-          {truncated ? <span className="vcs-note">{t('history.truncated', { count: formatCount(commits.length, locale) })}</span> : null}
+          {truncated ? <span className="vcs-note">{formatPlural(t, 'history.truncated', commits.length, locale)}</span> : null}
           {hasMore ? (
             <button
               type="button"

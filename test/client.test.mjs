@@ -574,13 +574,17 @@ test('switchMessage names the branch now checked out', () => {
 
 test('syncMessage names what moved, preferring the push, and reports a level branch', () => {
   const t = (key, vars) => `${key}:${JSON.stringify(vars ?? {})}`
-  assert.equal(syncMessage(t, { upstream: 'origin/main', pulled: 0, pushed: 1 }), 'sync.pushedOne:{"upstream":"origin/main"}')
+  assert.equal(syncMessage(t, { upstream: 'origin/main', pulled: 0, pushed: 1 }), 'sync.pushed.one:{"upstream":"origin/main","count":"1"}')
   assert.equal(
     syncMessage(t, { upstream: 'origin/main', pulled: 0, pushed: 1200 }, 'en-US'),
-    'sync.pushedMany:{"upstream":"origin/main","count":"1,200"}',
+    'sync.pushed.other:{"upstream":"origin/main","count":"1,200"}',
   )
-  assert.equal(syncMessage(t, { upstream: 'up/x', pulled: 1, pushed: 0 }), 'sync.pulledOne:{"upstream":"up/x"}')
-  assert.equal(syncMessage(t, { upstream: 'up/x', pulled: 3, pushed: 0 }, 'en-US'), 'sync.pulledMany:{"upstream":"up/x","count":"3"}')
+  assert.equal(syncMessage(t, { upstream: 'up/x', pulled: 1, pushed: 0 }), 'sync.pulled.one:{"upstream":"up/x","count":"1"}')
+  assert.equal(syncMessage(t, { upstream: 'up/x', pulled: 3, pushed: 0 }, 'en-US'), 'sync.pulled.other:{"upstream":"up/x","count":"3"}')
+  assert.equal(syncMessage(t, { upstream: 'up/x', pulled: 2, pushed: 0 }, 'ru'), 'sync.pulled.few:{"upstream":"up/x","count":"2"}')
+  assert.equal(syncMessage(t, { upstream: 'up/x', pulled: 5, pushed: 0 }, 'ru'), 'sync.pulled.many:{"upstream":"up/x","count":"5"}')
+  assert.equal(syncMessage(t, { upstream: 'up/x', pulled: 21, pushed: 0 }, 'ru'), 'sync.pulled.one:{"upstream":"up/x","count":"21"}')
+  assert.equal(syncMessage(t, { upstream: 'up/x', pulled: 1, pushed: 0 }, 'zh'), 'sync.pulled.other:{"upstream":"up/x","count":"1"}')
   assert.equal(syncMessage(t, { upstream: 'up/x', pulled: 0, pushed: 0 }), 'sync.level:{"upstream":"up/x"}')
   assert.equal(syncMessage(t, { pushed: -1, pulled: 'many' }), 'sync.level:{"upstream":""}', 'a malformed answer reads as level')
 })

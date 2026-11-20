@@ -10,7 +10,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { sharedRefs } from '../worktrees.js'
-import { errorMessage, formatCount, formatDateTime, shortChangeId, shortSha } from '../format.js'
+import { errorMessage, formatCount, formatDateTime, formatPlural, shortChangeId, shortSha } from '../format.js'
 import { messageBody } from '../history/commits.js'
 import { worktreeSummary } from '../history/timeline.js'
 import {
@@ -37,7 +37,7 @@ function StageHistoryButton({ action, entry, busy, onAction, t, locale }) {
     else if (Number.isSafeInteger(entry.lineCount)) {
       operation = t(unstaged ? 'stage.unstageSelected' : 'stage.stageSelected', { count: formatCount(entry.lineCount, locale) })
     } else if (Number.isSafeInteger(entry.fileCount)) {
-      operation = t(unstaged ? 'stage.unstageFiles' : 'stage.stageFiles', { count: formatCount(entry.fileCount, locale) })
+      operation = formatPlural(t, unstaged ? 'stage.unstageFiles' : 'stage.stageFiles', entry.fileCount, locale)
     }
     const path = entry.path === '' ? t('stage.repositoryRoot') : entry.path
     const target = t(undo ? 'stage.undoTarget' : 'stage.redoTarget', { operation, path })
@@ -149,7 +149,7 @@ function CommitHeader({ commitState, summary, copyLabels, onSelectCommit, isLoad
           </dl>
           {body === '' ? null : <pre className="vcs-commit-message">{body}</pre>}
           {files.length === 0 ? <p className="vcs-note">{t('commit.noFiles')}</p> : null}
-          {commitState.truncated ? <p className="vcs-note">{t('commit.filesTruncated', { count: formatCount(files.length, locale) })}</p> : null}
+          {commitState.truncated ? <p className="vcs-note">{formatPlural(t, 'commit.filesTruncated', files.length, locale)}</p> : null}
         </>
       )}
     </header>
@@ -416,7 +416,7 @@ export function DetailPane({
             {status?.branch?.name ? <span className="vcs-detail-branch vcs-dim"><BranchIcon /><span className="vcs-detail-branch-name">{status.branch.name}</span></span> : null}
             {summaryCounts !== null && summaryCounts.changed > 0 ? (
               <span className="vcs-detail-stat">
-                <span className="vcs-dim">{t('detail.fileCount', { count: formatCount(summaryCounts.changed, locale) })}</span>
+                <span className="vcs-dim">{formatPlural(t, 'detail.fileCount', summaryCounts.changed, locale)}</span>
                 {summaryCounts.added > 0 ? <span className="vcs-add">+{formatCount(summaryCounts.added, locale)}</span> : null}
                 {summaryCounts.deleted > 0 ? <span className="vcs-del">−{formatCount(summaryCounts.deleted, locale)}</span> : null}
               </span>
@@ -440,7 +440,7 @@ export function DetailPane({
             </span>
             {commitCounts === null ? null : (
               <span className="vcs-detail-stat">
-                <span className="vcs-dim">{t('detail.fileCount', { count: formatCount(commitCounts.count, locale) })}</span>
+                <span className="vcs-dim">{formatPlural(t, 'detail.fileCount', commitCounts.count, locale)}</span>
                 {commitCounts.added > 0 ? <span className="vcs-add">+{formatCount(commitCounts.added, locale)}</span> : null}
                 {commitCounts.deleted > 0 ? <span className="vcs-del">−{formatCount(commitCounts.deleted, locale)}</span> : null}
               </span>

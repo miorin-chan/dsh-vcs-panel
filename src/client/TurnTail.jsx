@@ -9,7 +9,7 @@
  * `turn-summary.js` reads the recorded per-turn summary once.
  */
 
-import { formatCount, shortChangeId } from './format.js'
+import { formatCount, formatPlural, shortChangeId } from './format.js'
 import { turnChangedFiles } from './turn.js'
 
 /**
@@ -72,18 +72,12 @@ function renderHead(head, t) {
   }
 }
 
-/** Localized changed-file count phrase for a positive per-turn count. */
-function filesChangedText(changed, locale, t) {
-  if (changed === 1) return t('turn.fileChanged')
-  return t('turn.filesChanged', { count: formatCount(changed, locale) })
-}
-
 /**
  * Render the VCS banner at the end of a Turn.
  * @param {object} props - Turn Location, per-turn summary, localized copy, and the view opener.
  * @param {object} props.turn - Turn Location with this definition's data.
  * @param {{ head?: object | null, changed: number | null, added: number | null, deleted: number | null } | null} [props.summary] - recorded turn state.
- * @param {string} [props.locale] - active BCP 47 locale for number grouping.
+ * @param {string} [props.locale] - active BCP 47 locale for number grouping and plural rules.
  * @param {(key: string, vars?: Record<string, string>) => string} props.t - this plugin's translator.
  * @param {() => void} props.onOpen - opens the version control panel in the Sidebar.
  * @returns {object | null} the banner, or null when the Turn made no net changes.
@@ -98,7 +92,7 @@ export function TurnTailChanges({ turn, summary = null, locale, t, onOpen }) {
 
   const hint = t('turn.openHint')
   const head = summary === null ? { node: null, text: '' } : renderHead(summary.head, t)
-  const leftText = hasCounts ? filesChangedText(summary.changed, locale, t) : hint
+  const leftText = hasCounts ? formatPlural(t, 'turn.filesChanged', summary.changed, locale) : hint
   const added = hasCounts ? formatCount(summary.added, locale) : null
   const deleted = hasCounts ? formatCount(summary.deleted, locale) : null
   const openLabel = hasCounts ? t('turn.openSummary', { added, deleted }) : hint

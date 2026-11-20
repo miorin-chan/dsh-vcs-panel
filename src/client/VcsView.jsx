@@ -19,7 +19,7 @@ import {
   toggleWorktree, workingCopyLabel, worktreeRefLabel,
 } from './worktrees.js'
 import {
-  errorMessage, formatCount,
+  errorMessage, formatPlural,
 } from './format.js'
 import {
   BACK, canClaimFocusFrom, findAncestor, hasAttr, hasClass, isDiscreteActionButton, isEditableTarget,
@@ -835,7 +835,7 @@ export function VcsView({
       const entries = Array.isArray(answer.entries) ? answer.entries : []
       setDirChildren(previous => ({ ...previous, [key]: entries }))
       if (answer.truncated === true) {
-        setNotice({ tone: 'error', text: t('changes.untrackedTruncated', { count: formatCount(entries.length, locale) }) })
+        setNotice({ tone: 'error', text: formatPlural(t, 'changes.untrackedTruncated', entries.length, locale) })
       }
     } catch (error) {
       if (error?.name === 'AbortError' || controller.signal.aborted) return
@@ -1270,7 +1270,7 @@ export function VcsView({
         t={t}
         locale={locale}
       />
-      {repositories.truncated ? <p className="vcs-note">{t('repositories.truncated', { count: formatCount(repositories.list.length, locale) })}</p> : null}
+      {repositories.truncated ? <p className="vcs-note">{formatPlural(t, 'repositories.truncated', repositories.list.length, locale)}</p> : null}
       {repositories.worktreesTruncated ? <p className="vcs-note">{t('repositories.worktreesTruncated')}</p> : null}
       {repositories.status === 'loading' ? (
         // Nothing is known yet, not even the backend: draw both columns as
@@ -1446,6 +1446,7 @@ export function VcsView({
           onCancel={actions.cancelDialog}
           onConfirm={actions.confirmDialog}
           t={t}
+          locale={locale}
         />
       ) : (
         <CommitDialog

@@ -165,12 +165,14 @@ test('apply registers the dictionaries, stylesheet, Sidebar page, Turn fold, and
       assert.equal(typeof entries['diff.loading'], 'string')
       assert.equal(typeof entries['turn.openHint'], 'string')
       assert.equal(typeof entries['turn.openSummary'], 'string')
-      assert.equal(typeof entries['turn.fileChanged'], 'string')
-      assert.equal(typeof entries['turn.filesChanged'], 'string')
+      assert.equal(typeof entries['turn.filesChanged.other'], 'string')
       assert.equal(typeof entries['sidebar.guide'], 'string')
       assert.equal('surface.openSidebar' in entries, false)
       assert.equal('surface.unavailable' in entries, false)
     }
+    assert.equal(typeof dictionary.en['turn.filesChanged.one'], 'string')
+    assert.equal(typeof dictionary.ru['turn.filesChanged.few'], 'string')
+    assert.equal(typeof dictionary.ru['turn.filesChanged.many'], 'string')
     assert.deepEqual(optionalInjections, [['shortcuts', 'sessions']])
     assert.equal(commands.length, 1)
     assert.equal(commands[0].id, 'vcs.view.toggle')
@@ -300,7 +302,7 @@ test('apply registers the dictionaries, stylesheet, Sidebar page, Turn fold, and
 
     const withCounts = renderBanner(props).props.children
     assert.equal(withCounts.props.title, 'vcs:turn.openHint')
-    assert.equal(withCounts.props['aria-label'], 'feat/turn-1 · vcs:turn.filesChanged:2 · vcs:turn.openSummary:1,234:0')
+    assert.equal(withCounts.props['aria-label'], 'feat/turn-1 · vcs:turn.filesChanged.other:2 · vcs:turn.openSummary:1,234:0')
     const [, right] = withCounts.props.children
     const [stat, popout] = right.props.children
     assert.equal(stat.props.className, 'vcs-turn-stat')
@@ -312,7 +314,7 @@ test('apply registers the dictionaries, stylesheet, Sidebar page, Turn fold, and
     assert.equal(popout.type().props.className, 'vcs-turn-popout')
 
     const jjBanner = renderBanner({ ...props, turn: makeTurn(2, 24) }).props.children
-    assert.equal(jjBanner.props['aria-label'], '@ qpvuntsm · vcs:turn.fileChanged · vcs:turn.openSummary:5:2')
+    assert.equal(jjBanner.props['aria-label'], '@ qpvuntsm · vcs:turn.filesChanged.other:1 · vcs:turn.openSummary:5:2')
 
     // A turn with recorded branch but no line counts shows branch + Open VCS.
     renderBanner({ ...props, turn: makeTurn(3) })
