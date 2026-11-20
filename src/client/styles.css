@@ -601,6 +601,11 @@ select.vcs-dialog-input {
   white-space: nowrap;
 }
 
+select.vcs-repository-kind {
+  appearance: auto;
+  padding-right: 8px;
+}
+
 .vcs-dialog-input:disabled {
   opacity: 0.55;
 }
@@ -625,8 +630,72 @@ select.vcs-dialog-input {
 .vcs-dialog-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 4px;
+}
+
+.vcs-repository-scope {
+  overflow-wrap: anywhere;
+}
+
+.vcs-repository-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.vcs-repository-section .vcs-repository-sources {
+  max-height: 8rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.vcs-repository-section {
+  margin: 0 0 12px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.vcs-repository-section h4 {
+  margin: 0 0 4px;
+  color: var(--dsw-alias-label-primary);
+  font-size: inherit;
+  font-weight: 500;
+}
+
+.vcs-repository-section p,
+.vcs-repository-section ul {
+  margin: 0;
+}
+
+.vcs-repository-section ul {
+  padding: 0;
+  list-style: none;
+}
+
+.vcs-repository-section li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-block: 4px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  overflow-wrap: anywhere;
+}
+
+.vcs-repository-section li small {
+  display: block;
+  font-size: 11px;
+}
+
+.vcs-repository-section li > button {
+  flex: none;
+}
+
+.vcs-dialog-actions.vcs-repository-add-actions {
+  margin: 0 0 12px;
 }
 
 .vcs-button.vcs-button-danger {

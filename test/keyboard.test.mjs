@@ -61,7 +61,7 @@ class FakeElement {
       if (key.startsWith('data-')) {
         this.dataset[datasetKey(key)] = String(value)
         this.attributes.set(key, String(value))
-      } else if (key.startsWith('aria-') || key === 'id' || key === 'role' || key === 'title') {
+      } else if (key.startsWith('aria-') || key === 'id' || key === 'role' || key === 'title' || key === 'type') {
         this.attributes.set(key, String(value))
       }
     }
@@ -4135,6 +4135,191 @@ test('VcsView claims keyboard readiness on window focus and visibility without s
     }
   } finally {
     globalThis.fetch = savedFetch
+  }
+})
+
+test('VcsView manages repositories from an empty picker and refreshes after a successful save', async () => {
+  const harness = createHarness()
+  const restore = harness.installGlobals()
+  const previousFetch = globalThis.fetch
+  const requests = []
+  const posts = []
+  const sessionId = 'session-repository-config'
+  const child = '/workspace/deep/path/repo'
+  let config = { scanDirectories: [], repositories: [{ path: 'missing/repo', available: false }], revision: 'one' }
+  let listed = []
+  const pendingSave = Promise.withResolvers()
+  const response = (data, status = 200) => ({ ok: status === 200, status, async json() { return data } })
+  globalThis.fetch = async (url, options) => {
+    const parsed = new URL(url, 'http://127.0.0.1')
+    requests.push(parsed.pathname)
+    if (parsed.pathname === '/api/vcs.repository-config' && options.method === 'POST') {
+      const data = JSON.parse(options.body)
+      posts.push(data)
+      assert.equal(options.credentials, 'same-origin')
+      assert.equal(options.headers['content-type'], 'application/json')
+      if (data.revision === 'one') {
+        await pendingSave.promise
+        config = { scanDirectories: [], repositories: [], revision: 'two' }
+        return response({ error: { code: 'repository-config-conflict', message: 'Changed on disk.' } }, 409)
+      }
+      config = {
+        scanDirectories: data.scanDirectories.map(path => ({ path, available: true })),
+        repositories: data.repositories.map(path => ({ path, available: true })),
+        revision: 'three',
+      }
+      listed = [{ path: child, name: 'repo', vcs: 'git', capabilities: GIT_CAPABILITIES,
+        sources: [{ kind: 'repository', path: 'deep/path/repo' }, { kind: 'directory', path: 'deep/path' }] }]
+      return response(config)
+    }
+    assert.equal(parsed.searchParams.get('sessionId'), sessionId)
+    switch (parsed.pathname) {
+      case '/api/vcs.repositories': return response({ repositories: listed, cwd: '/workspace' })
+      case '/api/vcs.repository-config': return response(config)
+      case '/api/vcs.repository-preview': {
+        const path = parsed.searchParams.get('path')
+        const kind = parsed.searchParams.get('kind')
+        if (path === 'deep/path' && kind === 'repository') {
+          return response({ error: { code: 'repository-path-unavailable' } }, 400)
+        }
+        assert.ok((path === 'deep/path' && kind === 'directory') || (path === 'deep/path/repo' && kind === 'repository'))
+        return response({ repositories: [{ path: 'deep/path/repo', name: 'repo', vcs: 'git' }], truncated: kind === 'directory' })
+      }
+      case '/api/vcs.status': return response({ repo: listed[0], vcs: 'git', capabilities: GIT_CAPABILITIES,
+        branch: { name: 'main', unborn: true }, groups: { staged: [], unstaged: [], untracked: [] }, total: 0 })
+      case '/api/vcs.log': return response({ commits: [] })
+      default: assert.fail(`Unexpected route ${parsed.pathname}`)
+    }
+  }
+
+  try {
+    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { document, react } = harness
+    const body = document.body
+    const q = selector => body.querySelector(selector)
+    const dialog = () => q('[role="dialog"]')
+    const button = key => {
+      const control = dialog().querySelectorAll('[type="button"]').find(item => textOf(item) === key)
+      assert.ok(control, key)
+      return control
+    }
+    const submit = () => dialog().props.onSubmit({ preventDefault() {} })
+    const change = (id, value) => q(`[id="vcs-repository-config-${id}"]`).props.onChange({ target: { value } })
+    const open = async trigger => {
+      trigger.focus()
+      harness.keyDown(trigger, 'ArrowDown')
+      await harness.settle()
+      assert.equal(q('[role="menuitem"]'), document.activeElement, 'the empty picker focuses its only item')
+      harness.keyClick(document.activeElement)
+      await harness.settle()
+      assert.equal(document.activeElement, q('[id="vcs-repository-config-title"]'))
+    }
+    harness.mount(react.createElement(VcsView, { sessionId, t }))
+    await harness.settle()
+    const trigger = q('.vcs-repo-button')
+    assert.equal(trigger.props.disabled, false)
+    await open(trigger)
+    harness.keyDown(document.activeElement, 'Escape')
+    assert.equal(dialog(), null)
+    assert.equal(document.activeElement, trigger)
+    await open(trigger)
+    assert.match(textOf(dialog()), /repositoryConfig.scope.*\/workspace/u)
+    assert.match(textOf(dialog()), /missing\/repo.*repositoryConfig.unavailable/u)
+    harness.keyClick(button('repositoryConfig.remove'))
+    assert.doesNotMatch(textOf(dialog()), /missing\/repo/u)
+
+    change('path', 'deep/path')
+    await harness.settle()
+    assert.equal(harness.keyDown(q('[id="vcs-repository-config-path"]'), 'Enter').prevented, true)
+    await harness.settle()
+    assert.match(textOf(dialog()), /deep\/path\/repo/u)
+    assert.match(textOf(dialog()), /repositoryConfig.previewTruncated/u)
+    harness.keyClick(button('repositoryConfig.add'))
+    submit()
+    await harness.settle()
+    assert.equal(document.activeElement, q('[id="vcs-repository-config-title"]'))
+    assert.equal(textOf(dialog().querySelector('[role="status"]')), 'repositoryConfig.saving')
+    assert.equal(button('branch.cancel').attributes.get('aria-disabled'), 'true')
+    harness.keyDown(document.activeElement, 'Escape')
+    assert.ok(dialog(), 'the in-flight write cannot be dismissed')
+    pendingSave.resolve()
+    await harness.settle()
+    assert.deepEqual(posts, [{ sessionId, revision: 'one', scanDirectories: ['deep/path'], repositories: [] }])
+    assert.match(textOf(dialog()), /error.repositoryConfigConflict/u)
+    assert.match(textOf(dialog()), /deep\/path/u, 'conflict preserves the draft until reload')
+    assert.equal(requests.filter(path => path === '/api/vcs.repositories').length, 1)
+
+    harness.keyClick(button('repositoryConfig.discardReload'))
+    await harness.settle()
+    assert.doesNotMatch(textOf(dialog()), /deep\/path/u)
+    change('kind', 'repository')
+    change('path', 'deep/path')
+    await harness.settle()
+    harness.keyClick(button('repositoryConfig.preview'))
+    await harness.settle()
+    assert.match(textOf(dialog()), /error.repositoryPathUnavailable/u)
+    assert.equal(button('repositoryConfig.add').props.disabled, true)
+    change('path', 'deep/path/repo')
+    await harness.settle()
+    harness.keyClick(button('repositoryConfig.preview'))
+    await harness.settle()
+    harness.keyClick(button('repositoryConfig.add'))
+    submit()
+    await harness.settle()
+    assert.deepEqual(posts[1], { sessionId, revision: 'two', scanDirectories: [], repositories: ['deep/path/repo'] })
+    assert.equal(dialog(), null)
+    assert.equal(textOf(trigger), 'repo')
+    assert.equal(requests.filter(path => path === '/api/vcs.repositories').length, 2)
+
+    trigger.focus()
+    harness.keyDown(trigger, 'ArrowDown')
+    await harness.settle()
+    harness.keyDown(document.activeElement, 'End')
+    assert.equal(document.activeElement, q('[role="menuitem"]'))
+    harness.keyClick(document.activeElement)
+    await harness.settle()
+    assert.match(textOf(dialog()), /repositoryConfig.sourceRepository/u)
+    assert.match(textOf(dialog()), /repositoryConfig.sourceDirectory/u)
+  } finally {
+    harness.unmount()
+    restore()
+    globalThis.fetch = previousFetch
+  }
+})
+
+test('VcsView leaves repository configuration read-only when the Host reports invalid JSON', async () => {
+  const harness = createHarness()
+  const restore = harness.installGlobals()
+  const previousFetch = globalThis.fetch
+  const code = 'repository-config-invalid'
+  globalThis.fetch = async (url, options) => {
+    assert.equal(options.method, 'GET')
+    const path = new URL(url, 'http://127.0.0.1').pathname
+    assert.ok(path === '/api/vcs.repositories' || path === '/api/vcs.repository-config')
+    const data = path === '/api/vcs.repositories'
+      ? { repositories: [], configError: code }
+      : { scanDirectories: [], repositories: [], revision: 'invalid', error: code }
+    return { ok: true, status: 200, async json() { return data } }
+  }
+  try {
+    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    const { document, react } = harness
+    const body = document.body
+    harness.mount(react.createElement(VcsView, { sessionId: 'invalid-config', t }))
+    await harness.settle()
+    assert.equal(textOf(body.querySelector('[role="alert"]')), 'error.repositoryConfigInvalid')
+    harness.keyClick(body.querySelector('.vcs-repo-button'))
+    await harness.settle()
+    harness.keyClick(body.querySelector('[role="menuitem"]'))
+    await harness.settle()
+    const dialog = body.querySelector('[role="dialog"]')
+    assert.match(textOf(dialog), /error.repositoryConfigInvalid/u)
+    assert.equal(dialog.querySelector('[id="vcs-repository-config-path"]'), null)
+    assert.equal(dialog.querySelector('[type="submit"]').props.disabled, true)
+  } finally {
+    harness.unmount()
+    restore()
+    globalThis.fetch = previousFetch
   }
 })
 

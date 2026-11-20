@@ -662,7 +662,9 @@ test('HEAD is rechecked after the scratch index is written and failures leave hi
 
 test('a linked worktree uses its own reciprocal metadata and history is hidden in previews', async t => {
   const f = fixture(t)
-  const linked = join(f.root, 'linked-checkout')
+  // The checkout is visible through the worktree list, outside default repository discovery.
+  const linked = join(f.root, 'checkouts', 'linked-checkout')
+  mkdirSync(dirname(linked))
   f.git('worktree', 'add', '-qb', 'linked', linked)
   const originalSession = f.ctx.sessions.get
   f.ctx.sessions.get = id => id === 'linked' ? { header: { cwd: linked } } : originalSession(id)

@@ -1,10 +1,11 @@
 /**
  * Host half of `dsh-vcs-panel`.
  *
- * Nine authenticated read routes under `/api/vcs.*` expose one repository's
+ * Authenticated routes under `/api/vcs.*` expose one repository's
  * working changes, a single file's hunks, its history, each turn's recorded
- * head and change totals, its local branches, and its remotes. Seven write
- * routes settle what the panel shows: `POST /api/vcs.sync` brings a Git branch
+ * head and change totals, its local branches, and its remotes. Repository
+ * management reads and writes discovery rules owned by the session directory.
+ * Version control write routes settle what the panel shows: `POST /api/vcs.sync` brings a Git branch
  * level with its upstream by fetching and then either fast-forwarding or
  * pushing, `POST /api/vcs.switch` checks out an existing local branch,
  * `POST /api/vcs.branch` runs one local or remote-branch action (rename,
@@ -40,6 +41,9 @@ export const inject = ['connection', 'sessions', 'subprocess', 'fs']
  */
 const ROUTES = [
   { path: '/api/vcs.repositories', key: 'repositories', method: 'GET' },
+  { path: '/api/vcs.repository-config', key: 'repositoryConfig', method: 'GET' },
+  { path: '/api/vcs.repository-config', key: 'saveRepositoryConfig', method: 'POST' },
+  { path: '/api/vcs.repository-preview', key: 'repositoryPreview', method: 'GET' },
   { path: '/api/vcs.status', key: 'status', method: 'GET' },
   { path: '/api/vcs.branches', key: 'branches', method: 'GET' },
   { path: '/api/vcs.remotes', key: 'remotes', method: 'GET' },

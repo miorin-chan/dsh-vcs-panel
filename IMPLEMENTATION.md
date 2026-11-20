@@ -14,7 +14,10 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 
 | 路由 | 查询参数 | 应答字段 |
 | --- | --- | --- |
-| `GET /api/vcs.repositories` | `sessionId` | `cwd`、`repositories[]`（`path`、`name`、`enclosing`、`vcs`、`capabilities`、`worktrees[]`：`path`、`name`、`head`、Git 的 `branch`）、`truncated`、`worktreesTruncated` |
+| `GET /api/vcs.repositories` | `sessionId` | `cwd`、`repositories[]`（`path`、`name`、`enclosing`、`vcs`、`capabilities`、`sources[]`、`worktrees[]`：`path`、`name`、`head`、Git 的 `branch`）、`truncated`、`worktreesTruncated`、`configError?` |
+| `GET /api/vcs.repository-config` | `sessionId` | `revision`、`scanDirectories[]`、`repositories[]`（条目含 `path`、`available`）、`error?` |
+| `GET /api/vcs.repository-preview` | `sessionId`、`path`、`kind`（`directory` 或 `repository`） | `repositories[]`（相对 `path`、`name`、`vcs`）、`truncated` |
+| `POST /api/vcs.repository-config` | JSON `{ sessionId, revision, scanDirectories, repositories }`（两个路径数组） | 同配置 GET |
 | `GET /api/vcs.status` | `sessionId`、`repo`、`worktree?` | `repo`、`vcs`、`capabilities`、`defaultNode`、`branch`、`workingCopy?`、`groups`、`total`、`truncated`、`stageHistory` |
 | `GET /api/vcs.branches` | `sessionId`、`repo` | `branches[]`（`name`、`current`）、`truncated`（仅 `capabilities.branchSwitch` 为真时可用） |
 | `GET /api/vcs.remotes` | `sessionId`、`repo` | `remotes[]`、`truncated`（`capabilities.tagOps` 或 `capabilities.branchOps` 为真时可用） |
@@ -35,13 +38,19 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 
 客户端只传会话标识与候选路径，不能凭请求参数让服务端读取任意目录或注入命令选项：
 
-- **会话与仓库白名单**：`sessionId` 必须命中带有效 `header.cwd` 的活跃会话；
-  `repo` 必须命中当次 `discoverRepositories` 的结果（`sameRepoPath`）。
-- **仓库发现与符号链接收敛**：从 `cwd` 向上最多 64 层查找最近的仓库标记，
-  再扫描 `cwd` 下一层子目录（忽略 `node_modules`，不递归）。
-  标记用 `lstat` 检测且 `.jj` 优先于 `.git`，兼容 linked worktree 的 `.git` 文件与 submodule。
-  根路径经 `ctx.fs.resolve` 规范化，子仓库规范路径必须仍在 `cwd` 内；读取文件前再经 `containPath` 做 `realpath` 校验，
-  确保目标留在仓库根内。
+- **会话与仓库范围**：`sessionId` 必须命中带有效 `header.cwd` 的活跃会话。
+  列表由 `discoverRepositories` 枚举，仓库路由由 `resolveSessionRepository` 直接校验目标，无需枚举目录。
+  两者按[工作区配置](DESIGN.md#仓库发现与工作区配置)与默认规则确定范围。
+  默认向上最多查 64 层，直属扫描跳过 `.git`、`.jj` 和 `node_modules`。
+  候选目录经 `ctx.fs.resolve` 规范化，并保持在对应扫描目录内。
+  标记用 `lstat` 检测且 `.jj` 优先于 `.git`，兼容 linked worktree 和 submodule 的 `.git` 文件。
+  列表的 `sources` 保留 `default`、`directory` 和 `repository` 来源，后两种含配置中的相对 `path`。
+  读取仓库文件另用 `containPath` 校验实际路径。
+- **发现配置读写**：配置文件限为会话目录内的常规 UTF-8 JSON 文件，Host 拒绝配置文件路径别名。
+  读取限量并核对文件版本，`revision` 隐藏实际文件版本。
+  保存后端使用 `ctx.fs.writeText` 的版本或创建前置条件原子写入，避免覆盖过期编辑；路径失效的已保存条目可保留或移除。
+  `repository-config-invalid`、`repository-config-conflict`、
+  `repository-config-write-failed` 和 `repository-path-unavailable` 分别表示无效、冲突、保存失败和路径不可用。
 - **仓库分组与工作树白名单**：`groupRepositories` 将验证为同一存储的工作树归组，
   以首个已授权工作树为入口（`repo`）；无法验证归属的独立发现根不合并。
   Git 从 `git worktree list --porcelain -z` 读取目录，略过 bare、prunable 和不在线的树，
@@ -400,6 +409,7 @@ type TurnSummary = {
 | 项目 | 上限 | 执行位置 |
 | --- | --- | --- |
 | 单会话初始仓库根 / 附加工作树数 | 各 50 | Host `discoverRepositories` / `groupRepositories` |
+| 仓库发现标记检查 / 配置文件 / 每组配置路径 | 1,000 项 / 64 KiB / 50 项 | Host `repositories.js` / `repository-config.js` |
 | 工作树状态读取并发 / 一次历史请求的工作树数 | Git 4、Jujutsu 1 / 51 | Client `VcsView` / Host `log` |
 | Jujutsu `.jj/repo` 路径链接 | 16 KiB | Host `jjCommonDirAt` |
 | 每组状态文件数（Git）/ 单提交详情文件数 / 未跟踪目录展开条目数 / 本地分支列表 / 远程列表 | 各 500 | Host `status` / `commit` / `untracked` / `branches` / `remotes` |

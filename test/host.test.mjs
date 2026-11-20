@@ -12,7 +12,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises'
+import { lstat, mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { delimiter, dirname, join, basename, resolve as resolvePath, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -520,6 +520,379 @@ test('repositories is empty rather than an error when the cwd is not in a reposi
   assert.deepEqual(body.repositories, [])
   assert.equal(body.cwd, plainPath)
   assert.equal(body.truncated, false)
+})
+
+const REPOSITORY_CONFIG_ROUTE = '/api/vcs.repository-config'
+const REPOSITORY_PREVIEW_ROUTE = '/api/vcs.repository-preview'
+
+/** Run the registered Host routes against an isolated multi-repository workspace. */
+function repositoryDiscoveryFixture(t) {
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'vcs-discovery-')))
+  t.after(() => rmSync(scratch, { recursive: true, force: true }))
+  const workspace = join(scratch, 'workspace')
+  const configPath = join(workspace, '.dsh', 'vcs-panel.json')
+  const gitRepo = join(workspace, 'plugins', 'one')
+  const deeperRepo = join(workspace, 'plugins', 'archive', 'two')
+  const outside = join(scratch, 'outside')
+  const plain = join(workspace, 'other')
+  mkdirSync(plain, { recursive: true })
+  initRepo(workspace)
+  initRepo(gitRepo)
+  initRepo(deeperRepo)
+  initRepo(outside)
+  writeFileSync(join(gitRepo, 'tracked.txt'), 'original\n')
+  git(gitRepo, ['add', 'tracked.txt'])
+  git(gitRepo, ['commit', '-qm', 'nested repository commit'])
+
+  const routes = new Map()
+  const disposers = []
+  const directoriesListed = []
+  let beforeConfigWrite
+  const sessionDirectories = new Map([['root', workspace], ['child', plain]])
+  async function statVersion(file) {
+    const info = await stat(file, { bigint: true })
+    return `${info.ino}:${info.mtimeNs}:${info.size}`
+  }
+  apply(createHost({
+    sessions: {
+      get(id) {
+        const cwd = sessionDirectories.get(id)
+        return cwd === undefined ? undefined : { header: { cwd } }
+      },
+    },
+    fs: {
+      ...fakeFs,
+      async stat(target) {
+        const info = await fakeFs.stat(target)
+        if (info === undefined) return undefined
+        return { ...info, version: await statVersion(target.displayPath) }
+      },
+      async writeText(target, text, guard, signal, callerPolicy) {
+        signal?.throwIfAborted()
+        const cwd = sessionDirectories.get(callerPolicy.sessionId)
+        assert.deepEqual(callerPolicy, { mode: 'workspace-write', workspaceRoot: cwd, sessionId: callerPolicy.sessionId })
+        assert.equal(target.displayPath, join(cwd, '.dsh', 'vcs-panel.json'))
+        assert.ok(fakeFs.contains(await fakeFs.resolve(cwd), await fakeFs.resolve(target.displayPath)))
+        beforeConfigWrite?.()
+        if (guard.kind === 'createIfAbsent') {
+          await mkdir(dirname(target.displayPath), { recursive: true })
+          try {
+            await writeFile(target.displayPath, text, { flag: 'wx' })
+          } catch (error) {
+            if (error.code === 'EEXIST') throw Object.assign(error, { code: 'FS_ALREADY_EXISTS' })
+            throw error
+          }
+        } else {
+          assert.equal(guard.kind, 'replaceIfVersion')
+          if (guard.version !== await statVersion(target.displayPath)) {
+            throw Object.assign(new Error('Version mismatch'), { code: 'FS_STALE_VERSION' })
+          }
+          await writeFile(target.displayPath, text)
+        }
+      },
+      listDir(target, signal) {
+        directoriesListed.push(target.displayPath)
+        return fakeFs.listDir(target, signal)
+      },
+    },
+    effect(register) {
+      disposers.push(register())
+    },
+    connection: {
+      fetch: {
+        register(registered) {
+          for (const method of registered.methods) routes.set(`${method} ${registered.path}`, registered)
+          return () => {}
+        },
+      },
+    },
+  }))
+  t.after(async () => {
+    for (const dispose of disposers.reverse()) await dispose()
+  })
+
+  async function request(method, path, params = {}, headers = {}) {
+    const registered = routes.get(`${method} ${path}`)
+    assert.ok(registered, `Host registered ${method} ${path}`)
+    const input = { sessionId: 'root', ...params }
+    const url = method === 'GET' ? route(path, input) : path
+    const response = await registered.fetch(new Request(`http://127.0.0.1${url}`, {
+      method,
+      headers: method === 'GET' ? headers : { 'content-type': 'application/json', ...headers },
+      body: method === 'GET' ? undefined : JSON.stringify(input),
+    }))
+    return { status: response.status, body: await response.json() }
+  }
+
+  return {
+    workspace, configPath, gitRepo, deeperRepo, outside, plain, directoriesListed,
+    get: (path, params) => request('GET', path, params),
+    post: (path, params, headers) => request('POST', path, params, headers),
+    onConfigWrite(callback) { beforeConfigWrite = callback },
+    writeConfig(config) {
+      mkdirSync(dirname(configPath), { recursive: true })
+      writeFileSync(configPath, typeof config === 'string' ? config : JSON.stringify(config))
+    },
+  }
+}
+
+function repositoryPaths(answer) {
+  assert.equal(answer.status, 200)
+  return answer.body.repositories.map(repo => repo.path).sort()
+}
+
+test('configured directory discovery is shallow, merges sources, and authorizes real Git operations until removed', async t => {
+  const f = repositoryDiscoveryFixture(t)
+  assert.deepEqual(repositoryPaths(await f.get('/api/vcs.repositories')), [f.workspace])
+
+  const preview = await f.get(REPOSITORY_PREVIEW_ROUTE, { path: 'plugins', kind: 'directory' })
+  assert.deepEqual(repositoryPaths(preview), ['plugins/one'])
+  assert.equal(preview.body.truncated, false)
+  assert.equal(preview.body.repositories[0].name, 'one')
+  assert.equal(preview.body.repositories[0].vcs, 'git')
+  assert.deepEqual(repositoryPaths(await f.get(REPOSITORY_PREVIEW_ROUTE, {
+    path: 'plugins/archive/two', kind: 'repository',
+  })), ['plugins/archive/two'])
+  assert.deepEqual(repositoryPaths(await f.get('/api/vcs.repositories')), [f.workspace])
+  await assert.rejects(readFile(f.configPath), { code: 'ENOENT' })
+
+  f.writeConfig({ scanDirectories: ['plugins'], repositories: ['plugins/one', 'plugins/archive/two'] })
+  const listing = await f.get('/api/vcs.repositories')
+  assert.deepEqual(repositoryPaths(listing), [f.workspace, f.gitRepo, f.deeperRepo].sort())
+  assert.equal(listing.body.truncated, false)
+  const discovered = listing.body.repositories.find(repo => repo.path === f.gitRepo)
+  assert.equal(discovered.vcs, 'git')
+  assert.ok(discovered.sources.some(source => source.kind === 'directory' && source.path === 'plugins'))
+  assert.ok(discovered.sources.some(source => source.kind === 'repository' && source.path === 'plugins/one'))
+
+  const before = await f.get(REPOSITORY_CONFIG_ROUTE)
+  assert.equal(before.status, 200)
+  assert.deepEqual(before.body.scanDirectories, [{ path: 'plugins', available: true }])
+  const keepScanning = await f.post(REPOSITORY_CONFIG_ROUTE, {
+    revision: before.body.revision, scanDirectories: ['plugins'], repositories: [],
+  })
+  assert.equal(keepScanning.status, 200)
+  assert.deepEqual(repositoryPaths(await f.get('/api/vcs.repositories')), [f.workspace, f.gitRepo].sort())
+
+  f.directoriesListed.length = 0
+  const params = { repo: f.gitRepo }
+  const status = await f.get('/api/vcs.status', params)
+  assert.equal(status.status, 200)
+  assert.equal(status.body.branch.name, 'main')
+  const log = await f.get('/api/vcs.log', params)
+  assert.equal(log.status, 200)
+  assert.equal(log.body.commits[0].sha, git(f.gitRepo, ['rev-parse', 'HEAD']))
+  assert.equal(f.directoriesListed.includes(join(f.workspace, 'plugins')), false)
+
+  const removal = await f.post(REPOSITORY_CONFIG_ROUTE, {
+    revision: keepScanning.body.revision, scanDirectories: [], repositories: [],
+  })
+  assert.equal(removal.status, 200)
+  assert.deepEqual(repositoryPaths(await f.get('/api/vcs.repositories')), [f.workspace])
+
+  git(f.gitRepo, ['branch', 'other'])
+  for (const response of [
+    await f.get('/api/vcs.status', params),
+    await f.get('/api/vcs.log', params),
+    await f.post('/api/vcs.switch', { ...params, branch: 'other' }),
+  ]) {
+    assert.equal(response.status, 400)
+    assert.equal(response.body.error.code, 'not-a-repo')
+  }
+  assert.equal(git(f.gitRepo, ['branch', '--show-current']), 'main')
+})
+
+test('a session uses its own discovery file and never inherits a parent config', async t => {
+  const f = repositoryDiscoveryFixture(t)
+  const childRepo = join(f.plain, 'services', 'child')
+  initRepo(childRepo)
+  f.writeConfig({ scanDirectories: ['other/services'] })
+  assert.deepEqual(repositoryPaths(await f.get('/api/vcs.repositories')), [f.workspace, childRepo].sort())
+  assert.deepEqual(repositoryPaths(await f.get('/api/vcs.repositories', { sessionId: 'child' })), [f.workspace])
+
+  const childConfig = await f.get(REPOSITORY_CONFIG_ROUTE, { sessionId: 'child' })
+  assert.equal(childConfig.status, 200)
+  assert.deepEqual(childConfig.body.scanDirectories, [])
+  const saved = await f.post(REPOSITORY_CONFIG_ROUTE, {
+    sessionId: 'child', revision: childConfig.body.revision, scanDirectories: ['services'], repositories: [],
+  })
+  assert.equal(saved.status, 200)
+  assert.deepEqual(repositoryPaths(await f.get('/api/vcs.repositories', { sessionId: 'child' })), [f.workspace, childRepo].sort())
+  assert.deepEqual(JSON.parse(await readFile(f.configPath, 'utf8')), { scanDirectories: ['other/services'] })
+})
+
+test('a real configured Jujutsu workspace remains independently browsable', { skip: !HAS_JJ }, async t => {
+  const f = repositoryDiscoveryFixture(t)
+  const jjRepo = join(f.workspace, 'projects', 'deep', 'jujutsu')
+  mkdirSync(jjRepo, { recursive: true })
+  jj(jjRepo, ['git', 'init'])
+  writeFileSync(join(jjRepo, 'tracked.txt'), 'hello jujutsu\n')
+  jj(jjRepo, ['describe', '-m', 'configured workspace'])
+  f.writeConfig({ repositories: ['projects/deep/jujutsu'] })
+
+  const listing = await f.get('/api/vcs.repositories')
+  assert.deepEqual(repositoryPaths(listing), [f.workspace, jjRepo].sort())
+  assert.equal(listing.body.repositories.find(repo => repo.path === jjRepo).vcs, 'jujutsu')
+  const preview = await f.get(REPOSITORY_PREVIEW_ROUTE, { path: 'projects/deep/jujutsu', kind: 'repository' })
+  assert.deepEqual(repositoryPaths(preview), ['projects/deep/jujutsu'])
+  assert.equal(preview.body.repositories[0].vcs, 'jujutsu')
+  const status = await f.get('/api/vcs.status', { repo: jjRepo })
+  assert.equal(status.status, 200)
+  assert.equal(status.body.vcs, 'jujutsu')
+  assert.equal(status.body.workingCopy.subject, 'configured workspace')
+  const log = await f.get('/api/vcs.log', { repo: jjRepo })
+  assert.equal(log.status, 200)
+  assert.equal(log.body.commits[0].sha, jj(jjRepo, ['log', '-r', '@', '--no-graph', '-T', 'commit_id']))
+})
+
+test('malformed discovery config leaves default repositories available and reports its error', async t => {
+  const f = repositoryDiscoveryFixture(t)
+  for (const contents of ['{malformed', '{"scanDirectories":"plugins"}']) {
+    f.writeConfig(contents)
+    const config = await f.get(REPOSITORY_CONFIG_ROUTE)
+    assert.equal(config.status, 200)
+    assert.equal(config.body.error, 'repository-config-invalid')
+    assert.deepEqual(config.body.scanDirectories, [])
+    assert.deepEqual(config.body.repositories, [])
+    const listing = await f.get('/api/vcs.repositories')
+    assert.deepEqual(repositoryPaths(listing), [f.workspace])
+    assert.equal(listing.body.configError, 'repository-config-invalid')
+    assert.equal((await f.get('/api/vcs.status', { repo: f.workspace })).status, 200)
+    assert.equal(await readFile(f.configPath, 'utf8'), contents)
+  }
+})
+
+test('vanished discovery paths stay configured and stop authorizing repository reads', async t => {
+  const f = repositoryDiscoveryFixture(t)
+  f.writeConfig({ scanDirectories: ['plugins'], repositories: ['plugins/archive/two'] })
+  assert.equal((await f.get('/api/vcs.status', { repo: f.deeperRepo })).status, 200)
+  renameSync(join(f.workspace, 'plugins'), join(f.workspace, 'moved-plugins'))
+
+  const config = await f.get(REPOSITORY_CONFIG_ROUTE)
+  assert.equal(config.status, 200)
+  assert.deepEqual(config.body.scanDirectories, [{ path: 'plugins', available: false }])
+  assert.deepEqual(config.body.repositories, [{ path: 'plugins/archive/two', available: false }])
+  assert.deepEqual(repositoryPaths(await f.get('/api/vcs.repositories')), [f.workspace])
+  const denied = await f.get('/api/vcs.status', { repo: f.deeperRepo })
+  assert.equal(denied.status, 400)
+  assert.equal(denied.body.error.code, 'not-a-repo')
+})
+
+test('repository config and preview refuse traversal and outward repository symlinks', async t => {
+  const f = repositoryDiscoveryFixture(t)
+  symlinkSync(f.outside, join(f.workspace, 'outside-link'))
+  symlinkSync(f.outside, join(f.workspace, 'plugins', 'outside-link'))
+
+  const before = await f.get(REPOSITORY_CONFIG_ROUTE)
+  assert.equal(before.status, 200)
+  for (const path of ['../outside', f.outside, 'outside-link', 'plugins/outside-link']) {
+    const preview = await f.get(REPOSITORY_PREVIEW_ROUTE, { path, kind: 'repository' })
+    assert.equal(preview.status, 400, path)
+    assert.equal(preview.body.error.code, 'repository-path-unavailable', path)
+    const save = await f.post(REPOSITORY_CONFIG_ROUTE, {
+      revision: before.body.revision, scanDirectories: [], repositories: [path],
+    })
+    assert.equal(save.status, 400, path)
+    assert.equal(save.body.error.code, path === f.outside || path.startsWith('../')
+      ? 'repository-config-invalid' : 'repository-path-unavailable', path)
+  }
+  const outsideDirectory = await f.get(REPOSITORY_PREVIEW_ROUTE, { path: 'outside-link', kind: 'directory' })
+  assert.equal(outsideDirectory.status, 400)
+  assert.equal(outsideDirectory.body.error.code, 'repository-path-unavailable')
+  const saveOutsideDirectory = await f.post(REPOSITORY_CONFIG_ROUTE, {
+    revision: before.body.revision, scanDirectories: ['outside-link'], repositories: [],
+  })
+  assert.equal(saveOutsideDirectory.status, 400)
+  assert.equal(saveOutsideDirectory.body.error.code, 'repository-path-unavailable')
+  const plainRepository = await f.get(REPOSITORY_PREVIEW_ROUTE, { path: 'plugins', kind: 'repository' })
+  assert.equal(plainRepository.status, 400)
+  assert.equal(plainRepository.body.error.code, 'repository-path-unavailable')
+  const invalidShape = await f.post(REPOSITORY_CONFIG_ROUTE, {
+    revision: before.body.revision, scanDirectories: 'plugins', repositories: [],
+  })
+  assert.equal(invalidShape.status, 400)
+  assert.equal(invalidShape.body.error.code, 'repository-config-invalid')
+  await assert.rejects(readFile(f.configPath), { code: 'ENOENT' })
+
+  f.writeConfig({ scanDirectories: ['plugins', 'outside-link'], repositories: ['plugins/outside-link'] })
+  assert.deepEqual(repositoryPaths(await f.get('/api/vcs.repositories')), [f.workspace, f.gitRepo].sort())
+  const denied = await f.get('/api/vcs.status', { repo: f.outside })
+  assert.equal(denied.status, 400)
+  assert.equal(denied.body.error.code, 'not-a-repo')
+})
+
+test('an outward configuration symlink cannot contribute rules or change its target', async t => {
+  const f = repositoryDiscoveryFixture(t)
+  const outsidePath = join(f.outside, 'vcs-panel.json')
+  const outsideContents = '{"scanDirectories":["plugins"]}'
+  writeFileSync(outsidePath, outsideContents)
+  const before = await f.get(REPOSITORY_CONFIG_ROUTE)
+  assert.equal(before.status, 200)
+  mkdirSync(dirname(f.configPath))
+  symlinkSync(outsidePath, f.configPath)
+
+  const blocked = await f.get(REPOSITORY_CONFIG_ROUTE)
+  assert.equal(blocked.status, 200)
+  assert.equal(blocked.body.error, 'repository-path-unavailable')
+  assert.deepEqual(blocked.body.scanDirectories, [])
+  assert.deepEqual(repositoryPaths(await f.get('/api/vcs.repositories')), [f.workspace])
+  const denied = await f.post(REPOSITORY_CONFIG_ROUTE, {
+    revision: blocked.body.revision, scanDirectories: ['plugins'], repositories: [],
+  })
+  assert.equal(denied.status, 400)
+  assert.equal(denied.body.error.code, 'repository-path-unavailable')
+  assert.equal(await readFile(outsidePath, 'utf8'), outsideContents)
+})
+
+test('a dangling settings directory symlink cannot publish configuration outside the session', async t => {
+  const f = repositoryDiscoveryFixture(t)
+  const destination = join(f.outside, 'absent')
+  symlinkSync(destination, dirname(f.configPath), 'dir')
+  const config = await f.get(REPOSITORY_CONFIG_ROUTE)
+  assert.equal(config.body.error, 'repository-path-unavailable')
+  const denied = await f.post(REPOSITORY_CONFIG_ROUTE, {
+    revision: config.body.revision, scanDirectories: ['plugins'], repositories: [],
+  })
+  assert.equal(denied.body.error.code, 'repository-path-unavailable')
+  await assert.rejects(stat(destination), { code: 'ENOENT' })
+})
+
+test('configuration save rejects cross-site and stale writes without overwriting a newer edit', async t => {
+  const f = repositoryDiscoveryFixture(t)
+  const before = await f.get(REPOSITORY_CONFIG_ROUTE)
+  assert.equal(before.status, 200)
+  assert.equal(typeof before.body.revision, 'string')
+  assert.deepEqual(before.body.scanDirectories, [])
+  assert.deepEqual(before.body.repositories, [])
+  const params = { revision: before.body.revision, scanDirectories: ['plugins'], repositories: [] }
+  const foreign = await f.post(REPOSITORY_CONFIG_ROUTE, params, { 'sec-fetch-site': 'cross-site' })
+  assert.equal(foreign.status, 403)
+  await assert.rejects(readFile(f.configPath), { code: 'ENOENT' })
+
+  const saved = await f.post(REPOSITORY_CONFIG_ROUTE, params)
+  assert.equal(saved.status, 200)
+  assert.notEqual(saved.body.revision, before.body.revision)
+  assert.deepEqual(saved.body.scanDirectories, [{ path: 'plugins', available: true }])
+  assert.deepEqual(JSON.parse(await readFile(f.configPath, 'utf8')), { scanDirectories: ['plugins'], repositories: [] })
+  const externalEdit = '{"repositories":["plugins/archive/two"]}'
+  f.writeConfig(externalEdit)
+  const stale = await f.post(REPOSITORY_CONFIG_ROUTE, {
+    revision: saved.body.revision, scanDirectories: [], repositories: [],
+  })
+  assert.equal(stale.status, 409)
+  assert.equal(stale.body.error.code, 'repository-config-conflict')
+  assert.equal(await readFile(f.configPath, 'utf8'), externalEdit)
+  assert.deepEqual(repositoryPaths(await f.get('/api/vcs.repositories')), [f.workspace, f.deeperRepo].sort())
+
+  const latest = await f.get(REPOSITORY_CONFIG_ROUTE)
+  const interveningEdit = '{"scanDirectories":["plugins"],"repositories":["plugins/archive/two"]}'
+  f.onConfigWrite(() => f.writeConfig(interveningEdit))
+  const racing = await f.post(REPOSITORY_CONFIG_ROUTE, {
+    revision: latest.body.revision, scanDirectories: [], repositories: [],
+  })
+  assert.equal(racing.status, 409)
+  assert.equal(racing.body.error.code, 'repository-config-conflict')
+  assert.equal(await readFile(f.configPath, 'utf8'), interveningEdit)
 })
 
 test('repositories distinguishes unknown sessions from sessions without a cwd', async () => {
@@ -1959,7 +2332,7 @@ test('Jujutsu shared snapshot survives one caller aborting and cancels when all 
   assert.equal(snapshotAborted, 1)
 })
 
-test('apply registers nine GET routes and every write route inside the fence and honors enabled: false', async () => {
+test('apply registers every GET and POST route inside the fence and honors enabled: false', async () => {
   const routes = []
   const ctx = {
     sessions: { get: id => sessions.get(id) },
@@ -1981,7 +2354,7 @@ test('apply registers nine GET routes and every write route inside the fence and
   }
 
   apply(ctx, undefined)
-  assert.deepEqual(routes.map(r => r.path), [
+  assert.deepEqual(routes.filter(r => r.path !== REPOSITORY_CONFIG_ROUTE && r.path !== REPOSITORY_PREVIEW_ROUTE).map(r => r.path), [
     '/api/vcs.repositories',
     '/api/vcs.status',
     '/api/vcs.branches',
@@ -1999,9 +2372,16 @@ test('apply registers nine GET routes and every write route inside the fence and
     '/api/vcs.stage',
     '/api/vcs.stage-history',
   ])
+  assert.deepEqual(
+    routes.filter(r => r.path === REPOSITORY_CONFIG_ROUTE || r.path === REPOSITORY_PREVIEW_ROUTE)
+      .flatMap(r => r.methods.map(method => `${method} ${r.path}`)).sort(),
+    [`GET ${REPOSITORY_CONFIG_ROUTE}`, `GET ${REPOSITORY_PREVIEW_ROUTE}`, `POST ${REPOSITORY_CONFIG_ROUTE}`],
+  )
   const writePaths = new Set(['/api/vcs.sync', '/api/vcs.switch', '/api/vcs.branch', '/api/vcs.tag', '/api/vcs.commit-op', '/api/vcs.stage', '/api/vcs.stage-history'])
   for (const registered of routes) {
-    assert.deepEqual(registered.methods, writePaths.has(registered.path) ? ['POST'] : ['GET'])
+    if (registered.path !== REPOSITORY_CONFIG_ROUTE && registered.path !== REPOSITORY_PREVIEW_ROUTE) {
+      assert.deepEqual(registered.methods, writePaths.has(registered.path) ? ['POST'] : ['GET'])
+    }
     assert.equal(registered.requestBody, 'buffered')
   }
 

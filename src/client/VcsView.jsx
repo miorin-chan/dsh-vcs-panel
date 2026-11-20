@@ -36,6 +36,7 @@ import { RefActionsMenu } from './RefActionsMenu.jsx'
 import { BranchDialog } from './BranchDialogs.jsx'
 import { TagDialog } from './TagDialog.jsx'
 import { CommitDialog } from './CommitDialog.jsx'
+import { RepositoryConfigDialog } from './RepositoryConfigDialog.jsx'
 import { useRepoActions } from './useRepoActions.js'
 import { TimelineSkeleton, TreeSkeleton } from './skeleton.jsx'
 
@@ -93,6 +94,8 @@ export function VcsView({
 
   const api = useMemo(() => createApi(sessionId), [sessionId])
   const [repositories, setRepositories] = useState({ status: 'loading', list: [], truncated: false, worktreesTruncated: false, error: null })
+  const [repositoryManagement, setRepositoryManagement] = useState(null)
+  const manageCurrentRepositories = repositoryManagement?.sessionId === sessionId
   const [statuses, setStatuses] = useState({})
   const [settledStatusKey, setSettledStatusKey] = useState(null)
   const [log, setLog] = useState(idleLog)
@@ -382,7 +385,12 @@ export function VcsView({
     abortBranches,
   })
   const { resetActionsUi } = actions
-  const hasOpenOverlay = actions.menu !== null || actions.dialog !== null
+  const hasOpenOverlay = actions.menu !== null || actions.dialog !== null || manageCurrentRepositories
+
+  const closeRepositoryManagement = () => {
+    repositoryManagement.restoreFocus()
+    setRepositoryManagement(null)
+  }
 
   // Snapshot live focus ownership before reconciliation so layout recovery sees
   // when a render unmounted the currently focused stop.
@@ -486,7 +494,11 @@ export function VcsView({
     api.repositories(controller.signal).then(answer => {
       if (controller.signal.aborted) return
       const list = Array.isArray(answer?.repositories) ? answer.repositories : []
-      setRepositories({ status: 'ready', list, truncated: answer?.truncated === true, worktreesTruncated: answer?.worktreesTruncated === true, error: null })
+      setRepositories({
+        status: 'ready', list, truncated: answer?.truncated === true, worktreesTruncated: answer?.worktreesTruncated === true,
+        error: null, cwd: typeof answer?.cwd === 'string' ? answer.cwd : null,
+        configError: typeof answer?.configError === 'string' ? answer.configError : null,
+      })
       const previousRepo = stateRef.current.repo
       const nextEntry = pickRepository(list, previousRepo)
       const nextRepo = nextEntry?.path ?? null
@@ -600,7 +612,7 @@ export function VcsView({
 
   const handledFocusRequest = useRef(focusRequest)
   const canAutoRefresh = useRef(false)
-  canAutoRefresh.current = visible && !actions.repoBusy && refreshing === null
+  canAutoRefresh.current = visible && !hasOpenOverlay && !actions.repoBusy && refreshing === null
     && repositories.status !== 'loading'
     && !Object.values(statuses).some(entry => entry.status === 'loading' || entry.status === 'refreshing')
 
@@ -655,6 +667,7 @@ export function VcsView({
     resetDirectories()
     setSingleView('timeline')
     setNotice(null)
+    setRepositoryManagement(null)
     clearBranches()
     abortBranches()
     resetActionsUi()
@@ -1227,6 +1240,7 @@ export function VcsView({
     >
       <TopBar
         repositories={repositories.list}
+        onManageRepositories={restoreFocus => { setRepositoryManagement({ sessionId, restoreFocus }) }}
         repo={state.repo}
         worktrees={worktrees}
         checkedPaths={checkedPaths}
@@ -1272,6 +1286,9 @@ export function VcsView({
       />
       {repositories.truncated ? <p className="vcs-note">{formatPlural(t, 'repositories.truncated', repositories.list.length, locale)}</p> : null}
       {repositories.worktreesTruncated ? <p className="vcs-note">{t('repositories.worktreesTruncated')}</p> : null}
+      {repositories.configError ? (
+        <p className="vcs-note" role="alert">{errorMessage(t, { code: repositories.configError })}</p>
+      ) : null}
       {repositories.status === 'loading' ? (
         // Nothing is known yet, not even the backend: draw both columns as
         // they will be, so the panel settles in place instead of popping in.
@@ -1417,6 +1434,19 @@ export function VcsView({
           ) : null}
         </div>
       )}
+      {manageCurrentRepositories ? (
+        <RepositoryConfigDialog
+          api={api}
+          cwd={repositories.cwd}
+          repositories={repositories.list}
+          onCancel={closeRepositoryManagement}
+          onSaved={() => {
+            closeRepositoryManagement()
+            refresh()
+          }}
+          t={t}
+        />
+      ) : null}
       <RefActionsMenu
         target={actions.menu}
         busy={actions.repoBusy}

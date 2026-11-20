@@ -19,6 +19,8 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
 - **Timeline & lane graph.** Browse working changes and topological commit history together,
   with branches, bookmarks, and tags.
   Click the repository name in the header to switch repositories.
+  **Manage repositories** lets you preview and add a folder of repositories or register a specific nested repository.
+  Discovery rules are saved relative to the session directory in `.dsh/vcs-panel.json`.
 - **Worktrees on one graph.** In **Worktrees**, check Git worktrees or Jujutsu workspaces
   and switch **Commits** between **All** (default) and **Selected** in the menu header;
   in single-worktree Git, the branch menu header offers the same synced **All** / **HEAD** switch.

@@ -121,7 +121,7 @@ export function createApi(sessionId, { fetchImpl = globalThis.fetch, base = '', 
    * One JSON write. It carries no AbortSignal: once sent, the Host finishes it
    * even if the panel goes away.
    * @param {string} path - exact Host route path.
-   * @param {Record<string, string>} values - body values besides the Session.
+   * @param {Record<string, string | string[]>} values - body values besides the Session.
    * @returns {Promise<unknown>} the decoded body.
    */
   async function post(path, values) {
@@ -148,6 +148,18 @@ export function createApi(sessionId, { fetchImpl = globalThis.fetch, base = '', 
      */
     repositories(signal) {
       return get('/api/vcs.repositories', {}, signal)
+    },
+
+    repositoryConfig(signal) {
+      return get('/api/vcs.repository-config', {}, signal)
+    },
+
+    repositoryPreview(path, kind, signal) {
+      return get('/api/vcs.repository-preview', { path, kind }, signal)
+    },
+
+    saveRepositoryConfig(revision, scanDirectories, repositories) {
+      return post('/api/vcs.repository-config', { revision, scanDirectories, repositories })
     },
 
     /**

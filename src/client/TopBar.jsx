@@ -313,7 +313,7 @@ function BranchSwitcher({
 /** An anchored menu for choices already loaded. Its rows decide when to close. */
 function HeaderPicker({
   kind, label, summary, buttonLabel, title, disabled = false,
-  dismissOnScroll, showTitle = true, indicator = null, filtered = false, children,
+  dismissOnScroll, showTitle = true, indicator = null, filtered = false, itemSelector = '[aria-checked]', children,
 }) {
   const [position, setPosition] = useState(null)
   const triggerRef = useRef(null)
@@ -327,7 +327,7 @@ function HeaderPicker({
     open,
     triggerRef,
     menuRef,
-    itemSelector: '[aria-checked]',
+    itemSelector,
     onClose: close,
     dismissOnScroll,
   })
@@ -337,11 +337,11 @@ function HeaderPicker({
     if (!open) return undefined
     const frame = requestAnimationFrame(() => {
       const menu = menuRef.current
-      const target = menu?.querySelector('[aria-checked="true"]') ?? menu?.querySelector('[aria-checked]') ?? menu
+      const target = menu?.querySelector('[aria-checked="true"]') ?? menu?.querySelector(itemSelector) ?? menu
       target?.focus()
     })
     return () => { cancelAnimationFrame(frame) }
-  }, [close, disabled, open])
+  }, [close, disabled, itemSelector, open])
 
   return (
     <div className="vcs-picker-wrap" onBlur={onBlur}>
@@ -411,7 +411,7 @@ function PickerRadioItem({ checked, title, onClick, className, children }) {
 }
 
 /** The repository choice is exclusive; activating a row closes the menu. */
-function RepositoryPicker({ repositories, current, onRepoChange, t }) {
+function RepositoryPicker({ repositories, current, onRepoChange, onManageRepositories, t }) {
   const summary = current?.name ?? t('top.noRepository')
   return (
     <HeaderPicker
@@ -420,27 +420,48 @@ function RepositoryPicker({ repositories, current, onRepoChange, t }) {
       summary={summary}
       buttonLabel={current === undefined ? undefined : t('top.repositoryLabel', { name: summary })}
       title={current?.path}
-      disabled={repositories.length === 0}
+      disabled={repositories.length === 0 && onManageRepositories === undefined}
+      itemSelector=".vcs-menu-item"
     >
-      {close => repositories.map(entry => {
-        const selected = entry === current
-        return (
-          <PickerRadioItem
-            key={entry.path}
-            className="vcs-repo-item"
-            checked={selected}
-            title={entry.path}
-            onClick={event => {
-              const fromPointer = event.detail > 0
-              if (!selected) onRepoChange(entry.path, fromPointer)
-              close(selected || !fromPointer)
-            }}
-          >
-            {entry.name}
-            {entry.enclosing ? null : <small>{entry.path}</small>}
-          </PickerRadioItem>
-        )
-      })}
+      {close => (
+        <>
+          <div className="vcs-picker-choices" role="group">
+            {repositories.map(entry => {
+              const selected = entry === current
+              return (
+                <PickerRadioItem
+                  key={entry.path}
+                  className="vcs-repo-item"
+                  checked={selected}
+                  title={entry.path}
+                  onClick={event => {
+                    const fromPointer = event.detail > 0
+                    if (!selected) onRepoChange(entry.path, fromPointer)
+                    close(selected || !fromPointer)
+                  }}
+                >
+                  {entry.name}
+                  {entry.enclosing ? null : <small>{entry.path}</small>}
+                </PickerRadioItem>
+              )
+            })}
+          </div>
+          {onManageRepositories === undefined ? null : (
+            <button
+              type="button"
+              className="vcs-menu-item"
+              role="menuitem"
+              tabIndex={-1}
+              onClick={() => {
+                close(false)
+                onManageRepositories(() => close(true))
+              }}
+            >
+              <span className="vcs-menu-item-name">{t('repositoryConfig.manage')}</span>
+            </button>
+          )}
+        </>
+      )}
     </HeaderPicker>
   )
 }
@@ -553,7 +574,7 @@ function SyncButton({ branch, syncing, onSync, t, locale }) {
  * @param {{ repositories: object[], repo: string | null, onRepoChange: Function, status: object | null, capabilities: object | null, refMode: string, onRefMode: (ref: string) => void, onRefresh: Function, refreshing: boolean, revalidating?: boolean, onSync: Function, syncing: boolean, branches?: object[], branchesStatus?: string, branchesError?: object | null, branchesTruncated?: boolean, onLoadBranches?: Function, onSwitchBranch?: Function, onBranchActions?: Function, switching?: boolean, branchBusy?: string | null, tagBusy?: string | null, commitBusy?: string | null, notice?: { tone: 'error' | 'info', text: string } | null, twoColumns?: boolean, twoColumnsFit?: boolean, onTwoColumns?: (next: boolean) => void, t: Function, locale?: string }} props - panel header state.
  */
 export function TopBar({
-  repositories, repo, onRepoChange, status, capabilities, refMode, onRefMode, onRefresh, refreshing,
+  repositories, repo, onRepoChange, onManageRepositories, status, capabilities, refMode, onRefMode, onRefresh, refreshing,
   worktrees = [], checkedPaths = [], onToggleWorktree, sessionPath,
   revalidating = false, onSync, syncing, staging = false, branches = [], branchesStatus = 'idle', branchesError = null,
   branchesTruncated = false, onLoadBranches = () => {}, onSwitchBranch = () => {}, onBranchActions = () => {},
@@ -632,7 +653,13 @@ export function TopBar({
   }
   return (
     <div className="vcs-topbar">
-      <RepositoryPicker repositories={repositories} current={currentRepository} onRepoChange={onRepoChange} t={t} />
+      <RepositoryPicker
+        repositories={repositories}
+        current={currentRepository}
+        onRepoChange={onRepoChange}
+        onManageRepositories={onManageRepositories}
+        t={t}
+      />
       {worktrees.length > 0 ? (
         <WorktreePicker
           key={repo}

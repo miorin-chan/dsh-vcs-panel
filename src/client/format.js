@@ -283,6 +283,10 @@ const ERROR_KEYS = {
   'commit-conflict': 'error.commitConflict',
   'commit-blocked': 'error.commitBlocked',
   'commit-failed': 'error.commitFailed',
+  'repository-config-invalid': 'error.repositoryConfigInvalid',
+  'repository-config-conflict': 'error.repositoryConfigConflict',
+  'repository-config-write-failed': 'error.repositoryConfigWriteFailed',
+  'repository-path-unavailable': 'error.repositoryPathUnavailable',
 }
 
 /**
