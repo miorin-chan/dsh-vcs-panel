@@ -39,14 +39,19 @@ const WORKTREE_GROUPS = ['staged', 'unstaged']
  * whether the change enters the next commit, and the answer is the same. Their
  * `untracked` flag marks them as untracked, not their group.
  *
- * @param {{ groups?: Record<string, object[]> } | null} status - the working-tree answer.
- * @returns {Array<{ id: string, entries: object[], header: boolean }>} the non-empty groups.
+ * @param {{ groups?: Record<string, object[]>, untrackedTotal?: number } | null} status - the working-tree answer.
+ * @returns {Array<{ id: string, entries: object[], header: boolean, untrackedTotal?: number }>} the non-empty groups.
  */
 export function worktreeGroups(status) {
   const untracked = status?.groups?.untracked ?? []
   return [
     { id: 'staged', entries: status?.groups?.staged ?? [], header: true },
-    { id: 'unstaged', entries: [...(status?.groups?.unstaged ?? []), ...untracked], header: true },
+    {
+      id: 'unstaged',
+      entries: [...(status?.groups?.unstaged ?? []), ...untracked],
+      header: true,
+      untrackedTotal: status?.untrackedTotal ?? untracked.length,
+    },
   ].filter(group => group.entries.length > 0)
 }
 

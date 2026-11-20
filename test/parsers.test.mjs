@@ -153,6 +153,7 @@ test('buildStatusGroups splits sides, marks conflict and untracked directories, 
   ])
   assert.equal(grouped.truncated, false)
   assert.equal(grouped.total, entries.length)
+  assert.equal(grouped.untrackedTotal, 2)
 
   const many = Array.from({ length: STATUS_GROUP_MAX + 1 }, (_, index) => ({
     path: `file-${index}.txt`,
@@ -164,6 +165,11 @@ test('buildStatusGroups splits sides, marks conflict and untracked directories, 
   assert.equal(capped.groups.unstaged[0].partiallyStaged, true)
   assert.equal(capped.truncated, true)
   assert.equal(capped.total, STATUS_GROUP_MAX + 1)
+  assert.equal(capped.untrackedTotal, 0)
+
+  const cappedUntracked = buildStatusGroups(many.map(({ path }) => ({ path, untracked: true })), new Map(), new Map())
+  assert.equal(cappedUntracked.groups.untracked.length, STATUS_GROUP_MAX)
+  assert.equal(cappedUntracked.untrackedTotal, STATUS_GROUP_MAX + 1)
 })
 
 test('parseNumstat reads counts, binaries, and renames keyed by the new path', () => {

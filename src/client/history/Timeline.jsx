@@ -17,7 +17,7 @@ import { hasSeveralAuthors } from './commits.js'
 import { worktreeSummary } from './timeline.js'
 import { errorMessage, formatCommitTime, formatCount, formatPlural, shortChangeId, shortSha } from '../format.js'
 import { DOWN, findAncestor, FORWARD, hasClass, isDiscreteActionButton, isEditableTarget, movement, unmodified, UP } from '../keys.js'
-import { RefBadge, WorkingCopyBadge } from '../ui.jsx'
+import { RefBadge, UntrackedStat, WorkingCopyBadge } from '../ui.jsx'
 import { Bar, TimelineSkeleton } from '../skeleton.jsx'
 
 /** Fixed row height in CSS pixels. */
@@ -52,8 +52,9 @@ function WorktreeMeta({ status, statusState, t, locale }) {
   if (summary.changed === 0) return <span>{t('changes.clean')}</span>
   return (
     <>
-      <span>{formatPlural(t, 'timeline.changes', summary.changed, locale)}</span>
+      <span className="vcs-worktree-change-count">{formatPlural(t, 'timeline.changes', summary.changed, locale)}</span>
       <LineStat added={summary.added} deleted={summary.deleted} locale={locale} />
+      <UntrackedStat count={summary.untracked} label={t('status.untracked')} locale={locale} />
     </>
   )
 }

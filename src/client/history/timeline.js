@@ -70,9 +70,9 @@ export function pickRepository(repositories, preferredPath = null) {
 
 /**
  * What the working-tree row and header say about the uncommitted changes.
- * Untracked files have no line counts until their comparison loads.
- * @param {{ total?: number, groups?: Record<string, object[]> } | null} status - the working-tree answer.
- * @returns {{ changed: number, added: number, deleted: number }} the summary.
+ * Count untracked status entries, including collapsed directories, separately from lines.
+ * @param {{ total?: number, untrackedTotal?: number, groups?: Record<string, object[]> } | null} status - the working-tree answer.
+ * @returns {{ changed: number, added: number, deleted: number, untracked: number }} the summary.
  */
 export function worktreeSummary(status) {
   let added = 0
@@ -83,5 +83,6 @@ export function worktreeSummary(status) {
       if (typeof entry.deleted === 'number') deleted += entry.deleted
     }
   }
-  return { changed: status?.total ?? 0, added, deleted }
+  const untracked = status?.untrackedTotal ?? status?.groups?.untracked?.length ?? 0
+  return { changed: status?.total ?? 0, added, deleted, untracked }
 }

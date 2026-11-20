@@ -1052,7 +1052,7 @@ select.vcs-repository-kind {
   max-width: 110px;
 }
 
-.vcs-timeline-meta > :is(.vcs-worktree-ref, :last-child) {
+.vcs-timeline-meta > :is(.vcs-worktree-ref, .vcs-worktree-change-count, :last-child:not(.vcs-untracked-stat)) {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -1460,10 +1460,12 @@ select.vcs-repository-kind {
 }
 
 .vcs-tree-group-name {
-  flex: none;
+  min-width: 0;
+  overflow: hidden;
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   font-weight: 500;
+  text-overflow: ellipsis;
 }
 
 .vcs-tree-dir-head {
@@ -1982,9 +1984,20 @@ select.vcs-repository-kind {
   overflow: visible;
 }
 
+.vcs-detail-stat-narrow {
+  display: none;
+}
+
 @container vcs-detail (max-width: 460px) {
   .vcs-detail-toolbar[data-stage-tools] .vcs-detail-stat {
     display: none;
+  }
+
+  .vcs-detail-stat-narrow {
+    display: flex;
+    flex-wrap: wrap;
+    padding: 4px 10px;
+    border-bottom: 0.5px solid var(--dsw-alias-border-l1);
   }
 }
 

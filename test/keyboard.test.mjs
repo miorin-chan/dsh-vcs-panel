@@ -1182,6 +1182,11 @@ test('added and untracked rows carry distinct letters and labels', async () => {
 
     const treeEl = harness.document.body.querySelector('.vcs-tree')
     const [addedHead, newHead] = treeEl.querySelectorAll('.vcs-tree-file-head')
+    const [stagedHead, unstagedHead] = treeEl.querySelectorAll('.vcs-tree-group-head')
+    assert.equal(stagedHead.querySelector('[title="status.untracked"]'), null)
+    const untrackedStat = unstagedHead.querySelector('[title="status.untracked"]')
+    assert.equal(textOf(untrackedStat.querySelector('[aria-hidden="true"]')), 'U +2')
+    assert.equal(textOf(untrackedStat.querySelector('.vcs-sr-only')), 'status.untracked 2')
 
     const [addedStatus] = addedHead.querySelectorAll('.vcs-status')
     assert.equal(textOf(addedStatus), 'A')

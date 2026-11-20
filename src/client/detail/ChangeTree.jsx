@@ -23,7 +23,7 @@ import {
   BACK, DOWN, findAncestor, FORWARD, hasAttr, hasClass, isDiscreteActionButton, isEditableTarget,
   isNavigationStop, isOverlayOrMenuTarget, movement, rowStep, unmodified, UP,
 } from '../keys.js'
-import { Chevron } from '../ui.jsx'
+import { Chevron, UntrackedStat } from '../ui.jsx'
 import { Bar, barWidth } from '../skeleton.jsx'
 import {
   MAX_PARALLEL, changedLines, diffTargets, estimateHeight, isFolded, rowAt,
@@ -1416,12 +1416,6 @@ export function ChangeTree({
   }
 
   const indentOf = depth => `${(gutter ? 6 : 8) + (depth + (grouped ? 1 : 0)) * INDENT}px`
-  const totalStat = (added, deleted) => (
-    <span className="vcs-tree-stat">
-      {added > 0 ? <span className="vcs-add">+{formatCount(added, locale)}</span> : null}
-      {deleted > 0 ? <span className="vcs-del">−{formatCount(deleted, locale)}</span> : null}
-    </span>
-  )
   const fileStat = entry => {
     if (entry.untracked === true) return null
     if (entry.binary === true) return <span className="vcs-tree-stat vcs-dim">{t('changes.binary')}</span>
@@ -1473,7 +1467,11 @@ export function ChangeTree({
             <span className="vcs-tree-group-name">{t(`changes.${row.group}`)}</span>
             <span className="vcs-tree-spacer" />
             <span className="vcs-tree-stat vcs-dim">{formatPlural(t, 'detail.fileCount', row.count, locale)}</span>
-            {totalStat(row.added, row.deleted)}
+            <span className="vcs-tree-stat">
+              {row.added > 0 ? <span className="vcs-add">+{formatCount(row.added, locale)}</span> : null}
+              {row.deleted > 0 ? <span className="vcs-del">−{formatCount(row.deleted, locale)}</span> : null}
+              <UntrackedStat count={row.untracked} label={t('status.untracked')} locale={locale} />
+            </span>
           </button>
         </div>
         <div className="vcs-tree-group-body" id={bodyId}>{children}</div>

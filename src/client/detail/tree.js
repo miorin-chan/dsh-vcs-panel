@@ -57,16 +57,18 @@ export function rowBodyId(key) {
  * untracked files and directories; the line counts only add entries the Host
  * measured.
  * @param {object[]} entries - the group's file entries.
- * @returns {{ count: number, added: number, deleted: number }} the summary.
+ * @returns {{ count: number, added: number, deleted: number, untracked: number }} the summary.
  */
 export function summarizeEntries(entries) {
   let added = 0
   let deleted = 0
+  let untracked = 0
   for (const entry of entries) {
     if (typeof entry?.added === 'number') added += entry.added
     if (typeof entry?.deleted === 'number') deleted += entry.deleted
+    if (entry?.untracked === true) untracked += 1
   }
-  return { count: entries.length, added, deleted }
+  return { count: entries.length, added, deleted, untracked }
 }
 
 /** Stable, locale-independent name order: directories before files. */
@@ -253,8 +255,10 @@ function flatten(node, depth, group, state, rows) {
 }
 
 /** The group row above one working-tree group's tree. */
-function groupRow(group, entries, state) {
+function groupRow(group, entries, state, untrackedTotal) {
   const key = dirKey(group, '')
+  const summary = summarizeEntries(entries)
+  const untracked = untrackedTotal ?? summary.untracked
   return {
     kind: 'group',
     group,
@@ -262,7 +266,9 @@ function groupRow(group, entries, state) {
     depth: 0,
     expanded: state.collapsed?.[key] !== true,
     entries,
-    ...summarizeEntries(entries),
+    ...summary,
+    count: summary.count + (untracked - summary.untracked),
+    untracked,
   }
 }
 
@@ -271,12 +277,12 @@ function groupRow(group, entries, state) {
  * @param {string} group - the group id.
  * @param {object[]} entries - the group's file entries.
  * @param {object} [state] - expansion and loading data.
- * @param {{ header?: boolean }} [options] - whether the group draws a group row.
+ * @param {{ header?: boolean, untrackedTotal?: number }} [options] - header and pre-cap total.
  * @returns {object[]} rows in display order.
  */
-export function buildRows(group, entries, state = {}, { header = false } = {}) {
+export function buildRows(group, entries, state = {}, { header = false, untrackedTotal } = {}) {
   const rows = []
-  const headerRow = header ? groupRow(group, entries, state) : null
+  const headerRow = header ? groupRow(group, entries, state, untrackedTotal) : null
   if (headerRow !== null) rows.push(headerRow)
   if (headerRow === null || headerRow.expanded) flatten(buildTree(group, entries, state), 0, group, state, rows)
   return rows
@@ -284,14 +290,14 @@ export function buildRows(group, entries, state = {}, { header = false } = {}) {
 
 /**
  * Flat, visible rows of one node across all its groups.
- * @param {Array<{ id: string, entries: object[], header?: boolean }>} groups - the node's groups.
+ * @param {Array<{ id: string, entries: object[], header?: boolean, untrackedTotal?: number }>} groups - the node's groups.
  * @param {object} [state] - expansion and loading data.
  * @returns {object[]} rows in display order.
  */
 export function buildNodeRows(groups, state = {}) {
   const rows = []
   for (const group of groups) {
-    rows.push(...buildRows(group.id, group.entries, state, { header: group.header === true }))
+    rows.push(...buildRows(group.id, group.entries, state, group))
   }
   return rows
 }

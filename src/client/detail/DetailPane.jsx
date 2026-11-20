@@ -15,7 +15,7 @@ import { messageBody } from '../history/commits.js'
 import { worktreeSummary } from '../history/timeline.js'
 import {
   BackIcon, BranchIcon, Button, CheckIcon, CompareSplitIcon, CopyIcon, FoldIcon, IconButton,
-  NowrapIcon, RefBadge, StagingLayoutIcon, WorkingCopyBadge, WrapIcon,
+  NowrapIcon, RefBadge, StagingLayoutIcon, UntrackedStat, WorkingCopyBadge, WrapIcon,
 } from '../ui.jsx'
 import { MetaSkeleton, TreeSkeleton } from '../skeleton.jsx'
 import { buildNodeRows, summarizeEntries } from './tree.js'
@@ -397,9 +397,23 @@ export function DetailPane({
   const refs = summary?.refs ?? commitState.commit?.refs ?? []
   const displayedRefs = showCurrentHead ? refs : sharedRefs(refs)
   const mergedCounts = merged ? summarizeEntries(mergedGroups[0]?.entries ?? []) : null
-  const summaryCounts = mergedCounts === null
-    ? (isWorktree ? worktreeSummary(status) : null)
-    : { ...mergedCounts, changed: mergedCounts.count }
+  const worktreeCounts = isWorktree ? worktreeSummary(status) : null
+  const summaryCounts = mergedCounts === null || worktreeCounts === null
+    ? worktreeCounts
+    : {
+        added: mergedCounts.added,
+        deleted: mergedCounts.deleted,
+        untracked: worktreeCounts.untracked,
+        changed: mergedCounts.count + (worktreeCounts.untracked - mergedCounts.untracked),
+      }
+  const worktreeStat = summaryCounts !== null && summaryCounts.changed > 0 ? (
+    <>
+      <span className="vcs-dim">{formatPlural(t, 'detail.fileCount', summaryCounts.changed, locale)}</span>
+      {summaryCounts.added > 0 ? <span className="vcs-add">+{formatCount(summaryCounts.added, locale)}</span> : null}
+      {summaryCounts.deleted > 0 ? <span className="vcs-del">−{formatCount(summaryCounts.deleted, locale)}</span> : null}
+      <UntrackedStat count={summaryCounts.untracked} label={t('status.untracked')} locale={locale} />
+    </>
+  ) : null
   const commitCounts = isWorktree || commitState.commit === null ? null : commitSummary(commitState.commit.files)
   const commitSource = commitState.commit ?? summary ?? null
   const base = isWorktree || commitSource === null ? null : comparisonBase(commitSource, capabilities)
@@ -421,13 +435,7 @@ export function DetailPane({
           <>
             <strong className="vcs-detail-title" title={worktree.path}>{worktree.label}</strong>
             {status?.branch?.name ? <span className="vcs-detail-branch vcs-dim"><BranchIcon /><span className="vcs-detail-branch-name">{status.branch.name}</span></span> : null}
-            {summaryCounts !== null && summaryCounts.changed > 0 ? (
-              <span className="vcs-detail-stat">
-                <span className="vcs-dim">{formatPlural(t, 'detail.fileCount', summaryCounts.changed, locale)}</span>
-                {summaryCounts.added > 0 ? <span className="vcs-add">+{formatCount(summaryCounts.added, locale)}</span> : null}
-                {summaryCounts.deleted > 0 ? <span className="vcs-del">−{formatCount(summaryCounts.deleted, locale)}</span> : null}
-              </span>
-            ) : null}
+            {worktreeStat === null ? null : <span className="vcs-detail-stat">{worktreeStat}</span>}
           </>
         ) : (
           <>
@@ -514,6 +522,9 @@ export function DetailPane({
           </IconButton>
         </span>
       </div>
+      {stageHistory !== undefined && (summaryCounts?.untracked ?? 0) > 0 ? (
+        <div className="vcs-detail-stat vcs-detail-stat-narrow">{worktreeStat}</div>
+      ) : null}
       <ChangeTree
         key={merged ? 'merged' : 'separate'}
         api={api}

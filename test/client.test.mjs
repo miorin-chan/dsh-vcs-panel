@@ -1187,17 +1187,20 @@ test('the checklist restores valid choices, defaults to the anchor, and refuses 
   assert.deepEqual(sharedRefs([{ kind: 'head', name: 'HEAD' }, { kind: 'branch', name: 'main', current: true }]), [{ kind: 'branch', name: 'main' }])
 })
 
-test('worktreeSummary counts tracked lines and every changed entry', () => {
+test('worktreeSummary counts tracked lines and untracked entries separately', () => {
   const status = {
-    total: 3,
+    total: 4,
     groups: {
-      staged: [{ path: 'a', added: 2, deleted: 1 }],
-      unstaged: [{ path: 'b', added: 5, deleted: 0 }],
-      untracked: [{ path: 'c', added: 0, deleted: 0 }],
+      staged: [{ path: 'a', status: 'A', added: 2, deleted: 0 }],
+      unstaged: [{ path: 'b', added: 5, deleted: 1 }],
+      untracked: [{ path: 'c', added: 0, deleted: 0 }, { path: 'dir/', directory: true }],
     },
   }
-  assert.deepEqual(worktreeSummary(status), { changed: 3, added: 7, deleted: 1 })
-  assert.deepEqual(worktreeSummary(null), { changed: 0, added: 0, deleted: 0 })
+  assert.deepEqual(worktreeSummary(status), { changed: 4, added: 7, deleted: 1, untracked: 2 })
+  assert.deepEqual(worktreeSummary({ ...status, total: 503, untrackedTotal: 501 }), {
+    changed: 503, added: 7, deleted: 1, untracked: 501,
+  })
+  assert.deepEqual(worktreeSummary(null), { changed: 0, added: 0, deleted: 0, untracked: 0 })
 })
 
 test('the working tree has staged and unstaged groups, with untracked files merged', () => {
@@ -1212,6 +1215,10 @@ test('the working tree has staged and unstaged groups, with untracked files merg
   assert.deepEqual(groups.map(group => group.id), ['staged', 'unstaged'])
   assert.deepEqual(groups.map(group => group.header), [true, true])
   assert.deepEqual(groups[1].entries.map(entry => entry.path), ['u.js', 'n.txt'])
+  const cappedGroup = worktreeGroups({ ...status, untrackedTotal: 501 })[1]
+  const [cappedRow] = buildNodeRows([cappedGroup])
+  assert.equal(cappedRow.count, 502)
+  assert.equal(cappedRow.untracked, 501)
   assert.deepEqual(worktreeGroups(null), [])
   assert.deepEqual(worktreeGroups({ groups: {} }), [])
 
@@ -1359,13 +1366,14 @@ test('createQueue limits concurrency and drops cancelled waiting tasks', async (
   assert.deepEqual(order, ['next'])
 })
 
-test('summarizeEntries counts untracked entries but only sums measured lines', () => {
-  assert.deepEqual(summarizeEntries([]), { count: 0, added: 0, deleted: 0 })
+test('summarizeEntries counts untracked paths separately from measured lines', () => {
+  assert.deepEqual(summarizeEntries([]), { count: 0, added: 0, deleted: 0, untracked: 0 })
   assert.deepEqual(summarizeEntries([
-    { path: 'a', added: 3, deleted: 1 },
+    { path: 'a', status: 'U', added: 3, deleted: 1 },
     { path: 'dir/', status: 'U', untracked: true, added: 0, deleted: 0, directory: true },
+    { path: 'draft.txt', status: 'U', untracked: true },
     { path: 'b', added: null, deleted: null },
-  ]), { count: 3, added: 3, deleted: 1 })
+  ]), { count: 4, added: 3, deleted: 1, untracked: 2 })
 })
 
 test('row keys, body ids, and the row key predicate agree', () => {
@@ -1393,9 +1401,9 @@ test('comparisonBase names the comparison each commit kind uses', () => {
 
 test('commitSummary counts the files and lines of a commit toolbar', () => {
   assert.deepEqual(commitSummary([{ added: 2, deleted: 1 }, { added: 5, deleted: 0 }, { binary: true, added: 0, deleted: 0 }]), {
-    count: 3, added: 7, deleted: 1,
+    count: 3, added: 7, deleted: 1, untracked: 0,
   })
-  assert.deepEqual(commitSummary(null), { count: 0, added: 0, deleted: 0 })
+  assert.deepEqual(commitSummary(null), { count: 0, added: 0, deleted: 0, untracked: 0 })
 })
 
 test('the bulk fold button collapses every file and expansion follows the budget', () => {

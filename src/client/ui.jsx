@@ -7,7 +7,20 @@
  */
 
 import { useEffect, useRef } from 'react'
+import { formatCount } from './format.js'
 import { motionAt, PERIOD, REDUCED_PERIOD, segmentEasing, startTurning, stopTurning } from './turning.js'
+
+/** A separate, muted count for the untracked entries in a diff summary. */
+export function UntrackedStat({ count, label, locale }) {
+  if (count <= 0) return null
+  const formatted = formatCount(count, locale)
+  return (
+    <span className="vcs-dim vcs-untracked-stat" title={label}>
+      <span aria-hidden="true">U +{formatted}</span>
+      <span className="vcs-sr-only">{label} {formatted}</span>
+    </span>
+  )
+}
 
 /** A text button with an optional leading icon. */
 export function Button({ children, onClick, disabled = false, title, className = '', ...rest }) {
