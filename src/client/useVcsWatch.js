@@ -4,12 +4,13 @@ const DOMAINS = ['working', 'history', 'repositories']
 const DEBOUNCE_MS = 160
 
 /** Merge invalidations while reads or writes are in flight, with one trailing batch. */
-export function useVcsWatch({ api, repo, pathsKey, visible, blocked, working, history, repositories, onRefresh }) {
+export function useVcsWatch({ api, repo, vcs, pathsKey, visible, blocked, working, history, repositories, onRefresh }) {
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === 'visible')
   const [queued, setQueued] = useState(null)
   const latest = useRef(null)
   const active = visible && documentVisible
-  const scope = JSON.stringify([repo, pathsKey])
+  // A backend change reopens the stream so it observes the right metadata.
+  const scope = JSON.stringify([repo, vcs, pathsKey])
   const queue = useCallback(domains => {
     if (latest.current.api !== api || latest.current.scope !== scope) return
     const affected = DOMAINS.filter(domain => domains.includes(domain))
@@ -38,7 +39,7 @@ export function useVcsWatch({ api, repo, pathsKey, visible, blocked, working, hi
       close()
       window.removeEventListener('focus', catchUp)
     }
-  }, [active, api, pathsKey, queue, repo])
+  }, [active, api, pathsKey, queue, repo, vcs])
 
   useEffect(() => {
     if (!active || blocked || queued?.api !== api || queued.scope !== scope) return undefined

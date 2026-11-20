@@ -191,8 +191,8 @@ export function createApi(sessionId, {
       return get('/api/vcs.repository-preview', { path, kind }, signal)
     },
 
-    saveRepositoryConfig(revision, scanDirectories, repositories) {
-      return post('/api/vcs.repository-config', { revision, scanDirectories, repositories })
+    saveRepositoryConfig(revision, scanDirectories, repositories, backends) {
+      return post('/api/vcs.repository-config', { revision, scanDirectories, repositories, backends })
     },
 
     /**

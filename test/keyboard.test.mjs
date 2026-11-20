@@ -3772,6 +3772,100 @@ test('BranchDialog, TagDialog, and CommitDialog cover blocked state, unmerged fo
 })
 
 
+test('VcsView resets reads when a repository switches to another backend', async () => {
+  const sha = 'd'.repeat(40)
+  const repo = '/repo'
+  let backend = 'jujutsu'
+  const reads = []
+  const json = body => ({ ok: true, status: 200, async json() { return body } })
+  const savedFetch = globalThis.fetch
+  globalThis.fetch = async url => {
+    const { pathname } = new URL(url, 'http://127.0.0.1')
+    if (pathname === '/api/vcs.repositories') {
+      return json({
+        cwd: '/',
+        truncated: false,
+        repositories: [{
+          path: repo,
+          name: 'repo',
+          enclosing: true,
+          vcs: backend,
+          availableVcs: ['jujutsu', 'git'],
+          capabilities: backend === 'jujutsu' ? JUJUTSU_CAPABILITIES : GIT_CAPABILITIES,
+          ...(backend === 'jujutsu' ? { worktrees: [{ path: repo, name: 'default', head: sha }] } : {}),
+        }],
+      })
+    }
+    if (pathname === '/api/vcs.status') {
+      reads.push(`status:${backend}`)
+      if (backend === 'jujutsu') {
+        return json({
+          vcs: 'jujutsu',
+          capabilities: JUJUTSU_CAPABILITIES,
+          defaultNode: '@',
+          workingCopy: { node: '@', commitId: sha, changeId: 'vvvvvvvv', refs: [], summary: { changed: 0, added: 0, deleted: 0 } },
+        })
+      }
+      return json({
+        repo: { path: repo, name: 'repo' },
+        vcs: 'git',
+        capabilities: GIT_CAPABILITIES,
+        defaultNode: null,
+        branch: { name: 'main', oid: sha, detached: false, unborn: false, upstream: null, ahead: 0, behind: 0 },
+        groups: { staged: [], unstaged: [], untracked: [] },
+        total: 0,
+        truncated: false,
+      })
+    }
+    if (pathname === '/api/vcs.log') {
+      reads.push(`log:${backend}`)
+      return json({
+        truncated: false,
+        nextSkip: null,
+        commits: backend === 'git'
+          ? [{ sha, parents: [], refs: [{ name: 'main', kind: 'branch', current: true }], author: 'Ada', authorTime: 1_700_000_000_000, subject: 'git history' }]
+          : [{
+            sha, parents: [], refs: [], author: 'Ada', authorTime: 1_700_000_000_000,
+            subject: 'working copy', changeId: 'vvvvvvvv', workingCopy: true,
+          }],
+      })
+    }
+    throw new Error(`unexpected route: ${pathname}`)
+  }
+  const harness = createHarness({ width: 500 })
+  const restore = harness.installGlobals()
+  try {
+    const { VcsView } = await loadClientModule('src/client/VcsView.jsx', harness)
+    harness.mount(harness.react.createElement(VcsView, { sessionId: 'backend-switch', t, locale: 'en-US' }))
+    await harness.settle()
+    const body = harness.document.body
+    assert.ok(reads.includes('status:jujutsu'))
+    assert.notEqual(body.querySelector('.vcs-working-copy-row'), null)
+    assert.equal(body.querySelector('.vcs-branch-button'), null, 'Jujutsu offers no branch switch')
+
+    // Read the working copy in the single-column detail, as a reader would.
+    harness.keyClick(body.querySelector('.vcs-working-copy-row'))
+    await harness.settle()
+    assert.notEqual(body.querySelector('[aria-label="detail.back"]'), null)
+    assert.equal(body.querySelector('.vcs-sidebar'), null)
+
+    backend = 'git'
+    body.querySelector('[aria-label="top.refreshSnapshots"]').props.onClick()
+    await harness.settle()
+    assert.ok(reads.filter(read => read === 'status:git').length > 0, 'status is reread through Git')
+    assert.ok(reads.filter(read => read === 'log:git').length > 0, 'history is reread through Git')
+    assert.equal(body.querySelector('.vcs-working-copy-row'), null, 'the old working-copy commit leaves the view')
+    assert.notEqual(body.querySelector('.vcs-branch-button'), null)
+    assert.equal(body.querySelector('[aria-label="detail.back"]'), null, 'the backend change returns to the timeline')
+    assert.notEqual(body.querySelector('.vcs-sidebar'), null)
+    assert.match(textOf(body.querySelector('.vcs-timeline')), /git history/u)
+  } finally {
+    harness.unmount()
+    restore()
+    globalThis.fetch = savedFetch
+  }
+})
+
 test('VcsView keeps keyboard navigation flowing across button clicks and Tab activation', async () => {
   const commits = Array.from({ length: 300 }, (_, i) => {
     const sha = i.toString(16).padStart(40, '0')
@@ -4296,7 +4390,12 @@ test('VcsView manages repositories from an empty picker and refreshes after a su
   const posts = []
   const sessionId = 'session-repository-config'
   const child = '/workspace/deep/path/repo'
-  let config = { scanDirectories: [], repositories: [{ path: 'missing/repo', available: false }], revision: 'one' }
+  let config = {
+    scanDirectories: [],
+    repositories: [{ path: 'missing/repo', available: false }],
+    backends: [{ path: '.', vcs: 'jujutsu', available: true }],
+    revision: 'one',
+  }
   let listed = []
   const pendingSave = Promise.withResolvers()
   const response = (data, status = 200) => ({ ok: status === 200, status, async json() { return data } })
@@ -4319,6 +4418,7 @@ test('VcsView manages repositories from an empty picker and refreshes after a su
         revision: 'three',
       }
       listed = [{ path: child, name: 'repo', vcs: 'git', capabilities: GIT_CAPABILITIES,
+        availableVcs: ['jujutsu', 'git'],
         sources: [{ kind: 'repository', path: 'deep/path/repo' }, { kind: 'directory', path: 'deep/path' }] }]
       return response(config)
     }
@@ -4399,7 +4499,10 @@ test('VcsView manages repositories from an empty picker and refreshes after a su
     assert.ok(dialog(), 'the in-flight write cannot be dismissed')
     pendingSave.resolve()
     await harness.settle()
-    assert.deepEqual(posts, [{ sessionId, revision: 'one', scanDirectories: ['deep/path'], repositories: [] }])
+    assert.deepEqual(posts, [{
+      sessionId, revision: 'one', scanDirectories: ['deep/path'], repositories: [],
+      backends: [{ path: '.', vcs: 'jujutsu' }],
+    }])
     assert.match(textOf(dialog()), /error.repositoryConfigConflict/u)
     assert.match(textOf(dialog()), /deep\/path/u, 'conflict preserves the draft until reload')
     assert.equal(requests.filter(path => path === '/api/vcs.repositories').length, 1)
@@ -4421,7 +4524,9 @@ test('VcsView manages repositories from an empty picker and refreshes after a su
     harness.keyClick(button('repositoryConfig.add'))
     submit()
     await harness.settle()
-    assert.deepEqual(posts[1], { sessionId, revision: 'two', scanDirectories: [], repositories: ['deep/path/repo'] })
+    assert.deepEqual(posts[1], {
+      sessionId, revision: 'two', scanDirectories: [], repositories: ['deep/path/repo'], backends: [],
+    })
     assert.equal(dialog(), null)
     assert.equal(textOf(trigger), 'repo')
     assert.equal(requests.filter(path => path === '/api/vcs.repositories').length, 2)
@@ -4444,6 +4549,17 @@ test('VcsView manages repositories from an empty picker and refreshes after a su
     assert.equal(document.activeElement, disclosure)
     assert.match(textOf(sources), /repositoryConfig.sourceRepository/u)
     assert.match(textOf(sources), /repositoryConfig.sourceDirectory/u)
+    const backend = sources.querySelector('.vcs-repository-backend-select')
+    assert.ok(backend, 'a colocated repository offers its backends')
+    assert.equal(backend.props.value, 'auto')
+    backend.props.onChange({ target: { value: 'git' } })
+    await harness.settle()
+    submit()
+    await harness.settle()
+    assert.deepEqual(posts[2], {
+      sessionId, revision: 'three', scanDirectories: [], repositories: ['deep/path/repo'],
+      backends: [{ path: 'deep/path/repo', vcs: 'git' }],
+    })
   } finally {
     harness.unmount()
     restore()

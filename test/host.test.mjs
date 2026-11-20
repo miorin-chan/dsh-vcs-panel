@@ -854,7 +854,7 @@ test('watch observes external Jujutsu operation heads and snapshots a hidden cha
 })
 
 /** Run the registered Host routes against an isolated multi-repository workspace. */
-function repositoryDiscoveryFixture(t) {
+function repositoryDiscoveryFixture(t, { jujutsu = false } = {}) {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'vcs-discovery-')))
   t.after(() => rmSync(scratch, { recursive: true, force: true }))
   const workspace = join(scratch, 'workspace')
@@ -864,7 +864,12 @@ function repositoryDiscoveryFixture(t) {
   const outside = join(scratch, 'outside')
   const plain = join(workspace, 'other')
   mkdirSync(plain, { recursive: true })
-  initRepo(workspace)
+  if (jujutsu) {
+    mkdirSync(workspace, { recursive: true })
+    jj(workspace, ['git', 'init'])
+    writeFileSync(join(workspace, 'workspace.txt'), 'workspace\n')
+    jj(workspace, ['describe', '-m', 'workspace root'])
+  } else initRepo(workspace)
   initRepo(gitRepo)
   initRepo(deeperRepo)
   initRepo(outside)
@@ -1074,6 +1079,134 @@ test('a real configured Jujutsu workspace remains independently browsable', { sk
   assert.equal(log.body.commits[0].sha, jj(jjRepo, ['log', '-r', '@', '--no-graph', '-T', 'commit_id']))
 })
 
+test('a session-root preference reads a colocated repository through the chosen backend', { skip: !HAS_JJ }, async t => {
+  const f = repositoryDiscoveryFixture(t, { jujutsu: true })
+  const listing = await f.get('/api/vcs.repositories')
+  const root = listing.body.repositories.find(repo => repo.path === f.workspace)
+  assert.equal(root.vcs, 'jujutsu')
+  assert.deepEqual(root.availableVcs, ['jujutsu', 'git'])
+  assert.equal((await f.get('/api/vcs.status', { repo: f.workspace })).body.vcs, 'jujutsu')
+
+  const before = await f.get(REPOSITORY_CONFIG_ROUTE)
+  assert.deepEqual(before.body.backends, [])
+  const saved = await f.post(REPOSITORY_CONFIG_ROUTE, {
+    revision: before.body.revision, scanDirectories: [], repositories: [], backends: [{ path: '.', vcs: 'git' }],
+  })
+  assert.equal(saved.status, 200)
+  assert.deepEqual(saved.body.backends, [{ path: '.', vcs: 'git', available: true }])
+  assert.deepEqual(JSON.parse(await readFile(f.configPath, 'utf8')), {
+    scanDirectories: [], repositories: [], backends: [{ path: '.', vcs: 'git' }],
+  })
+
+  const after = await f.get('/api/vcs.repositories')
+  assert.equal(after.body.repositories.find(repo => repo.path === f.workspace).vcs, 'git')
+  const status = await f.get('/api/vcs.status', { repo: f.workspace })
+  assert.equal(status.status, 200)
+  assert.equal(status.body.vcs, 'git')
+  const log = await f.get('/api/vcs.log', { repo: f.workspace })
+  assert.equal(log.status, 200)
+  assert.ok(log.body.commits.length > 0)
+
+  const reverted = await f.post(REPOSITORY_CONFIG_ROUTE, {
+    revision: saved.body.revision, scanDirectories: [], repositories: [], backends: [],
+  })
+  assert.equal(reverted.status, 200)
+  assert.deepEqual(reverted.body.backends, [])
+  assert.deepEqual(JSON.parse(await readFile(f.configPath, 'utf8')), { scanDirectories: [], repositories: [] })
+  assert.equal((await f.get('/api/vcs.status', { repo: f.workspace })).body.vcs, 'jujutsu')
+})
+
+test('a configured preference reaches listing, preview, reads, and falls back when its marker vanishes', { skip: !HAS_JJ }, async t => {
+  const f = repositoryDiscoveryFixture(t)
+  const colocated = join(f.workspace, 'plugins', 'two')
+  mkdirSync(colocated, { recursive: true })
+  jj(colocated, ['git', 'init'])
+  writeFileSync(join(colocated, 'tracked.txt'), 'colocated\n')
+  jj(colocated, ['describe', '-m', 'colocated repository'])
+  jj(colocated, ['bookmark', 'create', 'main', '-r', '@'])
+  f.writeConfig({ repositories: ['plugins/two'], backends: [{ path: 'plugins/two', vcs: 'jujutsu' }] })
+
+  const auto = await f.get('/api/vcs.repositories')
+  const entry = auto.body.repositories.find(repo => repo.path === colocated)
+  assert.equal(entry.vcs, 'jujutsu')
+  assert.deepEqual(entry.availableVcs, ['jujutsu', 'git'])
+  const preview = await f.get(REPOSITORY_PREVIEW_ROUTE, { path: 'plugins/two', kind: 'repository' })
+  assert.equal(preview.body.repositories[0].vcs, 'jujutsu')
+  assert.deepEqual(preview.body.repositories[0].availableVcs, ['jujutsu', 'git'])
+
+  const config = await f.get(REPOSITORY_CONFIG_ROUTE)
+  assert.deepEqual(config.body.backends, [{ path: 'plugins/two', vcs: 'jujutsu', available: true }])
+  const switched = await f.post(REPOSITORY_CONFIG_ROUTE, {
+    revision: config.body.revision, scanDirectories: [], repositories: ['plugins/two'],
+    backends: [{ path: 'plugins/two', vcs: 'git' }],
+  })
+  assert.equal(switched.status, 200)
+  assert.deepEqual(switched.body.backends, [{ path: 'plugins/two', vcs: 'git', available: true }])
+  const switchedListing = await f.get('/api/vcs.repositories')
+  assert.equal(switchedListing.body.repositories.find(repo => repo.path === colocated).vcs, 'git')
+  const switchedPreview = await f.get(REPOSITORY_PREVIEW_ROUTE, { path: 'plugins/two', kind: 'repository' })
+  assert.equal(switchedPreview.body.repositories[0].vcs, 'git')
+  assert.equal((await f.get('/api/vcs.status', { repo: colocated })).body.vcs, 'git')
+  const restored = await f.post(REPOSITORY_CONFIG_ROUTE, {
+    revision: switched.body.revision, scanDirectories: [], repositories: ['plugins/two'],
+    backends: [{ path: 'plugins/two', vcs: 'jujutsu' }],
+  })
+  assert.equal(restored.status, 200)
+  assert.equal((await f.get('/api/vcs.repositories')).body.repositories.find(repo => repo.path === colocated).vcs, 'jujutsu')
+
+  // The chosen marker disappears: the preference stays configured, the panel
+  // falls back to the remaining marker, and an unchanged save preserves it.
+  rmSync(join(colocated, '.jj'), { recursive: true, force: true })
+  const stale = await f.get(REPOSITORY_CONFIG_ROUTE)
+  assert.deepEqual(stale.body.backends, [{ path: 'plugins/two', vcs: 'jujutsu', available: false }])
+  const fallback = await f.get('/api/vcs.repositories')
+  assert.equal(fallback.body.repositories.find(repo => repo.path === colocated).vcs, 'git')
+  assert.deepEqual(fallback.body.repositories.find(repo => repo.path === colocated).availableVcs, ['git'])
+  const preserved = await f.post(REPOSITORY_CONFIG_ROUTE, {
+    revision: stale.body.revision, scanDirectories: [], repositories: ['plugins/two'],
+    backends: [{ path: 'plugins/two', vcs: 'jujutsu' }],
+  })
+  assert.equal(preserved.status, 200)
+  assert.deepEqual(preserved.body.backends, [{ path: 'plugins/two', vcs: 'jujutsu', available: false }])
+})
+
+test('repository preferences reject unknown backends, duplicates, traversal, and absent markers', async t => {
+  const f = repositoryDiscoveryFixture(t)
+  const before = await f.get(REPOSITORY_CONFIG_ROUTE)
+  const post = backends => f.post(REPOSITORY_CONFIG_ROUTE, {
+    revision: before.body.revision, scanDirectories: [], repositories: [], backends,
+  })
+  const invalid = [
+    'not-a-list',
+    [{ path: 'plugins/one', vcs: 'svn' }],
+    [{ path: 'plugins/one', vcs: 'git' }, { path: 'plugins/one', vcs: 'jujutsu' }],
+    [{ path: '../outside', vcs: 'git' }],
+    [{ path: 'plugins/one' }],
+    [{ path: 'plugins/one', vcs: 'git', extra: true }],
+  ]
+  for (const backends of invalid) {
+    const response = await post(backends)
+    assert.equal(response.status, 400, JSON.stringify(backends))
+    assert.equal(response.body.error.code, 'repository-config-invalid', JSON.stringify(backends))
+  }
+  await assert.rejects(readFile(f.configPath), { code: 'ENOENT' })
+
+  for (const entry of [
+    { path: 'plugins/one', vcs: 'jujutsu' },
+    { path: 'plugins/absent', vcs: 'git' },
+  ]) {
+    const response = await post([entry])
+    assert.equal(response.status, 400, entry.path)
+    assert.equal(response.body.error.code, 'repository-path-unavailable', entry.path)
+  }
+  await assert.rejects(readFile(f.configPath), { code: 'ENOENT' })
+
+  f.writeConfig({ backends: [{ path: 'plugins/one', vcs: 'jj' }] })
+  const malformed = await f.get(REPOSITORY_CONFIG_ROUTE)
+  assert.equal(malformed.body.error, 'repository-config-invalid')
+  assert.deepEqual(malformed.body.backends, [])
+})
+
 test('malformed discovery config leaves default repositories available and reports its error', async t => {
   const f = repositoryDiscoveryFixture(t)
   for (const contents of ['{malformed', '{"scanDirectories":"plugins"}']) {
@@ -1083,6 +1216,7 @@ test('malformed discovery config leaves default repositories available and repor
     assert.equal(config.body.error, 'repository-config-invalid')
     assert.deepEqual(config.body.scanDirectories, [])
     assert.deepEqual(config.body.repositories, [])
+    assert.deepEqual(config.body.backends, [])
     const listing = await f.get('/api/vcs.repositories')
     assert.deepEqual(repositoryPaths(listing), [f.workspace])
     assert.equal(listing.body.configError, 'repository-config-invalid')
@@ -1093,7 +1227,11 @@ test('malformed discovery config leaves default repositories available and repor
 
 test('vanished discovery paths stay configured and stop authorizing repository reads', async t => {
   const f = repositoryDiscoveryFixture(t)
-  f.writeConfig({ scanDirectories: ['plugins'], repositories: ['plugins/archive/two'] })
+  f.writeConfig({
+    scanDirectories: ['plugins'],
+    repositories: ['plugins/archive/two'],
+    backends: [{ path: 'plugins/archive/two', vcs: 'git' }],
+  })
   assert.equal((await f.get('/api/vcs.status', { repo: f.deeperRepo })).status, 200)
   renameSync(join(f.workspace, 'plugins'), join(f.workspace, 'moved-plugins'))
 
@@ -1101,6 +1239,7 @@ test('vanished discovery paths stay configured and stop authorizing repository r
   assert.equal(config.status, 200)
   assert.deepEqual(config.body.scanDirectories, [{ path: 'plugins', available: false }])
   assert.deepEqual(config.body.repositories, [{ path: 'plugins/archive/two', available: false }])
+  assert.deepEqual(config.body.backends, [{ path: 'plugins/archive/two', vcs: 'git', available: false }])
   assert.deepEqual(repositoryPaths(await f.get('/api/vcs.repositories')), [f.workspace])
   const denied = await f.get('/api/vcs.status', { repo: f.deeperRepo })
   assert.equal(denied.status, 400)

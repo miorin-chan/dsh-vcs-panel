@@ -780,6 +780,31 @@ select.vcs-repository-kind {
   font-variant-numeric: tabular-nums;
 }
 
+/* One backend choice beside a discovered repository that has both markers. */
+.vcs-repository-section li .vcs-repository-backend {
+  display: flex;
+  flex: none;
+  align-items: center;
+  max-width: 45%;
+}
+
+.vcs-repository-backend-select {
+  box-sizing: border-box;
+  max-width: 100%;
+  height: 24px;
+  padding: 0 4px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 6px);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 11px;
+}
+
+.vcs-repository-backend-select:disabled {
+  opacity: 0.55;
+}
+
 .vcs-repository-discovered ul {
   padding-inline: 8px;
 }

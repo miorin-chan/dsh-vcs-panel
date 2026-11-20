@@ -8,6 +8,41 @@ function sameEntries(a, b) {
   return a.length === b.length && a.every((entry, index) => entry.path === b[index].path)
 }
 
+/** The session-relative path a backend preference stores, `"."` at the root. */
+function repositoryKey(cwd, path) {
+  const root = cwd?.replaceAll('\\', '/').replace(/\/+$/u, '')
+  const normalized = path.replaceAll('\\', '/')
+  if (root === undefined || root === '') return normalized
+  if (normalized === root) return '.'
+  return normalized.startsWith(`${root}/`) ? normalized.slice(root.length + 1) : normalized
+}
+
+function sameBackends(a, b) {
+  if (a.length !== b.length) return false
+  const byPath = new Map(b.map(entry => [entry.path, entry.vcs]))
+  return a.every(entry => byPath.get(entry.path) === entry.vcs)
+}
+
+/** The backend choices a repository offers beside its discovery sources. */
+function BackendChoice({ cwd, repository, backends, disabled, onChange, t }) {
+  const available = Array.isArray(repository.availableVcs) ? repository.availableVcs : []
+  if (typeof cwd !== 'string' || available.length < 2) return null
+  const path = repositoryKey(cwd, repository.path)
+  const stored = backends.find(entry => entry.path === path)?.vcs ?? null
+  const value = stored !== null && available.includes(stored) ? stored : 'auto'
+  const labels = { git: t('repositoryConfig.vcsGit'), jujutsu: t('repositoryConfig.vcsJujutsu') }
+  return (
+    <label className="vcs-repository-backend">
+      <span className="vcs-sr-only">{t('repositoryConfig.backend')}</span>
+      <select className="vcs-repository-backend-select" disabled={disabled} value={value}
+        aria-label={t('repositoryConfig.backendLabel', { path })} onChange={event => { onChange(path, event.target.value) }}>
+        <option value="auto">{t('repositoryConfig.vcsAuto')}</option>
+        {available.map(id => <option key={id} value={id}>{labels[id] ?? id}</option>)}
+      </select>
+    </label>
+  )
+}
+
 function ConfigEntries({ title, entries, disabled, onRemove, t }) {
   if (entries.length === 0) return null
   return (
@@ -28,7 +63,7 @@ function ConfigEntries({ title, entries, disabled, onRemove, t }) {
   )
 }
 
-function RepositorySources({ cwd, repositories, t }) {
+function RepositorySources({ cwd, repositories, backends, disabled, onChange, t }) {
   const [expanded, setExpanded] = useState(false)
   if (repositories.length === 0) return null
   const root = cwd?.replaceAll('\\', '/').replace(/\/+$/u, '')
@@ -56,6 +91,8 @@ function RepositorySources({ cwd, repositories, t }) {
                   </small>
                 ))}
               </div>
+              <BackendChoice cwd={cwd} repository={repository} backends={backends} disabled={disabled}
+                onChange={onChange} t={t} />
             </li>
           )
         })}
@@ -91,7 +128,13 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
     api.repositoryConfig(controller.signal).then(result => {
       if (controller.signal.aborted) return
       setConfig(result)
-      setDraft({ scanDirectories: result.scanDirectories, repositories: result.repositories })
+      setDraft({
+        scanDirectories: result.scanDirectories,
+        repositories: result.repositories,
+        // The Host reports availability beside each choice; the write carries
+        // only the preference itself.
+        backends: Array.isArray(result.backends) ? result.backends.map(({ path, vcs }) => ({ path, vcs })) : [],
+      })
     }).catch(error => {
       if (!controller.signal.aborted) setLoadError(error)
     })
@@ -106,7 +149,9 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
   const editable = draft !== null && configError === null && !conflict
   const editing = editable && !saving
   const changed = config !== null && draft !== null && (
-    !sameEntries(draft.scanDirectories, config.scanDirectories) || !sameEntries(draft.repositories, config.repositories)
+    !sameEntries(draft.scanDirectories, config.scanDirectories)
+    || !sameEntries(draft.repositories, config.repositories)
+    || !sameBackends(draft.backends, config.backends ?? [])
   )
   const property = kind === 'directory' ? 'scanDirectories' : 'repositories'
   const duplicate = draft?.[property].some(entry => entry.path === relativePath)
@@ -172,6 +217,17 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
     pathRef.current?.focus()
   }
 
+  const setBackend = (backendPath, vcs) => {
+    setDraft(previous => ({
+      ...previous,
+      backends: vcs === 'auto'
+        ? previous.backends.filter(entry => entry.path !== backendPath)
+        : previous.backends.some(entry => entry.path === backendPath)
+          ? previous.backends.map(entry => (entry.path === backendPath ? { path: backendPath, vcs } : entry))
+          : [...previous.backends, { path: backendPath, vcs }],
+    }))
+  }
+
   const save = async () => {
     if (!canSave || savingRef.current) return
     const controller = lifetime.current
@@ -186,6 +242,7 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
         config.revision,
         draft.scanDirectories.map(entry => entry.path),
         draft.repositories.map(entry => entry.path),
+        draft.backends.map(({ path, vcs }) => ({ path, vcs })),
       )
       if (!controller.signal.aborted) {
         if (result.error) setSaveError({ code: result.error })
@@ -270,7 +327,8 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
               onRemove={removedPath => remove('repositories', removedPath)} t={t} />
           </>
         )}
-        <RepositorySources repositories={repositories} t={t} />
+        <RepositorySources cwd={cwd} repositories={repositories} backends={draft?.backends ?? []}
+          disabled={!editing} onChange={setBackend} t={t} />
       </div>
       {saving ? <p className="vcs-dialog-busy" role="status">{t('repositoryConfig.saving')}</p> : null}
       {loadError ?? configError ?? saveError ? (

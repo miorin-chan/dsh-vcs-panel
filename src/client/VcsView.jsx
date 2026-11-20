@@ -136,6 +136,8 @@ export function VcsView({
   const attemptedDirsRef = useRef(new Map())
   const directoryRequestsRef = useRef(new Map())
   const perRepoRef = useRef(new Map())
+  // The backend each discovered repository used on the last answer.
+  const repositoryVcsRef = useRef(new Map())
   const pageControllerRef = useRef(null)
   const branchesControllerRef = useRef(null)
   const loadingBranchesRef = useRef(false)
@@ -533,10 +535,17 @@ export function VcsView({
         configError: typeof answer?.configError === 'string' ? answer.configError : null,
       })
       const previousRepo = stateRef.current.repo
+      const previousVcs = previousRepo === null ? undefined : repositoryVcsRef.current.get(previousRepo)
+      repositoryVcsRef.current = new Map(list.map(entry => [entry.path, entry.vcs]))
       const nextEntry = pickRepository(list, previousRepo)
       const nextRepo = nextEntry?.path ?? null
       if (nextRepo !== previousRepo) switchRepo(nextEntry)
-      else {
+      else if (previousVcs !== undefined && previousVcs !== nextEntry?.vcs) {
+        // The same path now reads through another backend: drop the old
+        // backend's selection, folds, and caches instead of reusing them.
+        perRepoRef.current.delete(nextRepo)
+        switchRepo(nextEntry)
+      } else {
         const previous = stateRef.current.worktrees
         const checked = checkedWorktrees(repositoryWorktrees(nextEntry), previous).map(tree => tree.path)
         if (!samePaths(checked, previous)) update({ worktrees: checked })
@@ -694,6 +703,7 @@ export function VcsView({
   useVcsWatch({
     api,
     repo: repositoryReady ? state.repo : null,
+    vcs: repositoryReady ? repoInfo.vcs : null,
     pathsKey: repositoryReady ? statusPathsKey : '[]',
     visible: visible && settledRepositoriesKey !== null && sessionRef.current === sessionId,
     blocked: actions.repoBusy || hasOpenOverlay || refreshing !== null,
@@ -728,6 +738,7 @@ export function VcsView({
     pendingRestoreFocusRef.current = false
     pendingDetailFocusRef.current = false
     perRepoRef.current.clear()
+    repositoryVcsRef.current.clear()
     diffCacheRef.current.clear()
     commitCacheRef.current.clear()
     pageControllerRef.current?.abort()

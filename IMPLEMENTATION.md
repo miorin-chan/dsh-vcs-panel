@@ -14,10 +14,10 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 
 | 路由 | 查询参数 | 应答字段 |
 | --- | --- | --- |
-| `GET /api/vcs.repositories` | `sessionId` | `cwd`、`repositories[]`（`path`、`name`、`enclosing`、`vcs`、`capabilities`、`sources[]`、`worktrees[]`：`path`、`name`、`head`、Git 的 `branch`）、`truncated`、`worktreesTruncated`、`configError?` |
-| `GET /api/vcs.repository-config` | `sessionId` | `revision`、`scanDirectories[]`、`repositories[]`（条目含 `path`、`available`）、`error?` |
-| `GET /api/vcs.repository-preview` | `sessionId`、`path`、`kind`（`directory` 或 `repository`） | `repositories[]`（相对 `path`、`name`、`vcs`）、`truncated` |
-| `POST /api/vcs.repository-config` | JSON `{ sessionId, revision, scanDirectories, repositories }`（两个路径数组） | 同配置 GET |
+| `GET /api/vcs.repositories` | `sessionId` | `cwd`、`repositories[]`（`path`、`name`、`enclosing`、`vcs`、`availableVcs`、`capabilities`、`sources[]`、`worktrees[]`：`path`、`name`、`head`、Git 的 `branch`）、`truncated`、`worktreesTruncated`、`configError?` |
+| `GET /api/vcs.repository-config` | `sessionId` | `revision`、`scanDirectories[]`、`repositories[]`（条目含 `path`、`available`）、`backends[]`（条目含 `path`、`vcs`、`available`）、`error?` |
+| `GET /api/vcs.repository-preview` | `sessionId`、`path`、`kind`（`directory` 或 `repository`） | `repositories[]`（相对 `path`、`name`、`vcs`、`availableVcs`）、`truncated` |
+| `POST /api/vcs.repository-config` | JSON `{ sessionId, revision, scanDirectories, repositories, backends? }`（两个路径数组，以及 `{ path, vcs }` 偏好数组） | 同配置 GET |
 | `GET /api/vcs.status` | `sessionId`、`repo`、`worktree?`、`readOnly?`（`1` 跳过 Jujutsu 快照） | `repo`、`vcs`、`capabilities`、`defaultNode`、`branch`、`workingCopy?`、`groups`、`total`、`truncated`、`stageHistory` |
 | `GET /api/vcs.watch` | `sessionId`、`repo?`、`worktree?`（可重复）、`client?` | SSE `ready` 与 `invalidate`（`domains[]`、`origin?`） |
 | `GET /api/vcs.branches` | `sessionId`、`repo` | `branches[]`（`name`、`current`）、`truncated`（仅 `capabilities.branchSwitch` 为真时可用） |
@@ -42,6 +42,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
   自动刷新期间保留上次成功数据。
 - `invalidate` 携带 `working`、`history` 或 `repositories`。
   客户端防抖合并域。同一域只运行一次读取，期间到达的通知合成一次待处理刷新。
+  仓库列表刷新后，同一路径的后端变化会重置阅读状态与 diff 缓存，并以新的后端范围和仓库标识重开订阅。
   写入或对话期间暂缓读取。面板写入带 `X-VCS-Client`，若事件的 `origin` 匹配该面板，它使用操作完成后的显式刷新。
 - Git 用独立的工作树监听与元数据监听。
   后者覆盖每棵工作树的 `HEAD`、index 和公共引用存储，动态监听当前分支与上游引用，并过滤锁文件与 Watchman cookie。
@@ -62,12 +63,17 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
   两者按[工作区配置](DESIGN.md#仓库发现与工作区配置)与默认规则确定范围。
   默认向上最多查 64 层，直属扫描跳过 `.git`、`.jj` 和 `node_modules`。
   候选目录经 `ctx.fs.resolve` 规范化，并保持在对应扫描目录内。
-  标记用 `lstat` 检测且 `.jj` 优先于 `.git`，兼容 linked worktree 和 submodule 的 `.git` 文件。
-  列表的 `sources` 保留 `default`、`directory` 和 `repository` 来源，后两种含配置中的相对 `path`。
+  标记用 `lstat` 检测，兼容 linked worktree 和 submodule 的 `.git` 文件；
+  两种标记都在时按 `backends` 偏好选择，否则 `.jj` 优先于 `.git`。
+  列表的 `sources` 保留 `default`、`directory` 和 `repository` 来源，后两种含配置中的相对 `path`；
+  `availableVcs` 按标记优先级列出实际存在的后端，供管理界面限定可选值。
   读取仓库文件另用 `containPath` 校验实际路径。
 - **发现配置读写**：配置文件限为会话目录内的常规 UTF-8 JSON 文件，Host 拒绝配置文件路径别名。
   读取限量并核对文件版本，`revision` 隐藏实际文件版本。
   保存后端使用 `ctx.fs.writeText` 的版本或创建前置条件原子写入，避免覆盖过期编辑；路径失效的已保存条目可保留或移除。
+  `backends` 的 `path` 接受相对路径或表示会话根的 `"."`，`vcs` 只接受 `git` 与 `jujutsu`；
+  重复路径、未知后端、增改条目的标记缺失都在保存时拒绝。
+  已保存条目在新标记消失后可原样保留，读取时回退到标记优先级。
   `repository-config-invalid`、`repository-config-conflict`、
   `repository-config-write-failed` 和 `repository-path-unavailable` 分别表示无效、冲突、保存失败和路径不可用。
 - **仓库分组与工作树白名单**：`groupRepositories` 将验证为同一存储的工作树归组，
@@ -428,7 +434,7 @@ type TurnSummary = {
 | 项目 | 上限 | 执行位置 |
 | --- | --- | --- |
 | 单会话初始仓库根 / 附加工作树数 | 各 50 | Host `discoverRepositories` / `groupRepositories` |
-| 仓库发现标记检查 / 配置文件 / 每组配置路径 | 1,000 项 / 64 KiB / 50 项 | Host `repositories.js` / `repository-config.js` |
+| 仓库发现标记检查 / 配置文件 / 每组配置路径与后端偏好 | 1,000 项 / 64 KiB / 50 项 | Host `repositories.js` / `repository-config.js` |
 | 工作树状态读取并发 / 一次历史请求的工作树数 | Git 4、Jujutsu 1 / 51 | Client `VcsView` / Host `log` |
 | Jujutsu `.jj/repo` 路径链接 | 16 KiB | Host `jjCommonDirAt` |
 | 每组状态文件数（Git）/ 单提交详情文件数 / 未跟踪目录展开条目数 / 本地分支列表 / 远程列表 | 各 500 | Host `status` / `commit` / `untracked` / `branches` / `remotes` |

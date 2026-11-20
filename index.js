@@ -4,7 +4,8 @@
  * Authenticated routes under `/api/vcs.*` expose one repository's
  * working changes, a single file's hunks, its history, each turn's recorded
  * head and change totals, its local branches, and its remotes. Repository
- * management reads and writes discovery rules owned by the session directory.
+ * management reads and writes discovery rules and Git/Jujutsu backend choices
+ * owned by the session directory.
  * Version control write routes settle what the panel shows: `POST /api/vcs.sync` brings a Git branch
  * level with its upstream by fetching and then either fast-forwarding or
  * pushing, `POST /api/vcs.switch` checks out an existing local branch,
@@ -16,8 +17,9 @@
  * stages or unstages a file or selected lines. `POST /api/vcs.stage-history`
  * undoes or redoes those index changes. Reset and drop
  * only follow an explicit dialog. Jujutsu bookmarks and tags are never
- * rewritten. The backend is chosen by the repository's marker (Jujutsu or
- * Git) and runs through the injected subprocess service with fixed argv.
+ * rewritten. The backend is chosen by the repository's configured preference
+ * when its marker exists, else by marker precedence (Jujutsu before Git), and
+ * runs through the injected subprocess service with fixed argv.
  */
 
 import { createHandlers } from './lib/handlers.js'
