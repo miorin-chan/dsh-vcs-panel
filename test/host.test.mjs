@@ -601,7 +601,8 @@ function repositoryDiscoveryFixture(t) {
     connection: {
       fetch: {
         register(registered) {
-          for (const method of registered.methods) routes.set(`${method} ${registered.path}`, registered)
+          assert.ok(!routes.has(registered.path), `Duplicate exact route: ${registered.path}`)
+          routes.set(registered.path, registered)
           return () => {}
         },
       },
@@ -612,8 +613,8 @@ function repositoryDiscoveryFixture(t) {
   })
 
   async function request(method, path, params = {}, headers = {}) {
-    const registered = routes.get(`${method} ${path}`)
-    assert.ok(registered, `Host registered ${method} ${path}`)
+    const registered = routes.get(path)
+    assert.ok(registered?.methods.includes(method), `Host registered ${method} ${path}`)
     const input = { sessionId: 'root', ...params }
     const url = method === 'GET' ? route(path, input) : path
     const response = await registered.fetch(new Request(`http://127.0.0.1${url}`, {
@@ -2346,6 +2347,7 @@ test('apply registers every GET and POST route inside the fence and honors enabl
     connection: {
       fetch: {
         register(r) {
+          assert.ok(!routes.some(route => route.path === r.path), `Duplicate exact route: ${r.path}`)
           routes.push(r)
           return async () => {}
         },

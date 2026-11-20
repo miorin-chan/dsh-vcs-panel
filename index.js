@@ -34,15 +34,14 @@ export { createTurnTracker } from './lib/turns.js'
 export const inject = ['connection', 'sessions', 'subprocess', 'fs']
 
 /**
- * One entry per registered route, in the order the client asks for them.
+ * Connection registers each exact path once, with all methods for that path.
  * A read follows the browser request and stops when the browser leaves; a
  * write runs to completion once started, bounded only by the plugin lifetime,
  * so a closed tab never cuts a push, fast-forward, or switch short.
  */
 const ROUTES = [
   { path: '/api/vcs.repositories', key: 'repositories', method: 'GET' },
-  { path: '/api/vcs.repository-config', key: 'repositoryConfig', method: 'GET' },
-  { path: '/api/vcs.repository-config', key: 'saveRepositoryConfig', method: 'POST' },
+  { path: '/api/vcs.repository-config', handlers: { GET: 'repositoryConfig', POST: 'saveRepositoryConfig' } },
   { path: '/api/vcs.repository-preview', key: 'repositoryPreview', method: 'GET' },
   { path: '/api/vcs.status', key: 'status', method: 'GET' },
   { path: '/api/vcs.branches', key: 'branches', method: 'GET' },
@@ -90,15 +89,15 @@ export function apply(ctx, config) {
 
   const handlers = createHandlers(ctx, { backends, turnTracker })
 
-  for (const { path, key, method } of ROUTES) {
+  for (const { path, key, method, handlers: byMethod = { [method]: key } } of ROUTES) {
     ctx.effect(
       () => ctx.connection.fetch.register({
         path,
-        methods: [method],
+        methods: Object.keys(byMethod),
         requestBody: 'buffered',
-        fetch: async request => handlers[key](
+        fetch: async request => handlers[byMethod[request.method]](
           new Request(request, {
-            signal: method === 'GET'
+            signal: request.method === 'GET'
               ? AbortSignal.any([request.signal, lifetime.signal])
               : lifetime.signal,
           }),
