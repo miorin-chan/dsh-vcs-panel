@@ -2572,25 +2572,25 @@ test('VcsView stages a line directly, displays mixed file state, and replays the
     unstaged().querySelector('.vcs-tree-file-head').props.onClick()
     for (const observer of harness.intersections) observer.trigger(() => true)
     await harness.settle()
+    assert.equal(unstaged().attributes.get('data-open'), 'true', 'an expanded file renders as a card')
+    assert.ok(unstaged().querySelector('.vcs-card-head'))
+    assert.ok(unstaged().querySelector('.vcs-card-body'))
+    assert.equal(unstaged().querySelector('.vcs-tree-file-head').props.style.paddingLeft, '8px', 'an expanded card leaves tree indentation')
     const stagingBox = () => unstaged().querySelector('.vcs-stage-file')
     assert.equal(stagingBox().attributes.get('role'), undefined, 'separate groups state the index side, so a file has a command')
     assert.equal(stagingBox().attributes.get('data-stage-direction'), 'stage')
     assert.equal(stagingBox().attributes.get('data-partial'), undefined)
     assert.equal(stagingBox().props.tabIndex, -1, 'the tree keeps one Tab stop; s and u reach the command')
     const lines = unstaged().querySelectorAll('[data-stage-line]')
-    assert.equal(lines.length, 2, 'each changed line has a direct action and context has none')
-    assert.equal(lines[1].attributes.get('role'), 'checkbox')
-    assert.equal(lines[1].attributes.get('aria-checked'), 'false')
-    assert.equal(lines.filter(line => line.props.tabIndex === 0).length, 1)
-    lines[0].focus()
-    harness.keyDown(lines[0], 'ArrowDown')
-    assert.equal(harness.document.activeElement, lines[1])
-    harness.keyClick(lines[1], ' ')
+    assert.equal(lines.length, 2, 'each changed line has a hover action and context has none')
+    assert.equal(lines[1].attributes.get('role'), undefined, 'changed lines use hover commands instead of permanent checkboxes')
+    assert.equal(lines[1].attributes.get('data-stage-direction'), 'stage')
+    assert.equal(lines.every(line => line.props.tabIndex === -1), true, 'diff line buttons do not add Tab stops')
+    harness.mouseClick(lines[1])
     await harness.settle()
     assert.deepEqual(writes, [{ sessionId: 'stage-session', repo, path, scope: 'unstaged', fingerprint, lines: [{ hunk: 0, line: 2 }] }])
     const remaining = unstaged().querySelectorAll('[data-stage-line]')
     assert.equal(remaining.length, 1)
-    assert.equal(harness.document.activeElement, remaining[0], 'focus moves to the nearest remaining change')
     assert.equal(stagingBox().attributes.get('data-partial'), '')
     assert.match(stagingBox().attributes.get('title'), /stage\.stageRemainingFileChanges/u)
     assert.match(undo().attributes.get('title'), /stage\.stageLine.*example\.txt/u)
@@ -2619,7 +2619,7 @@ test('VcsView stages a line directly, displays mixed file state, and replays the
     harness.mouseClick(stagedFile.querySelector('.vcs-tree-file-head'))
     for (const observer of harness.intersections) observer.trigger(() => true)
     await harness.settle()
-    assert.equal(stagedFile.querySelector('[data-stage-line]').attributes.get('aria-checked'), 'true')
+    assert.equal(stagedFile.querySelector('[data-stage-line]').attributes.get('data-stage-direction'), 'unstage')
     harness.mouseClick(stagedBox)
     await harness.settle()
     assert.deepEqual(writes[4], { sessionId: 'stage-session', repo, path, scope: 'staged' })
@@ -2635,19 +2635,22 @@ test('VcsView stages a line directly, displays mixed file state, and replays the
     assert.equal(layout.attributes.get('aria-pressed'), 'true')
     assert.equal(unstaged(), null)
     assert.equal(merged().querySelector('.vcs-tree-file-head').attributes.get('aria-expanded'), 'true')
-    harness.keyClick(stageLine(), ' ')
+    assert.equal(merged().querySelector('[data-stage-state="unstaged"]') !== null, true, 'merged unstaged lines carry dashed-bar state')
+    harness.mouseClick(stageLine())
     await harness.settle()
     assert.deepEqual(writes[5], { sessionId: 'stage-session', repo, path, scope: 'unstaged', fingerprint, lines: [{ hunk: 0, line: 2 }] })
     assert.equal(merged().querySelector('.vcs-stage-file').attributes.get('aria-checked'), 'mixed')
     assert.equal(merged().querySelectorAll('[data-review-view]').length, 1)
-    assert.equal(stageLine().attributes.get('aria-checked'), 'true')
-    assert.ok(harness.document.activeElement === stageLine(), `focus stayed on ${harness.document.activeElement?.props['aria-label']}`)
-    harness.keyClick(stageLine(), ' ')
+    assert.equal(stageLine().attributes.get('data-stage-direction'), 'unstage')
+    assert.equal(merged().querySelector('[data-stage-state="staged"]') !== null, true, 'merged staged lines carry solid-bar state')
+    assert.equal(merged().querySelector('[data-stage-state="unstaged"]') !== null, true, 'remaining merged unstaged lines stay dashed')
+    harness.mouseClick(stageLine())
     await harness.settle()
     assert.deepEqual(writes[6], { sessionId: 'stage-session', repo, path, scope: 'staged', fingerprint: 'c'.repeat(64), lines: [{ hunk: 0, line: 2 }] })
-    harness.keyClick(stageLine(), ' ')
+    harness.mouseClick(stageLine())
     await harness.settle()
     const menuTrigger = merged().querySelector('[aria-haspopup="menu"]')
+    assert.ok(merged().querySelector('.vcs-card-head').querySelector('[aria-haspopup="menu"]'), 'file stage menu sits inside the card head')
     harness.keyClick(menuTrigger)
     await harness.settle()
     const unstageFile = merged().querySelector('[role="menuitem"]')
@@ -2666,16 +2669,28 @@ test('VcsView stages a line directly, displays mixed file state, and replays the
     harness.keyClick(layout)
     for (const observer of harness.intersections) observer.trigger(() => true)
     await harness.settle()
-    const hunk = () => merged().querySelector('[data-stage-hunk]')
-    assert.equal(hunk().attributes.get('aria-checked'), 'false')
-    harness.keyClick(hunk(), ' ')
+    const hunkHeader = () => merged().querySelector('[data-diff-hunk-header]')
+    const hunkBtn = direction => merged().querySelectorAll('[data-stage-hunk]')
+      .find(el => el.attributes.get('data-stage-direction') === direction) ?? null
+    const hunkStageBtn = () => hunkBtn('stage')
+    const hunkUnstageBtn = () => hunkBtn('unstage')
+    assert.equal(hunkHeader().attributes.get('aria-keyshortcuts'), 's')
+    assert.equal(textOf(hunkStageBtn()), 'stage.stageHunkButton')
+    assert.equal(hunkUnstageBtn(), null)
+    // Focus the hunk header and press `s` to stage the hunk directly via keyboard.
+    harness.mouseClick(hunkHeader())
+    assert.equal(harness.document.activeElement, hunkHeader())
+    harness.keyDown(hunkHeader(), 's')
     await harness.settle()
     assert.deepEqual(writes[9], { sessionId: 'stage-session', repo, path, scope: 'unstaged', fingerprint,
       lines: [{ hunk: 0, line: 1 }, { hunk: 0, line: 2 }] })
     assert.equal(merged().querySelector('.vcs-tree-file-head').attributes.get('aria-expanded'), 'true')
-    assert.equal(hunk().attributes.get('aria-checked'), 'mixed')
-    assert.ok(harness.document.activeElement === hunk(), 'focus remains on a hunk checkbox after refresh')
-    harness.keyClick(hunk(), 'Enter')
+    // Partial staging in merged view shows both Stage remaining and Unstage hunk buttons and accepts both s and u.
+    assert.equal(hunkHeader().attributes.get('aria-keyshortcuts'), 's u')
+    assert.equal(textOf(hunkStageBtn()), 'stage.stageRemainingHunkButton')
+    assert.equal(textOf(hunkUnstageBtn()), 'stage.unstageHunkButton')
+    assert.equal(harness.document.activeElement, hunkHeader(), 'focus stays on the hunk header after refresh')
+    harness.mouseClick(hunkStageBtn())
     await harness.settle()
     assert.deepEqual(writes[10], { sessionId: 'stage-session', repo, path, scope: 'unstaged', fingerprint: 'c'.repeat(64),
       lines: [{ hunk: 0, line: 1 }] })
@@ -2715,7 +2730,8 @@ test('ChangeTree stages a group, a folder, or a file from its gutter and with s 
     const tree = () => harness.document.body.querySelector('.vcs-tree')
     const head = key => tree().querySelector(`[data-row-key="${key}"]`)
     const control = key => {
-      const wrap = head(key).parentElement
+      const button = head(key)
+      const wrap = button.classList.contains('vcs-tree-file-head') ? button.parentElement.parentElement : button.parentElement
       return wrap.querySelector('[data-stage-direction]') ?? wrap.querySelector('[role="checkbox"]')
     }
     const press = async (key, letter) => {
@@ -2840,17 +2856,17 @@ test('FileDiff split layouts stage the exact side and suppress disabled actions'
       const deleted = body.querySelector('[data-stage-line="0:2"]')
       const added = body.querySelector('[data-stage-line="0:3"]')
       assert.equal(body.querySelectorAll('[data-stage-line]').length, 3)
-      assert.equal(deleted.attributes.get('aria-checked'), 'true')
-      assert.equal(added.attributes.get('aria-checked'), 'true')
-      deleted.focus()
-      harness.keyDown(deleted, 'ArrowDown')
-      assert.equal(harness.document.activeElement, added)
+      assert.equal(deleted.attributes.get('data-stage-direction'), 'unstage')
+      assert.equal(added.attributes.get('data-stage-direction'), 'unstage')
+      assert.equal(deleted.props.tabIndex, -1)
       harness.mouseClick(deleted)
-      harness.keyClick(added, ' ')
+      harness.mouseClick(added)
       assert.deepEqual(writes, [2, 3].map(line => ({ fingerprint: state.fingerprint, lines: [{ hunk: 0, line }] })))
       const hunks = body.querySelectorAll('[data-stage-hunk]')
       assert.equal(hunks.length, 1, 'both split columns share a single hunk action')
-      assert.equal(hunks[0].attributes.get('aria-checked'), 'true')
+      assert.equal(hunks[0].attributes.get('data-stage-direction'), 'unstage')
+      assert.equal(textOf(hunks[0]), 'stage.unstageHunkButton')
+      assert.equal(hunks[0].props.tabIndex, -1)
       harness.mouseClick(hunks[0])
       assert.deepEqual(writes[2], { fingerprint: state.fingerprint, lines: [1, 2, 3].map(line => ({ hunk: 0, line })) })
 
@@ -2867,6 +2883,185 @@ test('FileDiff split layouts stage the exact side and suppress disabled actions'
       harness.unmount()
       restore()
     }
+  }
+})
+
+test('FileDiff multi-line selection bar handles Shift+Click ranges, merged mixed selections, and Escape dismissal', async () => {
+  const harness = createHarness({ width: 900 })
+  const restore = harness.installGlobals()
+  try {
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const writes = []
+    let leftTree = 0
+    const diff = {
+      kind: 'text',
+      path: 'example.txt',
+      before: true,
+      after: true,
+      lineStaging: true,
+      fingerprint: 'a'.repeat(64),
+      hunks: [{
+        oldStart: 1,
+        newStart: 1,
+        oldLines: 4,
+        newLines: 5,
+        lines: [' ctx', '-removed', '+stagedAdd', '+unstagedAdd1', '+unstagedAdd2'],
+        origins: [
+          null,
+          { side: 'staged', hunk: 0, line: 1 },
+          { side: 'staged', hunk: 0, line: 2 },
+          { side: 'unstaged', hunk: 0, line: 1 },
+          { side: 'unstaged', hunk: 0, line: 2 },
+        ],
+      }],
+    }
+    const groups = [{
+      id: 'merged',
+      header: false,
+      entries: [{
+        path: 'example.txt',
+        status: 'M',
+        partiallyStaged: true,
+        added: 3,
+        deleted: 1,
+        sources: {
+          staged: { path: 'example.txt', status: 'M', added: 1, deleted: 1 },
+          unstaged: { path: 'example.txt', status: 'M', added: 2, deleted: 0 },
+        },
+      }],
+    }]
+    const stagedDiff = {
+      kind: 'text', path: 'example.txt', before: true, after: true, indexOid: 'idx1', lineStaging: true, fingerprint: 's'.repeat(64),
+      hunks: [{ oldStart: 1, newStart: 1, oldLines: 2, newLines: 2, lines: [' ctx', '-removed', '+stagedAdd'] }],
+    }
+    const unstagedDiff = {
+      kind: 'text', path: 'example.txt', before: true, after: true, indexOid: 'idx1', lineStaging: true, fingerprint: 'u'.repeat(64),
+      hunks: [{ oldStart: 1, newStart: 1, oldLines: 2, newLines: 4, lines: [' ctx', ' stagedAdd', '+unstagedAdd1', '+unstagedAdd2'] }],
+    }
+    harness.mount(harness.react.createElement(ChangeTree, {
+      api: { async diff(_repo, target) { return target.scope === 'staged' ? stagedDiff : unstagedDiff } },
+      repo: '/repo', rev: null, rows: buildNodeRows(groups), budget: new Map(), folds: { 'merged|example.txt': false },
+      split: false, wrap: false, revision: 0, cache: new Map(), initialAnchor: null,
+      onReading() {}, onToggleRow() {}, onBulkFold() {}, onLeave() { leftTree += 1 },
+      control: { current: null },
+      onStage: async target => { writes.push(target); return true },
+      partiallyStaged: new Set(['example.txt']), stageDisabled: false, t, locale: 'en-US',
+    }))
+    for (const observer of harness.intersections) observer.trigger(() => true)
+    await harness.settle()
+    const body = harness.document.body
+    const file = body.querySelector('[data-file-key="merged|example.txt"]')
+    assert.equal(file.attributes.get('data-open'), 'true')
+    // Solid vs dashed state attributes on merged lines.
+    assert.ok(file.querySelector('[data-stage-state="staged"]'))
+    assert.ok(file.querySelector('[data-stage-state="unstaged"]'))
+
+    // Single click sets anchor; Shift+Click on a later changed line selects the mixed range and opens the floating bar.
+    const firstBtn = file.querySelector('[data-stage-line="0:1"]')
+    const lastBtn = file.querySelector('[data-stage-line="0:4"]')
+    harness.mouseClick(firstBtn)
+    await harness.settle()
+    assert.equal(writes.length, 1, 'plain click stages/unstages the single line')
+    lastBtn.props.onClick({ shiftKey: true, stopPropagation() {} })
+    await harness.settle()
+    const bar = () => file.querySelector('.vcs-diff-selection-bar')
+    assert.ok(bar(), 'Shift+Click range opens the floating selection bar')
+    assert.ok(bar().querySelector('[data-stage-selection="stage"]'), 'mixed range offers stage selected button')
+    assert.ok(bar().querySelector('[data-stage-selection="unstage"]'), 'mixed range offers unstage selected button')
+
+    // First Escape clears the line selection without leaving the change tree; second Escape leaves the tree.
+    const tree = body.querySelector('.vcs-tree')
+    const head = file.querySelector('.vcs-tree-file-head')
+    head.focus()
+    harness.keyDown(head, 'Escape')
+    await harness.settle()
+    assert.equal(bar(), null, 'first Escape dismisses the floating selection bar')
+    assert.equal(leftTree, 0, 'first Escape stays inside the change tree')
+    harness.keyDown(head, 'Escape')
+    assert.equal(leftTree, 1, 'second Escape leaves the change tree')
+
+    // Re-select via Shift+Click and submit the unstaged subset from the floating bar.
+    lastBtn.props.onClick({ shiftKey: true, stopPropagation() {} })
+    await harness.settle()
+    harness.mouseClick(bar().querySelector('[data-stage-selection="stage"]'))
+    await harness.settle()
+    assert.equal(bar(), null, 'submitting clears the selection bar')
+    assert.deepEqual(writes.at(-1), {
+      scope: 'unstaged',
+      path: 'example.txt',
+      fingerprint: 'u'.repeat(64),
+      lines: [{ hunk: 0, line: 2 }, { hunk: 0, line: 3 }],
+    })
+  } finally {
+    harness.unmount()
+    restore()
+  }
+})
+
+test('ChangeTree runs s and u on focused hunk headers and restores hunk focus after refresh', async () => {
+  const harness = createHarness({ width: 900 })
+  const restore = harness.installGlobals()
+  try {
+    const { ChangeTree } = await loadClientModule('src/client/detail/ChangeTree.jsx', harness)
+    const writes = []
+    let stagedFirst = false
+    const makeDiff = () => ({
+      kind: 'text',
+      path: 'src/multi.js',
+      before: true,
+      after: true,
+      lineStaging: true,
+      fingerprint: stagedFirst ? 'b'.repeat(64) : 'a'.repeat(64),
+      hunks: stagedFirst
+        ? [{ oldStart: 20, newStart: 20, oldLines: 2, newLines: 3, lines: [' b', '+hunkTwo'] }]
+        : [
+          { oldStart: 1, newStart: 1, oldLines: 2, newLines: 3, lines: [' a', '+hunkOne'] },
+          { oldStart: 20, newStart: 21, oldLines: 2, newLines: 3, lines: [' b', '+hunkTwo'] },
+        ],
+    })
+    const makeGroups = () => [{
+      id: 'unstaged',
+      header: true,
+      entries: [{ path: 'src/multi.js', status: 'M', added: stagedFirst ? 1 : 2, deleted: 0 }],
+    }]
+    const renderTree = revision => harness.mount(harness.react.createElement(ChangeTree, {
+      api: { async diff() { return makeDiff() } },
+      repo: '/repo', rev: null, rows: buildNodeRows(makeGroups()), budget: new Map(),
+      folds: { 'unstaged|src/multi.js': false }, split: false, wrap: false, revision,
+      cache: new Map(), initialAnchor: null, onReading() {}, onToggleRow() {}, onBulkFold() {}, onLeave() {},
+      control: { current: null },
+      onStage: async target => {
+        writes.push(target)
+        stagedFirst = true
+        return true
+      },
+      partiallyStaged: new Set(), stageDisabled: false, t, locale: 'en-US',
+    }))
+    renderTree(0)
+    for (const observer of harness.intersections) observer.trigger(() => true)
+    await harness.settle()
+    const body = harness.document.body
+    const hunks = () => body.querySelectorAll('[data-diff-hunk-header]')
+    assert.equal(hunks().length, 2)
+    harness.mouseClick(hunks()[0])
+    assert.equal(harness.document.activeElement, hunks()[0])
+    assert.equal(harness.keyDown(hunks()[0], 'u').prevented, false, 'u is a no-op on an unstaged hunk')
+    assert.equal(harness.keyDown(hunks()[0], 's').prevented, true, 's stages the focused hunk')
+    await harness.settle()
+    assert.deepEqual(writes, [{
+      scope: 'unstaged',
+      path: 'src/multi.js',
+      fingerprint: 'a'.repeat(64),
+      lines: [{ hunk: 0, line: 1 }],
+    }])
+    // Refresh with remaining hunk only -> focus lands on the remaining hunk header for consecutive s presses.
+    renderTree(1)
+    await harness.settle()
+    assert.equal(hunks().length, 1)
+    assert.equal(harness.document.activeElement, hunks()[0], 'focus stays on the next remaining hunk header after refresh')
+  } finally {
+    harness.unmount()
+    restore()
   }
 })
 

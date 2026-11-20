@@ -15,16 +15,16 @@
  * JSX syntax so `node --test` can import the exported pure helpers directly.
  */
 
-import { createElement as h, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { StageCheckbox } from '../detail/StageCheckbox.js'
+import { createElement as h, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { formatCount, formatPlural } from '../format.js'
-import { findAncestor, hasAttr } from '../keys.js'
+import { findAncestor } from '../keys.js'
 import { highlightLines } from './highlight.js'
 
 /** Maximum rendered lines per comparison. */
 export const MAX_RENDERED_LINES = 5000
 
-const comparePatchPosition = new Intl.Collator('en', { numeric: true }).compare
+/** Delay (ms) before hiding the horizontal scrollbar thumb after scrolling stops. */
+const HSCROLL_IDLE_MS = 900
 
 /**
  * Number a hunk's lines: context lines count on both sides, deletions on the
@@ -145,9 +145,30 @@ function hunkHeader(hunk, t) {
   return hunk.side === undefined ? range : `${t(`changes.${hunk.side}`)}  ${range}`
 }
 
-function renderHunkHeader(label, checkbox) {
-  return h('div', { className: 'vcs-diff-hunk-header', 'data-diff-hunk-header': '', tabIndex: -1 },
-    checkbox, label)
+/** Plus or minus glyph for the line-number staging hover button. */
+function lineStageGlyph(direction) {
+  return h('svg', {
+    className: 'vcs-diff-line-stage-icon',
+    viewBox: '0 0 16 16',
+    fill: 'none',
+    stroke: 'currentColor',
+    'aria-hidden': 'true',
+  }, h('path', {
+    d: direction === 'stage' ? 'M8 3.5v9M3.5 8h9' : 'M3.5 8h9',
+    strokeWidth: 1.6,
+    strokeLinecap: 'round',
+  }))
+}
+
+function renderHunkHeader(label, actions, keyShortcuts) {
+  return h('div', {
+    className: 'vcs-diff-hunk-header',
+    'data-diff-hunk-header': '',
+    'aria-keyshortcuts': keyShortcuts,
+    tabIndex: -1,
+  },
+  h('span', { className: 'vcs-diff-hunk-range' }, label),
+  actions)
 }
 
 /**
@@ -184,29 +205,67 @@ function cellClass(cell) {
   return cell === undefined ? 'vcs-diff-cell vcs-diff-empty' : `vcs-diff-cell vcs-diff-${cell.kind}`
 }
 
+/** Mark one scroll container as horizontally scrolling until idle, without React rerenders. */
+function useHorizontalScrollFlag() {
+  const timers = useRef(new Map())
+  const lastLeft = useRef(new WeakMap())
+  useEffect(() => () => {
+    for (const timer of timers.current.values()) clearTimeout(timer)
+    timers.current.clear()
+  }, [])
+  return useCallback(element => {
+    if (element === null || element === undefined) return
+    const left = element.scrollLeft ?? 0
+    const previous = lastLeft.current.get(element) ?? 0
+    if (left === previous) return
+    lastLeft.current.set(element, left)
+    if (element.dataset !== undefined) element.dataset.hScrolling = 'true'
+    const existing = timers.current.get(element)
+    if (existing !== undefined) clearTimeout(existing)
+    timers.current.set(element, setTimeout(() => {
+      timers.current.delete(element)
+      if (element.dataset !== undefined) delete element.dataset.hScrolling
+    }, HSCROLL_IDLE_MS))
+  }, [])
+}
+
 /**
  * The side-by-side view without wrapping: two columns that clip their long
  * lines and scroll together on both axes, so a long line on one side never
  * runs under the other and both sides show the same rows and columns of text.
  * Every line is one fixed-height row, which keeps the sides aligned.
  */
-function SplitColumns({ hunks, highlights, stageControl, stageHunk, t }) {
+function SplitColumns({
+  hunks, highlights, renderNumber, lineState, isSelected, stageHunk, onHorizontalScroll, t,
+}) {
   const paired = useMemo(() => hunks.map(hunk => ({ header: hunkHeader(hunk, t), rows: splitRows(hunk) })), [hunks, t])
   const columns = useRef({ left: null, right: null })
   const offsets = useRef({ left: { scrollLeft: 0, scrollTop: 0 }, right: { scrollLeft: 0, scrollTop: 0 } })
   const follow = side => event => {
+    const current = event.currentTarget
+    onHorizontalScroll(current)
     const peer = side === 'left' ? 'right' : 'left'
     const other = columns.current[peer]
     if (other === null) return
     for (const axis of ['scrollLeft', 'scrollTop']) {
-      const value = event.currentTarget[axis]
+      const value = current[axis]
       if (offsets.current[side][axis] === value) continue
       offsets.current[side][axis] = value
       other[axis] = value
       // Record the browser-clamped offset so its scroll event cannot pull the source back.
       offsets.current[peer][axis] = other[axis]
+      if (axis === 'scrollLeft') onHorizontalScroll(other)
     }
   }
+  const rowBaseByHunk = useMemo(() => {
+    const bases = []
+    let count = 0
+    for (const hunk of paired) {
+      bases.push(count)
+      count += hunk.rows.length
+    }
+    return bases
+  }, [paired])
   return h('div', { className: 'vcs-diff-columns' },
     ['left', 'right'].map(side => h('div', {
       key: side,
@@ -215,140 +274,597 @@ function SplitColumns({ hunks, highlights, stageControl, stageHunk, t }) {
       ref: element => { columns.current[side] = element },
       onScroll: follow(side),
     },
-    paired.map((hunk, position) => h('section', { key: position, className: 'vcs-diff-hunk' },
-      renderHunkHeader(hunk.header, side === 'left' ? stageHunk(position) : null),
-      hunk.rows.map((row, at) => {
-        const cell = row[side]
-        const spans = cell === undefined ? undefined : highlights[position]?.[side === 'left' ? 'old' : 'new']?.get(cell.no)
-        return h('div', {
-          key: at,
-          className: `vcs-diff-side-line ${cell === undefined ? 'vcs-diff-empty' : `vcs-diff-${cell.kind}`}`,
-          'data-diff-line': splitRowKind(row),
-        },
-        stageControl(position, cell?.kind, cell?.no),
-        lineNumber(cell?.no),
-        h(DiffText, { text: cell?.text ?? '', spans }))
-      })))))
+    paired.map((hunk, position) => {
+      const hunkUi = side === 'left' ? stageHunk(position) : null
+      return h('section', { key: position, className: 'vcs-diff-hunk' },
+        renderHunkHeader(hunk.header, hunkUi?.node ?? null, hunkUi?.keyShortcuts),
+        hunk.rows.map((row, at) => {
+          const cell = row[side]
+          const seq = rowBaseByHunk[position] + at
+          const spans = cell === undefined ? undefined : highlights[position]?.[side === 'left' ? 'old' : 'new']?.get(cell.no)
+          const stateAttr = lineState(position, cell?.kind, cell?.no)
+          const selected = isSelected(position, cell?.kind, cell?.no)
+          return h('div', {
+            key: at,
+            className: `vcs-diff-side-line ${cell === undefined ? 'vcs-diff-empty' : `vcs-diff-${cell.kind}`}`,
+            'data-diff-line': splitRowKind(row),
+            'data-diff-row-seq': seq,
+            'data-diff-side': side,
+            'data-stage-state': stateAttr,
+            'data-line-selected': selected ? '' : undefined,
+          },
+          renderNumber(position, cell?.kind, cell?.no, seq, side),
+          h(DiffText, { text: cell?.text ?? '', spans }))
+        }))
+    })))
   )
 }
 
-function lineNumber(number) {
-  return h('span', { className: 'vcs-diff-number' }, number ?? '')
+function plainNumber(number, seq, side) {
+  return h('span', {
+    className: 'vcs-diff-number',
+    'data-stage-row-seq': seq,
+    'data-stage-side': side,
+  }, number ?? '')
+}
+
+/**
+ * Compute the floating bar's vertical offset relative to the diff root.
+ * @param {HTMLElement | null} root - `.vcs-diff-root`.
+ * @param {HTMLElement | null} anchor - last selected row element.
+ * @returns {number} top offset in pixels.
+ */
+function floatingTop(root, anchor) {
+  if (root === null || anchor === null) return 8
+  if (typeof root.getBoundingClientRect !== 'function' || typeof anchor.getBoundingClientRect !== 'function') return 8
+  const rootRect = root.getBoundingClientRect()
+  const anchorRect = anchor.getBoundingClientRect()
+  const below = anchorRect.bottom - rootRect.top + 4
+  const maxTop = Math.max(8, (root.clientHeight || rootRect.height || 0) - 34)
+  if (below <= maxTop) return Math.max(8, below)
+  const above = anchorRect.top - rootRect.top - 32
+  return Math.max(8, Math.min(maxTop, above))
 }
 
 /**
  * The hunks of a text comparison with their line numbers, unified or side by side.
  */
-function TextDiff({ diff, split, wrap, onStageLines, stageScope, stageDisabled, stageSources, showStageState, t, locale }) {
+function TextDiff({
+  diff, split, wrap, onStageLines, stageScope, stageDisabled, stageSources, showStageState,
+  onRegisterHunks, onRegisterSelectionClear, t, locale,
+}) {
   const note = noteOf(diff)
   const { hunks, truncated } = useMemo(() => renderedHunks(diff.hunks), [diff.hunks])
   const highlights = useMemo(() => hunks.map(hunk => hunkHighlights(hunk, diff.path)), [hunks, diff.path])
-  const [active, setActive] = useState(null)
+  const rootRef = useRef(null)
   const bodyRef = useRef(null)
-  const stageFocus = useRef(null)
+  const onHorizontalScroll = useHorizontalScrollFlag()
+  const [selection, setSelection] = useState(null) // { mode: 'gutter' | 'text', side, keys: string[], top: number }
+  const dragRef = useRef(null)
+  const lastAnchorRef = useRef(null) // { side, seq }
+  const suppressClickRef = useRef(false)
+  const selectingSideRef = useRef(null)
+
   const canStage = showStageState || (!truncated && diff.lineStaging === true
     && typeof diff.fingerprint === 'string' && typeof onStageLines === 'function')
-  const stageTargets = useMemo(() => canStage ? hunks.map((hunk, position) => {
-    const targets = new Map()
-    hunkRows(hunk).forEach((row, line) => {
-      if (row.kind === 'context') return
-      const origin = hunk.origins?.[line] ?? { side: stageScope, hunk: position, line }
-      const checked = origin.side === 'staged'
-      const action = t(checked ? 'stage.unstageLine' : 'stage.stageLine')
-      const added = row.kind === 'add'
-      const number = added ? row.new : row.old
-      const description = t(added ? 'stage.addedLine' : 'stage.deletedLine', { number: formatCount(number, locale) })
-      targets.set(`${row.kind}:${number}`, { origin, checked, key: `${position}:${line}`, label: `${action} · ${description}` })
+
+  const { stageTargets, targetByKey, orderedBySide } = useMemo(() => {
+    const byKey = new Map()
+    const bySide = { unified: [], left: [], right: [] }
+    if (!canStage) return { stageTargets: [], targetByKey: byKey, orderedBySide: bySide }
+    const maps = hunks.map((hunk, position) => {
+      const targets = new Map()
+      hunkRows(hunk).forEach((row, line) => {
+        if (row.kind === 'context') return
+        const origin = hunk.origins?.[line] ?? { side: stageScope, hunk: position, line }
+        const checked = origin.side === 'staged'
+        const action = t(checked ? 'stage.unstageLine' : 'stage.stageLine')
+        const added = row.kind === 'add'
+        const number = added ? row.new : row.old
+        const description = t(added ? 'stage.addedLine' : 'stage.deletedLine', { number: formatCount(number, locale) })
+        const key = `${position}:${line}`
+        const item = {
+          origin, checked, key, hunkPosition: position, kind: row.kind, number,
+          label: `${action} · ${description}`,
+        }
+        targets.set(`${row.kind}:${number}`, item)
+        byKey.set(key, item)
+      })
+      return targets
     })
-    return targets
-  }) : [], [canStage, hunks, locale, stageScope, t])
-  const firstLine = stageTargets.find(targets => targets.size > 0)?.values().next().value.key
-  const activeLine = active?.diff === diff && active?.split === split && active?.wrap === wrap
-    ? active.key : firstLine
-  // Patch order stays consistent across unified and both split layouts.
-  const controls = kind => {
-    const buttons = Array.from(bodyRef.current.querySelectorAll(`[data-stage-${kind}]`))
-    if (kind === 'line') buttons.sort((left, right) => comparePatchPosition(left.dataset.stageLine, right.dataset.stageLine))
-    return buttons
-  }
+    // Map visual row sequences per side so gutter drag and Shift+Click select contiguous lines cleanly.
+    let unifiedSeq = 0
+    let splitSeq = 0
+    hunks.forEach((hunk, position) => {
+      const targets = maps[position]
+      hunkRows(hunk).forEach(row => {
+        const number = row.kind === 'add' ? row.new : row.old
+        const target = row.kind === 'context' ? undefined : targets.get(`${row.kind}:${number}`)
+        if (target !== undefined) bySide.unified.push({ seq: unifiedSeq, key: target.key })
+        unifiedSeq += 1
+      })
+      splitRows(hunk).forEach(row => {
+        for (const side of ['left', 'right']) {
+          const cell = row[side]
+          if (cell !== undefined && cell.kind !== 'context') {
+            const target = targets.get(`${cell.kind}:${cell.no}`)
+            if (target !== undefined) bySide[side].push({ seq: splitSeq, key: target.key })
+          }
+        }
+        splitSeq += 1
+      })
+    })
+    return { stageTargets: maps, targetByKey: byKey, orderedBySide: bySide }
+  }, [canStage, hunks, locale, stageScope, t])
+
+  // Clear selection whenever the diff, view mode, or wrap changes.
+  useEffect(() => {
+    setSelection(null)
+    dragRef.current = null
+    lastAnchorRef.current = null
+  }, [diff, split, wrap])
+
+  const clearSelection = useCallback(() => {
+    if (selection === null) return false
+    setSelection(null)
+    dragRef.current = null
+    if (selection.mode === 'text' && typeof window !== 'undefined') {
+      const native = window.getSelection?.()
+      if (native !== null && native !== undefined && !native.isCollapsed) native.removeAllRanges?.()
+    }
+    return true
+  }, [selection])
 
   useLayoutEffect(() => {
-    const pending = stageFocus.current
-    if (pending === null || pending.diff === diff) return
-    stageFocus.current = null
-    const element = bodyRef.current
-    const doc = element.ownerDocument
-    if (doc.activeElement !== pending.button && doc.activeElement !== doc.body) return
-    const buttons = controls(pending.kind)
-    const file = findAncestor(element, null, node => hasAttr(node, 'data-file-key'))
-    const fallback = file?.querySelector('.vcs-tree-file-head')
-    const next = buttons[Math.min(pending.index, buttons.length - 1)] ?? fallback
-    next?.focus({ preventScroll: true })
-  }, [diff])
+    if (onRegisterSelectionClear === undefined) return undefined
+    onRegisterSelectionClear(clearSelection)
+    return () => { onRegisterSelectionClear(null) }
+  }, [clearSelection, onRegisterSelectionClear])
 
-  const sourceFor = side => {
+  // Allow Escape to clear a diff line selection even if focus is outside the tree.
+  useEffect(() => {
+    if (selection === null || typeof window === 'undefined') return undefined
+    const onKeyDown = event => {
+      if (event.key !== 'Escape') return
+      const body = bodyRef.current
+      if (body !== null) {
+        const tree = findAncestor(body, null, node => node?.dataset?.zone === 'tree')
+        if (tree !== null && tree.contains?.(event.target)) return
+      }
+      event.preventDefault()
+      clearSelection()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => { window.removeEventListener('keydown', onKeyDown) }
+  }, [clearSelection, selection])
+
+  const sourceFor = useCallback(side => {
     if (stageSources !== undefined) return stageSources[side]
     return { onStageLines, fingerprint: diff.lineStaging === true ? diff.fingerprint : undefined }
-  }
-  const canApply = source => !stageDisabled && !truncated
-    && typeof source?.onStageLines === 'function' && typeof source.fingerprint === 'string'
-  const applyChanges = async (button, kind, source, lines) => {
-    const pending = { button, diff, kind, index: controls(kind).indexOf(button) }
-    stageFocus.current = pending
-    if (!await source.onStageLines(source.fingerprint, lines) && stageFocus.current === pending) {
-      stageFocus.current = null
-    }
-  }
-  const stageHunk = position => {
+  }, [diff.fingerprint, diff.lineStaging, onStageLines, stageSources])
+
+  const canApply = useCallback(source => !stageDisabled && !truncated
+    && typeof source?.onStageLines === 'function' && typeof source.fingerprint === 'string', [stageDisabled, truncated])
+
+  const applyChanges = useCallback(async (source, lines, meta) => {
+    if (!canApply(source) || lines.length === 0) return false
+    return await source.onStageLines(source.fingerprint, lines, meta)
+  }, [canApply])
+
+  const hunkSpecs = useMemo(() => hunks.map((_, position) => {
     const targets = stageTargets[position]
     if (targets === undefined || targets.size === 0) return null
     const changes = [...targets.values()]
     const unstaged = changes.filter(change => !change.checked)
-    const checked = unstaged.length === 0 ? true : unstaged.length === changes.length ? false : 'mixed'
-    const selected = checked === true ? changes : unstaged
-    const side = selected[0].origin.side
-    const source = sourceFor(side)
-    const labelKey = checked === true ? 'stage.unstageHunk' : checked === 'mixed' ? 'stage.stageRemainingHunk' : 'stage.stageHunk'
-    return h(StageCheckbox, {
-      className: 'vcs-stage-hunk',
-      'data-stage-hunk': position,
-      checked,
-      label: t(labelKey, { number: formatCount(position + 1, locale) }),
-      disabled: !canApply(source),
-      onKeyDown: event => {
-        // The surrounding hunk header uses these keys to fold the file.
-        if (event.key === 'Enter' || event.key === ' ') event.stopPropagation()
-      },
-      onToggle: button => applyChanges(button, 'hunk', source, selected.map(({ origin }) => ({ hunk: origin.hunk, line: origin.line }))),
+    const staged = changes.filter(change => change.checked)
+    const stageSource = unstaged.length > 0 ? sourceFor(unstaged[0].origin.side) : undefined
+    const unstageSource = staged.length > 0 ? sourceFor(staged[0].origin.side) : undefined
+    const stageable = unstaged.length > 0 && canApply(stageSource)
+    const unstageable = staged.length > 0 && canApply(unstageSource)
+    const stageLinesPayload = unstaged.map(({ origin }) => ({ hunk: origin.hunk, line: origin.line }))
+    const unstageLinesPayload = staged.map(({ origin }) => ({ hunk: origin.hunk, line: origin.line }))
+    const meta = { hunk: position, restoreTo: 'hunk' }
+    const stage = unstaged.length > 0
+      ? () => applyChanges(stageSource, stageLinesPayload, meta)
+      : undefined
+    const unstage = staged.length > 0
+      ? () => applyChanges(unstageSource, unstageLinesPayload, meta)
+      : undefined
+    const mixed = unstaged.length > 0 && staged.length > 0
+    const shortcuts = [stageable ? 's' : null, unstageable ? 'u' : null].filter(Boolean).join(' ') || undefined
+    return {
+      position,
+      mixed,
+      hasStage: unstaged.length > 0,
+      hasUnstage: staged.length > 0,
+      stageable,
+      unstageable,
+      stage,
+      unstage,
+      shortcuts,
+    }
+  }), [applyChanges, canApply, hunks, sourceFor, stageTargets])
+
+  // Expose hunk-level s / u handlers to ChangeTree without DOM scraping.
+  useLayoutEffect(() => {
+    if (onRegisterHunks === undefined) return undefined
+    onRegisterHunks(hunkSpecs.map(spec => (spec === null
+      ? null
+      : {
+        stage: spec.hasStage ? spec.stage : undefined,
+        unstage: spec.hasUnstage ? spec.unstage : undefined,
+      })))
+    return () => { onRegisterHunks([]) }
+  }, [hunkSpecs, onRegisterHunks])
+
+  const stageHunk = position => {
+    const spec = hunkSpecs[position]
+    if (spec === null || spec === undefined) return null
+    const number = formatCount(position + 1, locale)
+    const buttons = []
+    if (spec.hasStage) {
+      const label = t(spec.mixed ? 'stage.stageRemainingHunk' : 'stage.stageHunk', { number })
+      const text = t(spec.mixed ? 'stage.stageRemainingHunkButton' : 'stage.stageHunkButton')
+      buttons.push(h('button', {
+        key: 'stage',
+        type: 'button',
+        className: 'vcs-diff-hunk-btn',
+        tabIndex: -1,
+        'data-stage-hunk': position,
+        'data-stage-direction': 'stage',
+        'aria-label': label,
+        'aria-disabled': !spec.stageable ? 'true' : undefined,
+        title: label,
+        onMouseDown: event => { event.preventDefault() },
+        onKeyDown: event => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
+        onClick: event => {
+          event.stopPropagation()
+          if (spec.stageable) void spec.stage()
+        },
+      }, text))
+    }
+    if (spec.hasUnstage) {
+      const label = t('stage.unstageHunk', { number })
+      const text = t('stage.unstageHunkButton')
+      buttons.push(h('button', {
+        key: 'unstage',
+        type: 'button',
+        className: 'vcs-diff-hunk-btn',
+        tabIndex: -1,
+        'data-stage-hunk': position,
+        'data-stage-direction': 'unstage',
+        'aria-label': label,
+        'aria-disabled': !spec.unstageable ? 'true' : undefined,
+        title: label,
+        onMouseDown: event => { event.preventDefault() },
+        onKeyDown: event => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
+        onClick: event => {
+          event.stopPropagation()
+          if (spec.unstageable) void spec.unstage()
+        },
+      }, text))
+    }
+    if (buttons.length === 0) return null
+    return {
+      keyShortcuts: spec.shortcuts,
+      node: h('span', { className: 'vcs-diff-hunk-actions' }, buttons),
+    }
+  }
+
+  /** Collect all stageable keys between two visual row indices on one side. */
+  const keysInRange = useCallback((side, startSeq, endSeq) => {
+    const low = Math.min(startSeq, endSeq)
+    const high = Math.max(startSeq, endSeq)
+    const list = orderedBySide[side] ?? []
+    return list.filter(entry => entry.seq >= low && entry.seq <= high).map(entry => entry.key)
+  }, [orderedBySide])
+
+  /** Find the DOM element for one visual row so the floating bar aligns near it. */
+  const rowElementFor = useCallback((side, seq) => {
+    const body = bodyRef.current
+    if (body === null) return null
+    return body.querySelector(`[data-diff-row-seq="${seq}"][data-diff-side="${side}"]`)
+      ?? body.querySelector(`[data-diff-row-seq="${seq}"]`)
+  }, [])
+
+  const applyGutterRange = useCallback((side, startSeq, endSeq) => {
+    const keys = keysInRange(side, startSeq, endSeq)
+    if (keys.length === 0) {
+      setSelection(null)
+      return
+    }
+    const anchorEl = rowElementFor(side, Math.max(startSeq, endSeq))
+    setSelection({ mode: 'gutter', side, keys, top: floatingTop(rootRef.current, anchorEl) })
+  }, [keysInRange, rowElementFor])
+
+  // Track active gutter drag until pointerup on window.
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined
+    const onPointerMove = event => {
+      const drag = dragRef.current
+      if (drag === null) return
+      const doc = bodyRef.current?.ownerDocument
+      const hit = doc?.elementFromPoint?.(event.clientX, event.clientY)
+      const cell = hit === null || hit === undefined
+        ? null
+        : findAncestor(hit, bodyRef.current, node => node?.dataset?.stageRowSeq !== undefined)
+      if (cell === null) return
+      if (cell.dataset.stageSide !== drag.side) return
+      const seq = Number(cell.dataset.stageRowSeq)
+      if (!Number.isFinite(seq) || seq === drag.currentSeq) return
+      drag.currentSeq = seq
+      drag.moved = true
+      applyGutterRange(drag.side, drag.startSeq, seq)
+    }
+    const onPointerUp = () => {
+      const drag = dragRef.current
+      if (drag === null) return
+      dragRef.current = null
+      if (drag.moved) {
+        suppressClickRef.current = true
+        setTimeout(() => { suppressClickRef.current = false }, 0)
+        lastAnchorRef.current = { side: drag.side, seq: drag.currentSeq }
+      }
+    }
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', onPointerUp)
+    window.addEventListener('pointercancel', onPointerUp)
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
+      window.removeEventListener('pointercancel', onPointerUp)
+    }
+  }, [applyGutterRange])
+
+  // Inspect native browser text selection for multi-line code drag staging (without disturbing copy).
+  const syncTextSelection = useCallback(() => {
+    const body = bodyRef.current
+    if (body === null || !canStage || typeof window === 'undefined') return
+    const native = window.getSelection?.()
+    if (native === null || native === undefined || native.isCollapsed || native.rangeCount === 0) {
+      setSelection(prev => (prev?.mode === 'text' ? null : prev))
+      return
+    }
+    const range = native.getRangeAt(0)
+    const startInside = body.contains?.(range.startContainer)
+    const endInside = body.contains?.(range.endContainer)
+    if (!startInside || !endInside) {
+      setSelection(prev => (prev?.mode === 'text' ? null : prev))
+      return
+    }
+    const startRowEl = findAncestor(
+      range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement,
+      body,
+      node => node?.dataset?.diffRowSeq !== undefined,
+    )
+    const activeSide = selectingSideRef.current ?? startRowEl?.dataset?.diffSide ?? 'unified'
+    const rowNodes = Array.from(body.querySelectorAll('[data-diff-row-seq]'))
+    const intersected = []
+    for (const node of rowNodes) {
+      if (split && node.dataset?.diffSide !== activeSide) continue
+      if (typeof range.intersectsNode === 'function' && !range.intersectsNode(node)) continue
+      intersected.push(node)
+    }
+    // Single-line word selection (e.g. double-click to copy an identifier) does not show a popup.
+    if (intersected.length < 2) {
+      setSelection(prev => (prev?.mode === 'text' ? null : prev))
+      return
+    }
+    const keys = []
+    const seen = new Set()
+    for (const node of intersected) {
+      const btn = node.querySelector?.('[data-stage-line]')
+      const key = btn?.dataset?.stageLine
+      if (key === undefined || seen.has(key) || !targetByKey.has(key)) continue
+      seen.add(key)
+      keys.push(key)
+    }
+    if (keys.length === 0) {
+      setSelection(prev => (prev?.mode === 'text' ? null : prev))
+      return
+    }
+    const anchorEl = intersected.at(-1) ?? null
+    setSelection({ mode: 'text', side: activeSide, keys, top: floatingTop(rootRef.current, anchorEl) })
+  }, [canStage, split, targetByKey])
+
+  useEffect(() => {
+    if (!canStage || typeof document === 'undefined') return undefined
+    const onSelectionChange = () => {
+      if (dragRef.current !== null) return
+      const native = typeof window === 'undefined' ? null : window.getSelection?.()
+      if (native === null || native === undefined || native.isCollapsed) {
+        setSelection(prev => (prev?.mode === 'text' ? null : prev))
+      }
+    }
+    const onWindowPointerUp = () => {
+      if (bodyRef.current?.dataset !== undefined) delete bodyRef.current.dataset.selectingSide
+      syncTextSelection()
+      selectingSideRef.current = null
+    }
+    document.addEventListener('selectionchange', onSelectionChange)
+    window.addEventListener('pointerup', onWindowPointerUp)
+    return () => {
+      document.removeEventListener('selectionchange', onSelectionChange)
+      window.removeEventListener('pointerup', onWindowPointerUp)
+    }
+  }, [canStage, syncTextSelection])
+
+  const handleNumberPointerDown = (event, target, seq, side) => {
+    if (event.button !== undefined && event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    const source = sourceFor(target.origin.side)
+    if (!canApply(source)) return
+    if (event.shiftKey && lastAnchorRef.current !== null && lastAnchorRef.current.side === side) {
+      suppressClickRef.current = true
+      setTimeout(() => { suppressClickRef.current = false }, 0)
+      applyGutterRange(side, lastAnchorRef.current.seq, seq)
+      return
+    }
+    if (event.pointerType === 'touch') {
+      suppressClickRef.current = true
+      setTimeout(() => { suppressClickRef.current = false }, 0)
+      setSelection(prev => {
+        const nextSet = new Set(prev?.mode === 'gutter' && prev.side === side ? prev.keys : [])
+        if (nextSet.has(target.key)) nextSet.delete(target.key)
+        else nextSet.add(target.key)
+        if (nextSet.size === 0) return null
+        const keys = (orderedBySide[side] ?? []).map(item => item.key).filter(key => nextSet.has(key))
+        const anchorEl = rowElementFor(side, seq)
+        return { mode: 'gutter', side, keys, top: floatingTop(rootRef.current, anchorEl) }
+      })
+      lastAnchorRef.current = { side, seq }
+      return
+    }
+    dragRef.current = { side, startSeq: seq, currentSeq: seq, moved: false }
+  }
+
+  const handleNumberPointerEnter = (seq, side) => {
+    const drag = dragRef.current
+    if (drag === null || drag.side !== side || seq === drag.currentSeq) return
+    drag.currentSeq = seq
+    drag.moved = true
+    applyGutterRange(side, drag.startSeq, seq)
+  }
+
+  const handleLineButtonClick = (event, target, seq, side) => {
+    event.stopPropagation()
+    if (suppressClickRef.current) return
+    const source = sourceFor(target.origin.side)
+    if (!canApply(source)) return
+    if (event.shiftKey && lastAnchorRef.current !== null && lastAnchorRef.current.side === side) {
+      applyGutterRange(side, lastAnchorRef.current.seq, seq)
+      return
+    }
+    lastAnchorRef.current = { side, seq }
+    setSelection(null)
+    void applyChanges(source, [{ hunk: target.origin.hunk, line: target.origin.line }], {
+      hunk: target.hunkPosition,
+      restoreTo: 'line',
     })
   }
 
-  const stageControl = (hunk, kind, number) => {
-    if (!canStage) return null
-    const target = stageTargets[hunk].get(`${kind}:${number}`)
-    if (target === undefined) return h('span', { 'aria-hidden': 'true' })
-    const { origin, checked, key, label } = target
-    const source = sourceFor(origin.side)
-    return h(StageCheckbox, {
-      className: 'vcs-stage-line',
-      checked,
-      label,
-      disabled: !canApply(source),
-      'data-stage-line': key,
-      tabIndex: key === activeLine ? 0 : -1,
-      onFocus: () => { setActive({ diff, split, wrap, key }) },
-      onKeyDown: event => {
-        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
-        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
-        event.preventDefault()
-        event.stopPropagation()
-        const buttons = controls('line')
-        const next = buttons.indexOf(event.currentTarget) + (event.key === 'ArrowDown' ? 1 : -1)
-        buttons[next]?.focus()
-      },
-      onToggle: button => applyChanges(button, 'line', source, [{ hunk: origin.hunk, line: origin.line }]),
-    })
+  const handleBodyPointerDown = event => {
+    const target = event.target
+    if (findAncestor(target, bodyRef.current, node => node?.classList?.contains?.('vcs-diff-selection-bar'))) return
+    if (findAncestor(target, bodyRef.current, node => node?.dataset?.lineStageable !== undefined)) return
+    if (selection?.mode === 'gutter') setSelection(null)
+    if (split) {
+      const cell = findAncestor(target, bodyRef.current, node => node?.dataset?.diffSide !== undefined)
+      const side = cell?.dataset?.diffSide ?? null
+      selectingSideRef.current = side
+      if (wrap && side !== null && bodyRef.current?.dataset !== undefined) {
+        bodyRef.current.dataset.selectingSide = side
+      }
+    }
   }
+
+  const selectedSet = useMemo(() => new Set(selection?.keys ?? []), [selection])
+
+  const lineState = (position, kind, number) => {
+    if (!showStageState || kind === undefined || kind === 'context') return undefined
+    const target = stageTargets[position]?.get(`${kind}:${number}`)
+    if (target === undefined) return undefined
+    return target.checked ? 'staged' : 'unstaged'
+  }
+
+  const isSelected = (position, kind, number) => {
+    if (selectedSet.size === 0 || kind === undefined || kind === 'context') return false
+    const target = stageTargets[position]?.get(`${kind}:${number}`)
+    return target !== undefined && selectedSet.has(target.key)
+  }
+
+  const renderNumber = (position, kind, number, seq, side) => {
+    if (!canStage || kind === undefined || kind === 'context') return plainNumber(number, seq, side)
+    const target = stageTargets[position]?.get(`${kind}:${number}`)
+    if (target === undefined) return plainNumber(number, seq, side)
+    const source = sourceFor(target.origin.side)
+    const disabled = !canApply(source)
+    const direction = target.checked ? 'unstage' : 'stage'
+    return h('span', {
+      className: 'vcs-diff-number vcs-diff-number-stageable',
+      'data-line-stageable': '',
+      'data-stage-row-seq': seq,
+      'data-stage-side': side,
+      'data-stage-line-key': target.key,
+      onPointerDown: event => { handleNumberPointerDown(event, target, seq, side) },
+      onPointerEnter: () => { handleNumberPointerEnter(seq, side) },
+    },
+    h('span', { className: 'vcs-diff-number-text', 'aria-hidden': 'true' }, number ?? ''),
+    h('button', {
+      type: 'button',
+      className: 'vcs-diff-line-stage',
+      tabIndex: -1,
+      'data-stage-line': target.key,
+      'data-stage-direction': direction,
+      'aria-label': target.label,
+      'aria-disabled': disabled || undefined,
+      title: target.label,
+      onClick: event => { handleLineButtonClick(event, target, seq, side) },
+    }, lineStageGlyph(direction)))
+  }
+
+  // Build floating action bar for multi-line selection (supports mixed staged/unstaged in merged view).
+  const selectionBar = useMemo(() => {
+    if (selection === null || selection.keys.length === 0) return null
+    const toStage = []
+    const toUnstage = []
+    for (const key of selection.keys) {
+      const target = targetByKey.get(key)
+      if (target === undefined) continue
+      if (target.checked) toUnstage.push(target)
+      else toStage.push(target)
+    }
+    const buttons = []
+    if (toStage.length > 0) {
+      const source = sourceFor(toStage[0].origin.side)
+      const disabled = !canApply(source)
+      buttons.push(h('button', {
+        key: 'stage',
+        type: 'button',
+        className: 'vcs-diff-selection-btn',
+        'data-stage-selection': 'stage',
+        'aria-disabled': disabled || undefined,
+        onMouseDown: event => { event.preventDefault() },
+        onClick: event => {
+          event.stopPropagation()
+          if (disabled) return
+          const payload = toStage.map(({ origin }) => ({ hunk: origin.hunk, line: origin.line }))
+          const hunkPosition = toStage[0].hunkPosition
+          clearSelection()
+          void applyChanges(source, payload, { hunk: hunkPosition, restoreTo: 'line' })
+        },
+      }, t('stage.stageSelected', { count: formatCount(toStage.length, locale) })))
+    }
+    if (toUnstage.length > 0) {
+      const source = sourceFor(toUnstage[0].origin.side)
+      const disabled = !canApply(source)
+      buttons.push(h('button', {
+        key: 'unstage',
+        type: 'button',
+        className: 'vcs-diff-selection-btn',
+        'data-stage-selection': 'unstage',
+        'aria-disabled': disabled || undefined,
+        onMouseDown: event => { event.preventDefault() },
+        onClick: event => {
+          event.stopPropagation()
+          if (disabled) return
+          const payload = toUnstage.map(({ origin }) => ({ hunk: origin.hunk, line: origin.line }))
+          const hunkPosition = toUnstage[0].hunkPosition
+          clearSelection()
+          void applyChanges(source, payload, { hunk: hunkPosition, restoreTo: 'line' })
+        },
+      }, t('stage.unstageSelected', { count: formatCount(toUnstage.length, locale) })))
+    }
+    if (buttons.length === 0) return null
+    return h('div', {
+      className: 'vcs-diff-selection-bar',
+      role: 'toolbar',
+      style: { top: `${selection.top}px` },
+      onMouseDown: event => { event.preventDefault() },
+    }, buttons)
+  }, [applyChanges, canApply, clearSelection, locale, selection, sourceFor, t, targetByKey])
+
   const children = []
   if (note !== undefined) {
     children.push(h('p', {
@@ -365,55 +881,89 @@ function TextDiff({ diff, split, wrap, onStageLines, stageScope, stageDisabled, 
       formatPlural(t, 'diff.truncated', MAX_RENDERED_LINES, locale)))
   }
   if (split && !wrap) {
-    children.push(h(SplitColumns, { key: 'columns', hunks, highlights, stageControl, stageHunk, t }))
+    children.push(h(SplitColumns, {
+      key: 'columns', hunks, highlights, renderNumber, lineState, isSelected, stageHunk, onHorizontalScroll, t,
+    }))
   } else {
+    let rowSeq = 0
     hunks.forEach((hunk, position) => {
       const highlighted = highlights[position]
+      const hunkUi = stageHunk(position)
       const rows = split
-        ? splitRows(hunk).map((row, at) => h('div', {
-          key: at,
-          className: 'vcs-diff-split-line',
-          'data-diff-line': splitRowKind(row),
-        },
-        h('span', { className: cellClass(row.left) },
-          stageControl(position, row.left?.kind, row.left?.no),
-          lineNumber(row.left?.no),
+        ? splitRows(hunk).map((row, at) => {
+          const seq = rowSeq++
+          const leftState = lineState(position, row.left?.kind, row.left?.no)
+          const rightState = lineState(position, row.right?.kind, row.right?.no)
+          const leftSelected = isSelected(position, row.left?.kind, row.left?.no)
+          const rightSelected = isSelected(position, row.right?.kind, row.right?.no)
+          return h('div', {
+            key: at,
+            className: 'vcs-diff-split-line',
+            'data-diff-line': splitRowKind(row),
+          },
+          h('span', {
+            className: cellClass(row.left),
+            'data-diff-row-seq': seq,
+            'data-diff-side': 'left',
+            'data-stage-state': leftState,
+            'data-line-selected': leftSelected ? '' : undefined,
+          },
+          renderNumber(position, row.left?.kind, row.left?.no, seq, 'left'),
           h(DiffText, {
             text: row.left?.text ?? '',
             spans: row.left === undefined ? undefined : highlighted?.old?.get(row.left.no),
           })),
-        h('span', { className: cellClass(row.right) },
-          stageControl(position, row.right?.kind, row.right?.no),
-          lineNumber(row.right?.no),
+          h('span', {
+            className: cellClass(row.right),
+            'data-diff-row-seq': seq,
+            'data-diff-side': 'right',
+            'data-stage-state': rightState,
+            'data-line-selected': rightSelected ? '' : undefined,
+          },
+          renderNumber(position, row.right?.kind, row.right?.no, seq, 'right'),
           h(DiffText, {
             text: row.right?.text ?? '',
             spans: row.right === undefined ? undefined : highlighted?.new?.get(row.right.no),
-          }))))
-        : hunkRows(hunk).map((row, at) => h('div', {
-          key: at,
-          className: `vcs-diff-line vcs-diff-${row.kind}`,
-          'data-diff-line': row.kind,
-        },
-        stageControl(position, row.kind, row.kind === 'add' ? row.new : row.old),
-        lineNumber(row.old),
-        lineNumber(row.new),
-        h('span', { className: 'vcs-diff-sign' }, row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '),
-        h(DiffText, {
-          text: row.text,
-          spans: row.kind === 'add' ? highlighted?.new?.get(row.new) : highlighted?.old?.get(row.old),
-        })))
+          })))
+        })
+        : hunkRows(hunk).map((row, at) => {
+          const seq = rowSeq++
+          const activeNo = row.kind === 'add' ? row.new : row.old
+          const stateAttr = lineState(position, row.kind, activeNo)
+          const selected = isSelected(position, row.kind, activeNo)
+          return h('div', {
+            key: at,
+            className: `vcs-diff-line vcs-diff-${row.kind}`,
+            'data-diff-line': row.kind,
+            'data-diff-row-seq': seq,
+            'data-diff-side': 'unified',
+            'data-stage-state': stateAttr,
+            'data-line-selected': selected ? '' : undefined,
+          },
+          row.kind === 'del' ? renderNumber(position, 'del', row.old, seq, 'unified') : plainNumber(row.old, seq, 'unified'),
+          row.kind === 'add' ? renderNumber(position, 'add', row.new, seq, 'unified') : plainNumber(row.new, seq, 'unified'),
+          h('span', { className: 'vcs-diff-sign' }, row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '),
+          h(DiffText, {
+            text: row.text,
+            spans: row.kind === 'add' ? highlighted?.new?.get(row.new) : highlighted?.old?.get(row.old),
+          }))
+        })
       children.push(h('section', { key: position, className: 'vcs-diff-hunk' },
-        renderHunkHeader(hunkHeader(hunk, t), stageHunk(position)),
+        renderHunkHeader(hunkHeader(hunk, t), hunkUi?.node ?? null, hunkUi?.keyShortcuts),
         rows))
     })
   }
-  return h('div', {
-    className: 'vcs-diff-body',
-    ref: bodyRef,
-    'data-review-view': split ? 'split' : 'unified',
-    'data-review-wrap': wrap || undefined,
-    'data-line-staging': canStage || undefined,
-  }, children)
+  return h('div', { className: 'vcs-diff-surface', ref: rootRef },
+    h('div', {
+      className: 'vcs-diff-body',
+      ref: bodyRef,
+      'data-review-view': split ? 'split' : 'unified',
+      'data-review-wrap': wrap || undefined,
+      'data-line-staging': canStage || undefined,
+      onPointerDown: handleBodyPointerDown,
+      onScroll: event => { onHorizontalScroll(event.currentTarget) },
+    }, children),
+    selectionBar)
 }
 
 /**
@@ -458,7 +1008,10 @@ function diffSkeleton(label) {
  * @param {{ state: '*' | 'loading' | 'missing' | 'error' | object | undefined, split: boolean, wrap: boolean, retry: Function, t: Function, locale?: string }} props - comparison state, layout choices, retry action, and localized copy.
  * @returns {object} the comparison or its loading, unavailable, or error state.
  */
-export function FileDiff({ state, split, wrap, retry, onStageLines, stageScope, stageDisabled, stageSources, showStageState, t, locale }) {
+export function FileDiff({
+  state, split, wrap, retry, onStageLines, stageScope, stageDisabled, stageSources, showStageState,
+  onRegisterHunks, onRegisterSelectionClear, t, locale,
+}) {
   let content
   if (state === undefined || state === 'loading') {
     content = diffSkeleton(t('diff.loading'))
@@ -478,7 +1031,10 @@ export function FileDiff({ state, split, wrap, retry, onStageLines, stageScope, 
     content = h('p', { className: 'vcs-diff-status' }, t('diff.oversized'))
   } else {
     const oneSided = isOneSided(state)
-    content = h(TextDiff, { diff: state, split: split && !oneSided, wrap, onStageLines, stageScope, stageDisabled, stageSources, showStageState, t, locale })
+    content = h(TextDiff, {
+      diff: state, split: split && !oneSided, wrap, onStageLines, stageScope, stageDisabled,
+      stageSources, showStageState, onRegisterHunks, onRegisterSelectionClear, t, locale,
+    })
   }
   return h('div', { className: 'vcs-diff-root' }, content)
 }

@@ -96,13 +96,82 @@ function ancestorKeys(key) {
  * do not jump when the answer arrives.
  */
 const FileBody = memo(function FileBody({
-  group, entry, rev, near, folded, foldReason, request, revision,
-  split, wrap, onStage, stageDisabled, t, locale,
+  fileKey, group, entry, rev, near, folded, foldReason, request, revision,
+  split, wrap, onStage, stageDisabled, onRegisterHunks, onRegisterSelectionClear, t, locale,
 }) {
   const [answer, setAnswer] = useState(null)
   const [attempt, setAttempt] = useState(0)
   const targets = diffTargets(group, entry, rev)
   const targetsKey = targets.map(targetKey).join('\0')
+  const hunksBySourceRef = useRef(new Map())
+  const clearBySourceRef = useRef(new Map())
+
+  const publishHunks = useCallback(() => {
+    if (onRegisterHunks === undefined) return
+    const combinedList = []
+    const keys = [...hunksBySourceRef.current.keys()].sort((a, b) => a - b)
+    for (const key of keys) combinedList.push(...(hunksBySourceRef.current.get(key) ?? []))
+    onRegisterHunks(fileKey, combinedList)
+  }, [fileKey, onRegisterHunks])
+
+  const registerSourceHunks = useMemo(() => {
+    const cache = new Map()
+    return sourceIndex => {
+      let fn = cache.get(sourceIndex)
+      if (fn === undefined) {
+        fn = handlers => {
+          if (handlers.length === 0) hunksBySourceRef.current.delete(sourceIndex)
+          else hunksBySourceRef.current.set(sourceIndex, handlers)
+          publishHunks()
+        }
+        cache.set(sourceIndex, fn)
+      }
+      return fn
+    }
+  }, [publishHunks])
+
+  const registerSourceClear = useMemo(() => {
+    const cache = new Map()
+    return sourceIndex => {
+      let fn = cache.get(sourceIndex)
+      if (fn === undefined) {
+        fn = clearer => {
+          if (clearer === null) clearBySourceRef.current.delete(sourceIndex)
+          else clearBySourceRef.current.set(sourceIndex, clearer)
+          if (onRegisterSelectionClear === undefined) return
+          if (clearBySourceRef.current.size === 0) {
+            onRegisterSelectionClear(fileKey, null)
+          } else {
+            onRegisterSelectionClear(fileKey, () => {
+              let cleared = false
+              for (const clear of clearBySourceRef.current.values()) {
+                if (clear()) cleared = true
+              }
+              return cleared
+            })
+          }
+        }
+        cache.set(sourceIndex, fn)
+      }
+      return fn
+    }
+  }, [fileKey, onRegisterSelectionClear])
+
+  useLayoutEffect(() => {
+    if (!folded) return undefined
+    hunksBySourceRef.current.clear()
+    clearBySourceRef.current.clear()
+    onRegisterHunks?.(fileKey, [])
+    onRegisterSelectionClear?.(fileKey, null)
+    return undefined
+  }, [fileKey, folded, onRegisterHunks, onRegisterSelectionClear])
+
+  useLayoutEffect(() => () => {
+    hunksBySourceRef.current.clear()
+    clearBySourceRef.current.clear()
+    onRegisterHunks?.(fileKey, [])
+    onRegisterSelectionClear?.(fileKey, null)
+  }, [fileKey, onRegisterHunks, onRegisterSelectionClear])
 
   useEffect(() => {
     if (folded || !near) return undefined
@@ -145,16 +214,18 @@ const FileBody = memo(function FileBody({
   }
   const busy = stageDisabled || answer.targetsKey !== targetsKey || answer.revision !== revision
   const retry = () => { setAttempt(value => value + 1) }
-  const stageLines = target => onStage === undefined ? undefined : (fingerprint, lines) => onStage({ ...target, fingerprint, lines })
+  const stageLines = target => onStage === undefined ? undefined : (fingerprint, lines, meta) => onStage({ ...target, fingerprint, lines }, meta)
   if (combined !== null) {
     const stageSources = Object.fromEntries(answer.results.map(({ target, diff }) => [target.scope, {
       fingerprint: diff.lineStaging === true ? diff.fingerprint : undefined,
       onStageLines: stageLines(target),
     }]))
     return <FileDiff state={combined} split={split} wrap={wrap} retry={retry} stageSources={stageSources}
-      stageDisabled={busy} showStageState={true} t={t} locale={locale} />
+      stageDisabled={busy} showStageState={true}
+      onRegisterHunks={registerSourceHunks(0)} onRegisterSelectionClear={registerSourceClear(0)}
+      t={t} locale={locale} />
   }
-  const renderDiff = ({ status, diff, target }) => (
+  const renderDiff = ({ status, diff, target }, sourceIndex) => (
     <FileDiff
       state={status === 'ready' ? diff : status}
       split={split}
@@ -164,15 +235,17 @@ const FileBody = memo(function FileBody({
       stageScope={target.scope}
       stageDisabled={busy}
       showStageState={group === 'merged'}
+      onRegisterHunks={registerSourceHunks(sourceIndex)}
+      onRegisterSelectionClear={registerSourceClear(sourceIndex)}
       t={t}
       locale={locale}
     />
   )
-  if (answer.results.length === 1) return renderDiff(answer.results[0])
-  return answer.results.map(result => (
+  if (answer.results.length === 1) return renderDiff(answer.results[0], 0)
+  return answer.results.map((result, sourceIndex) => (
     <div className="vcs-diff-source" key={result.target.scope}>
       <div className="vcs-diff-source-label">{t(result.target.scope === 'staged' ? 'changes.staged' : 'changes.unstaged')}</div>
-      {renderDiff(result)}
+      {renderDiff(result, sourceIndex)}
     </div>
   ))
 })
@@ -194,7 +267,10 @@ export function ChangeTree({
   const pendingPreserve = useRef(null)
   const pendingAlign = useRef(null)
   const refreshAnchor = useRef(null)
+  const pendingHunkFocusRef = useRef(null)
   const stageSource = useRef(null)
+  const hunkActionsRef = useRef(new Map())
+  const selectionClearersRef = useRef(new Map())
   const restoredRef = useRef(false)
   const lastInputRef = useRef('scroll')
   const queue = useMemo(() => createQueue(MAX_PARALLEL), [])
@@ -242,8 +318,10 @@ export function ChangeTree({
     // `offsetTop`; the static container around each head holds its layout
     // position in the tree.
     let node = element
-    if (node.classList?.contains('vcs-tree-file-head') || node.classList?.contains('vcs-tree-group-head')) {
-      node = node.parentElement?.parentElement ?? node
+    if (hasClass(node, 'vcs-tree-file-head')) {
+      node = findAncestor(node, root, candidate => hasClass(candidate, 'vcs-tree-file')) ?? node
+    } else if (hasClass(node, 'vcs-tree-group-head')) {
+      node = findAncestor(node, root, candidate => hasClass(candidate, 'vcs-tree-group')) ?? node
     }
     let top = 0
     while (node !== null && node !== undefined && node !== root) {
@@ -440,11 +518,44 @@ export function ChangeTree({
     rowEls.current.get(key)?.focus({ preventScroll: true })
   }, [])
 
+  const clearAnyDiffSelection = useCallback(() => {
+    let cleared = false
+    for (const clear of selectionClearersRef.current.values()) {
+      if (clear()) cleared = true
+    }
+    return cleared
+  }, [])
+
+  const registerSelectionClear = useCallback((fileKey, clearer) => {
+    if (clearer === null) selectionClearersRef.current.delete(fileKey)
+    else selectionClearersRef.current.set(fileKey, clearer)
+  }, [])
+
   /** Focus one hunk header without letting the browser scroll it again. */
   const focusHunkElement = useCallback((key, hunk) => {
     const header = bodyEls.current.get(key)?.querySelectorAll('[data-diff-hunk-header]')[hunk]
     header?.focus?.({ preventScroll: true })
   }, [])
+
+  const registerHunks = useCallback((fileKey, handlers) => {
+    if (handlers.length === 0) hunkActionsRef.current.delete(fileKey)
+    else hunkActionsRef.current.set(fileKey, handlers)
+    const pending = pendingHunkFocusRef.current
+    if (pending === null || pending.key !== fileKey) return
+    const index = navIndexByKey.get(fileKey)
+    if (index === undefined) return
+    const root = scrollRef.current
+    const doc = root?.ownerDocument
+    const active = doc?.activeElement
+    const section = sectionEls.current.get(fileKey)
+    const canMoveFocus = active === doc?.body || (section !== undefined && section.contains?.(active))
+    if (handlers.length > 0) {
+      const nextHunk = Math.max(0, Math.min(pending.hunk, handlers.length - 1))
+      pendingHunkFocusRef.current = null
+      setCursorAt(index, nextHunk)
+      if (canMoveFocus) focusHunkElement(fileKey, nextHunk)
+    }
+  }, [focusHunkElement, navIndexByKey, setCursorAt])
 
   /** Report a row as the reading position while leaving the scroll offset explicit. */
   const markReading = useCallback((row, offset = 0) => {
@@ -782,11 +893,18 @@ export function ChangeTree({
       }
       return true
     }
-    // `s` stages and `u` unstages the row under the cursor; hunks keep their own controls.
-    if (!fromOutside && cursorRef.current.hunk < 0 && (event.key === 's' || event.key === 'u') && unmodified(event)) {
+    // `s` stages and `u` unstages the row or hunk under the cursor.
+    if (!fromOutside && (event.key === 's' || event.key === 'u') && unmodified(event)) {
       const current = navRows[Math.max(0, Math.min(cursorRef.current.row, navRows.length - 1))]
-      const staging = current === undefined ? null : stagingRef.current(current)
-      const run = event.key === 's' ? staging?.stage : staging?.unstage
+      if (current === undefined) return false
+      let run
+      if (cursorRef.current.hunk >= 0) {
+        const hunkAction = hunkActionsRef.current.get(current.key)?.[cursorRef.current.hunk]
+        run = event.key === 's' ? hunkAction?.stage : hunkAction?.unstage
+      } else {
+        const staging = stagingRef.current(current)
+        run = event.key === 's' ? staging?.stage : staging?.unstage
+      }
       if (run === undefined) return false
       event.preventDefault()
       if (!stageDisabled) void run()
@@ -861,6 +979,11 @@ export function ChangeTree({
       return back()
     }
     if (event.key === 'Escape') {
+      if (clearAnyDiffSelection()) {
+        event.preventDefault()
+        event.stopPropagation()
+        return true
+      }
       event.preventDefault()
       event.stopPropagation()
       onLeave()
@@ -868,7 +991,7 @@ export function ChangeTree({
     }
     return false
   }, [
-    back, focusRowElement, focusStop, forward, hunkOffsets, isExpanded, isRowFolded, moveRow, moveStop,
+    back, clearAnyDiffSelection, focusRowElement, focusStop, forward, hunkOffsets, isExpanded, isRowFolded, moveRow, moveStop,
     navRows, onLeave, report, setCursorAt, stageDisabled, syncCursorToScroll, toggle,
   ])
 
@@ -909,11 +1032,20 @@ export function ChangeTree({
     const key = staging?.key ?? readingRef.current
     if (root === null || key === null) return
     const element = rowEls.current.get(key)
+    const rowHeadWrap = element === undefined
+      ? null
+      : findAncestor(element, root, candidate => hasClass(candidate, 'vcs-tree-head'))
+    const container = sectionEls.current.get(key) ?? rowHeadWrap
+    const active = root.ownerDocument.activeElement
     refreshAnchor.current = {
       key,
       alternate: staging?.alternate,
-      focused: staging !== null
-        && (sectionEls.current.get(key) ?? rowEls.current.get(key)?.parentElement)?.contains(root.ownerDocument.activeElement),
+      hunk: staging?.hunk ?? -1,
+      restoreTo: staging?.restoreTo ?? 'row',
+      focused: staging !== null && (
+        container?.contains(active) === true
+        || (staging.restoreTo === 'hunk' && active === root.ownerDocument.body)
+      ),
       offset: element === undefined ? 0 : Math.max(0, root.scrollTop - flowTop(element)),
       rows,
     }
@@ -923,6 +1055,7 @@ export function ChangeTree({
     const pending = refreshAnchor.current
     if (pending === null || rows === pending.rows) return
     refreshAnchor.current = null
+    pendingHunkFocusRef.current = null
     const root = scrollRef.current
     if (root === null) return
     const index = navIndexByKey.get(pending.key) ?? navIndexByKey.get(pending.alternate) ?? indexOfKey(pending.key)
@@ -933,21 +1066,59 @@ export function ChangeTree({
     }
     report()
     const doc = root.ownerDocument
-    // Focus marks the stop keys act on, so a row that kept focus through the
-    // refresh stays the cursor even when the reading row is another one.
-    const focusedIndex = root.contains(doc.activeElement) ? navIndexByKey.get(doc.activeElement.dataset?.rowKey) : undefined
-    if (focusedIndex !== undefined) {
-      setCursorAt(focusedIndex, -1)
-      return
+    const active = doc.activeElement
+    // Preserve hunk focus when a hunk write refreshes the same file; async
+    // diff reloads finish via `pendingHunkFocusRef` once updated hunks mount.
+    if (pending.restoreTo === 'hunk' && pending.hunk >= 0 && row !== undefined && row.key === pending.key) {
+      const offsets = row.kind === 'file' && !isRowFolded(row) ? hunkOffsets(row) : []
+      pendingHunkFocusRef.current = { key: row.key, hunk: pending.hunk }
+      if (offsets.length > 0) {
+        const nextHunk = Math.min(pending.hunk, offsets.length - 1)
+        setCursorAt(index, nextHunk)
+        if (pending.focused || active === doc.body || sectionEls.current.get(row.key)?.contains(active)) {
+          focusHunkElement(row.key, nextHunk)
+        }
+        return
+      }
+    }
+    // Focus marks the stop keys act on, so a row or hunk that kept focus
+    // through the refresh stays the cursor even when the reading row is another one.
+    if (root.contains(active)) {
+      const focusedIndex = navIndexByKey.get(active.dataset?.rowKey)
+      if (focusedIndex !== undefined) {
+        setCursorAt(focusedIndex, -1)
+        return
+      }
+      if (hasAttr(active, 'data-diff-hunk-header')) {
+        const file = findAncestor(active, root, candidate => candidate?.dataset?.fileKey !== undefined)
+        const fileIndex = file === null ? undefined : navIndexByKey.get(file.dataset.fileKey)
+        if (fileIndex !== undefined) {
+          const fileRow = navRows[fileIndex]
+          const focusedHunk = hunkOffsets(fileRow).indexOf(flowTop(active))
+          if (focusedHunk >= 0) {
+            setCursorAt(fileIndex, focusedHunk)
+            return
+          }
+        }
+      }
     }
     const line = root.scrollTop + (grouped ? ROW_HEIGHT : 0) + ROW_HEIGHT
     const hunk = row === undefined ? -1 : hunkAtLine(row, line)
     setCursorAt(index >= 0 ? index : 0, hunk)
-    if (pending.focused && doc.activeElement === doc.body) {
+    if (pending.focused && active === doc.body) {
+      if (pending.restoreTo === 'line' && pending.hunk >= 0 && row !== undefined && row.key === pending.key) {
+        const offsets = row.kind === 'file' && !isRowFolded(row) ? hunkOffsets(row) : []
+        if (offsets.length > 0) {
+          const nextHunk = Math.min(pending.hunk, offsets.length - 1)
+          setCursorAt(index, nextHunk)
+          focusHunkElement(row.key, nextHunk)
+          return
+        }
+      }
       if (row !== undefined) focusRowElement(row.key)
       else root.focus({ preventScroll: true })
     }
-  }, [flowTop, focusRowElement, grouped, hunkAtLine, indexOfKey, navIndexByKey, navRows, report, rows, setCursorAt])
+  }, [flowTop, focusHunkElement, focusRowElement, grouped, hunkAtLine, hunkOffsets, indexOfKey, isRowFolded, navIndexByKey, navRows, report, rows, setCursorAt])
 
   // Restore the reading position once the rows exist.
   useLayoutEffect(() => {
@@ -1067,15 +1238,14 @@ export function ChangeTree({
   }
 
   /**
-   * Run one staging write from a row, keeping the row as the reading anchor
-   * across the refresh. A row command also takes focus, so the next key acts
-   * from the row; a line or hunk keeps focus on its own control.
+   * Run one staging write from a row, hunk, or line selection, keeping the
+   * owning row (and hunk stop, when applicable) as the anchor across refresh.
    */
-  const runStage = async (row, target, alternate, { focusRow = false } = {}) => {
-    const source = { key: row.key, alternate }
+  const runStage = async (row, target, alternate, { focusRow = false, hunk = -1, restoreTo = 'row' } = {}) => {
+    const source = { key: row.key, alternate, hunk, restoreTo }
     stageSource.current = source
     const index = navIndexByKey.get(row.key)
-    if (index !== undefined) setCursorAt(index)
+    if (index !== undefined) setCursorAt(index, hunk >= 0 ? hunk : -1)
     if (focusRow) focusRowElement(row.key)
     const accepted = await onStage(target)
     if (!accepted && stageSource.current === source) stageSource.current = null
@@ -1281,48 +1451,52 @@ export function ChangeTree({
     const staging = rowStaging(row)
     // The file stage the row body writes: lines and hunks act on their own comparison.
     const stage = onStage === undefined || staging === null || staging.conflict ? undefined
-      : target => runStage(row, target, staging.merged ? undefined : counterpartKey(row.key))
+      : (target, meta) => runStage(row, target, staging.merged ? undefined : counterpartKey(row.key), meta)
     return (
       <section
         key={row.key}
         className="vcs-tree-file"
         data-file-key={row.key}
+        data-open={expanded ? 'true' : undefined}
         ref={bindSection(row.key)}
       >
         <div className="vcs-tree-head vcs-tree-file-head-wrap" data-open={expanded ? 'true' : undefined}>
           {renderGutter(row, staging)}
-          <button
-            type="button"
-            className="vcs-tree-row vcs-tree-file-head"
-            aria-expanded={expanded}
-            aria-controls={bodyId}
-            aria-current={readingKey === row.key ? 'location' : undefined}
-            aria-keyshortcuts={stageKeys(staging)}
-            title={row.entry.origPath === undefined ? row.path : `${row.entry.origPath} → ${row.path}`}
-            style={{ paddingLeft: indentOf(row.depth) }}
-            {...rowProps(row)}
-            onClick={() => { activateRow(row, expanded) }}
-          >
-            <span className={`vcs-status ${statusClass}`} aria-hidden="true">{row.entry.status}</span>
-            <span className="vcs-sr-only">{t(statusKey(row.entry.status, row.entry.untracked === true))}</span>
-            <span className="vcs-tree-file-name">
-              {row.entry.origPath === undefined
-                ? null
-                : <span className="vcs-dim">{splitPath(row.entry.origPath).base} →</span>}
-              <strong>{row.name}</strong>
-              {expanded && parts.dir !== '' ? <span className="vcs-tree-parent vcs-dim">{parts.dir}</span> : null}
-            </span>
-            {fileStat(row.entry)}
-          </button>
-          {staging?.merged && staging.mixed && staging.stagedWrite !== undefined ? (
-            <FileStageMenu path={row.entry.path} disabled={stageDisabled} t={t} onUnstage={() => {
-              focusRowElement(row.key)
-              void staging.stagedWrite()
-            }} />
-          ) : null}
+          <div className="vcs-card-head">
+            <button
+              type="button"
+              className="vcs-tree-row vcs-tree-file-head"
+              aria-expanded={expanded}
+              aria-controls={bodyId}
+              aria-current={readingKey === row.key ? 'location' : undefined}
+              aria-keyshortcuts={stageKeys(staging)}
+              title={row.entry.origPath === undefined ? row.path : `${row.entry.origPath} → ${row.path}`}
+              style={{ paddingLeft: expanded ? '8px' : indentOf(row.depth) }}
+              {...rowProps(row)}
+              onClick={() => { activateRow(row, expanded) }}
+            >
+              <span className={`vcs-status ${statusClass}`} aria-hidden="true">{row.entry.status}</span>
+              <span className="vcs-sr-only">{t(statusKey(row.entry.status, row.entry.untracked === true))}</span>
+              <span className="vcs-tree-file-name">
+                {row.entry.origPath === undefined
+                  ? null
+                  : <span className="vcs-dim">{splitPath(row.entry.origPath).base} →</span>}
+                <strong>{row.name}</strong>
+                {expanded && parts.dir !== '' ? <span className="vcs-tree-parent vcs-dim">{parts.dir}</span> : null}
+              </span>
+              {fileStat(row.entry)}
+            </button>
+            {staging?.merged && staging.mixed && staging.stagedWrite !== undefined ? (
+              <FileStageMenu path={row.entry.path} disabled={stageDisabled} t={t} onUnstage={() => {
+                focusRowElement(row.key)
+                void staging.stagedWrite()
+              }} />
+            ) : null}
+          </div>
         </div>
-        <div className="vcs-tree-file-body" id={bodyId} ref={bindBody(row.key)}>
+        <div className={expanded ? 'vcs-tree-file-body vcs-card-body' : 'vcs-tree-file-body'} id={bodyId} ref={bindBody(row.key)}>
           <FileBody
+            fileKey={row.key}
             group={row.group}
             entry={row.entry}
             rev={rev}
@@ -1335,6 +1509,8 @@ export function ChangeTree({
             wrap={wrap}
             onStage={stage}
             stageDisabled={stageDisabled}
+            onRegisterHunks={registerHunks}
+            onRegisterSelectionClear={registerSelectionClear}
             t={t}
             locale={locale}
           />
@@ -1380,6 +1556,7 @@ export function ChangeTree({
       ref={scrollRef}
       className="vcs-tree"
       data-grouped={grouped ? 'true' : undefined}
+      data-gutter={gutter ? 'true' : undefined}
       role="region"
       tabIndex={-1}
       aria-label={t('tree.label')}

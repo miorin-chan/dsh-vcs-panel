@@ -1231,7 +1231,8 @@ select.vcs-dialog-input {
   height: var(--vcs-row-height);
 }
 
-.vcs-stage-gutter + .vcs-tree-row::before {
+.vcs-stage-gutter + .vcs-tree-row::before,
+.vcs-stage-gutter + .vcs-card-head > .vcs-tree-row::before {
   inset-inline-start: 0;
 }
 
@@ -1423,9 +1424,49 @@ select.vcs-dialog-input {
   font: var(--dsw-font-xs-13);
 }
 
+/* Expanded files become bordered cards starting to the right of the staging
+   gutter (or symmetrically inset when read-only). The sticky wrapper keeps an
+   opaque base backdrop so scrolled diff lines never bleed behind the gutter,
+   right margin, or rounded corners; the non-sticky body clips bottom corners. */
+.vcs-tree-file[data-open] {
+  margin-block: 6px;
+}
+
+.vcs-card-head {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  box-sizing: border-box;
+  min-width: 0;
+  height: var(--vcs-row-height);
+}
+
+.vcs-card-head > .vcs-tree-row {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .vcs-tree-file-head-wrap[data-open] {
+  padding-right: 8px;
+  background: var(--dsw-alias-bg-base);
+}
+
+.vcs-tree:not([data-gutter]) .vcs-tree-file-head-wrap[data-open] {
+  padding-left: 8px;
+}
+
+.vcs-tree-file-head-wrap[data-open] > .vcs-card-head {
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 6px) var(--dsw-radius-sm, 6px) 0 0;
   background: var(--dsw-alias-bg-layer-1);
-  box-shadow: 0 0.5px 0 var(--dsw-alias-border-l1);
+}
+
+.vcs-tree-file-head-wrap[data-open] .vcs-tree-file-head {
+  height: 100%;
+}
+
+.vcs-tree-file-head-wrap[data-open] .vcs-tree-file-head::before {
+  inset: 2px 3px;
 }
 
 .vcs-tree[data-grouped] .vcs-tree-file-head-wrap {
@@ -1546,6 +1587,20 @@ select.vcs-dialog-input {
   min-width: 0;
 }
 
+.vcs-card-body {
+  margin-right: 8px;
+  margin-left: 8px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-top: none;
+  border-radius: 0 0 var(--dsw-radius-sm, 6px) var(--dsw-radius-sm, 6px);
+  background: var(--dsw-alias-bg-base);
+  overflow: hidden;
+}
+
+.vcs-tree[data-gutter] .vcs-card-body {
+  margin-left: 22px;
+}
+
 .vcs-tree-folded {
   margin: 0;
   padding: 6px 16px 10px;
@@ -1561,6 +1616,7 @@ select.vcs-dialog-input {
 /* Inside the tree a comparison takes its natural height; only long lines
    scroll sideways. */
 .vcs-tree .vcs-diff-root,
+.vcs-tree .vcs-diff-surface,
 .vcs-tree .vcs-diff-columns {
   flex: none;
 }
@@ -1570,6 +1626,10 @@ select.vcs-dialog-input {
   padding: 4px 0 8px;
   overflow-x: auto;
   overflow-y: hidden;
+}
+
+.vcs-tree .vcs-diff-body[data-review-wrap] {
+  overflow-x: hidden;
 }
 
 .vcs-tree .vcs-diff-column {

@@ -23,6 +23,7 @@ export function createElement(type, props, ...children) {
   return { type, key: source.key, props: next }
 }
 export const Fragment = Symbol('Fragment')
+export function useCallback(fn) { return fn }
 export function useEffect() {}
 export function useLayoutEffect() {}
 export function useMemo(factory) { return factory() }

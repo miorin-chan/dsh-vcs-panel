@@ -584,6 +584,31 @@ test('long refs, menu items, and dialog selects keep single-line ellipsis and st
   assert.match(css, /\.vcs-detail-refs > \.vcs-ref \{\s*flex: none;/u)
 })
 
+test('expanded file card keeps opaque sticky wrapper, solid/dashed merged bars, and hover-only horizontal scrollbars', () => {
+  const read = path => readFileSync(new URL(`../src/client/${path}`, import.meta.url), 'utf8')
+  const shellCss = read('styles.css')
+  const diffCss = read('diff/FileDiff.css')
+
+  // Card sticky wrapper stays opaque over base background; non-sticky body clips bottom corners and aligns past the gutter.
+  assert.match(shellCss, /\.vcs-tree-file-head-wrap\[data-open\] \{[\s\S]*?background: var\(--dsw-alias-bg-base\);/u)
+  assert.match(shellCss, /\.vcs-tree-file-head-wrap\[data-open\] > \.vcs-card-head \{[\s\S]*?border-radius:/u)
+  assert.match(shellCss, /\.vcs-card-body \{[\s\S]*?overflow: hidden;/u)
+  assert.match(shellCss, /\.vcs-tree\[data-gutter\] \.vcs-card-body \{\s*margin-left: 22px;/u)
+
+  // Merged view unstaged lines use a dashed 3px left bar without shifting line numbers.
+  assert.match(diffCss, /\[data-stage-state='unstaged'\] > \.vcs-diff-number:first-of-type[\s\S]*?repeating-linear-gradient/u)
+
+  // Diff horizontal scrollbars stay overflow-x: auto (no layout jump) and reveal thumb only on hover or scroll.
+  assert.match(diffCss, /\.vcs-diff-column \{[\s\S]*?overflow-x: auto;/u)
+  assert.doesNotMatch(diffCss, /\.vcs-diff-column \{[\s\S]*?overflow-x: scroll;/u)
+  assert.match(diffCss, /--vcs-diff-scrollbar: transparent;/u)
+  assert.match(diffCss, /\.vcs-diff-body\[data-h-scrolling\]/u)
+
+  // Hunk headers stay pinned to the visible card width so focusing a wide diff never scrolls off-gutter.
+  assert.match(diffCss, /\.vcs-diff-surface \{\s*container-type: inline-size;/u)
+  assert.match(diffCss, /\.vcs-diff-hunk-header \{\s*position: sticky;\s*left: 0;\s*width: 100cqi;/u)
+})
+
 test('SidebarVcsView passes visible and bumps focusRequest on visibility transitions even at revision 0', () => {
   const createRunner = () => {
     const hooks = []

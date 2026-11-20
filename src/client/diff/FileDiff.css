@@ -23,6 +23,17 @@
   color: var(--dsw-alias-label-primary);
 }
 
+/* Holds the scrolling diff body and the non-scrolling floating selection bar. */
+.vcs-diff-surface {
+  container-type: inline-size;
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
 .vcs-diff-status {
   display: flex;
   gap: 12px;
@@ -64,6 +75,10 @@
   font-variant-ligatures: none;
 }
 
+.vcs-diff-body[data-review-wrap] {
+  overflow-x: hidden;
+}
+
 .vcs-diff-columns {
   display: grid;
   flex: 1 1 auto;
@@ -81,12 +96,52 @@
 
 .vcs-diff-column {
   min-width: 0;
-  overflow-x: scroll;
+  overflow-x: auto;
   overscroll-behavior: none;
 }
 
 .vcs-diff-column + .vcs-diff-column {
   border-left: 0.5px solid var(--dsw-alias-border-l3);
+}
+
+/* Horizontal scrollbars stay quiet until the diff is hovered or scrolled,
+   without toggling `overflow-x` (avoiding layout shift on classic-scrollbar platforms). */
+.vcs-diff-body,
+.vcs-diff-column {
+  --vcs-diff-scrollbar: transparent;
+  scrollbar-width: thin;
+  scrollbar-color: var(--vcs-diff-scrollbar) transparent;
+}
+
+.vcs-diff-body:hover,
+.vcs-diff-body[data-h-scrolling],
+.vcs-diff-columns:hover .vcs-diff-column,
+.vcs-diff-column[data-h-scrolling] {
+  --vcs-diff-scrollbar: color-mix(in srgb, var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)) 45%, transparent);
+}
+
+.vcs-diff-body::-webkit-scrollbar,
+.vcs-diff-column::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.vcs-diff-body::-webkit-scrollbar-track,
+.vcs-diff-column::-webkit-scrollbar-track,
+.vcs-diff-body::-webkit-scrollbar-corner,
+.vcs-diff-column::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.vcs-diff-body::-webkit-scrollbar-thumb,
+.vcs-diff-column::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--vcs-diff-scrollbar);
+}
+
+.vcs-diff-body::-webkit-scrollbar-thumb:hover,
+.vcs-diff-column::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)) 68%, transparent);
 }
 
 .vcs-diff-side-line {
@@ -111,23 +166,90 @@
   margin-bottom: 8px;
 }
 
+.vcs-diff-hunk:last-child {
+  margin-bottom: 0;
+}
+
 .vcs-diff-hunk-header {
-  padding: 4px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  box-sizing: border-box;
+  padding: 4px 10px 4px 14px;
   color: var(--dsw-alias-label-tertiary);
   line-height: var(--vcs-diff-line-height);
   white-space: pre;
 }
 
-.vcs-diff-hunk-header:has(> .vcs-stage-hunk) {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding-inline-start: 0;
+/* Keep hunk headers (and their action buttons) pinned to the visible card width
+   so focusing or clicking a hunk never drags a wide diff horizontally off-gutter. */
+.vcs-diff-body[data-review-view='unified']:not([data-review-wrap]) .vcs-diff-hunk-header {
+  position: sticky;
+  left: 0;
+  width: 100cqi;
 }
 
-.vcs-stage-hunk {
-  flex: 0 0 22px;
-  height: var(--vcs-diff-line-height);
+.vcs-diff-column .vcs-diff-hunk-header {
+  position: sticky;
+  left: 0;
+  width: 50cqi;
+}
+
+.vcs-diff-hunk-range {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vcs-diff-hunk-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.1s ease;
+}
+
+.vcs-diff-hunk-header:hover .vcs-diff-hunk-actions,
+.vcs-diff-hunk-header:focus-within .vcs-diff-hunk-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  .vcs-diff-hunk-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.vcs-diff-hunk-btn {
+  box-sizing: border-box;
+  height: 20px;
+  padding: 0 7px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 4px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--dsw-font-family, system-ui, -apple-system, sans-serif);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.vcs-diff-hunk-btn:hover:not([aria-disabled='true']) {
+  border-color: var(--dsw-alias-border-l3, var(--dsw-alias-border-l2));
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.vcs-diff-hunk-btn[aria-disabled='true'] {
+  cursor: default;
+  opacity: 0.5;
 }
 
 /* Line numbers fit four digits; the sign column leaves a clear gap before
@@ -168,22 +290,111 @@
   user-select: none;
 }
 
-/* Keep numbers aligned across actionable lines, context and empty split cells. */
-.vcs-diff-body[data-line-staging] .vcs-diff-line {
-  grid-template-columns: 22px 5.5ch 5.5ch 2.5ch minmax(0, 1fr);
+/* Hovering a stageable changed line's number cell swaps the number for `+` or `−`
+   without shifting layout or obscuring the 3px left status bar. */
+.vcs-diff-number-stageable {
+  position: relative;
+  cursor: pointer;
 }
 
-.vcs-diff-body[data-line-staging] .vcs-diff-side-line {
-  grid-template-columns: 22px 5.5ch max-content;
+.vcs-diff-number-text {
+  display: inline-block;
 }
 
-.vcs-diff-body[data-line-staging] .vcs-diff-cell {
-  grid-template-columns: 22px 5.5ch minmax(0, 1fr);
+.vcs-diff-line-stage {
+  position: absolute;
+  inset: 0 0 0 3px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--vcs-diff-marker, var(--dsw-alias-label-primary));
+  cursor: pointer;
+  opacity: 0;
 }
 
-.vcs-stage-line {
-  align-self: start;
-  height: var(--vcs-diff-line-height);
+.vcs-diff-line-stage-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.vcs-diff-number-stageable:hover .vcs-diff-number-text {
+  opacity: 0;
+}
+
+.vcs-diff-number-stageable:hover .vcs-diff-line-stage {
+  opacity: 1;
+}
+
+.vcs-diff-number-stageable:hover .vcs-diff-line-stage:not([aria-disabled='true']) {
+  background: color-mix(in srgb, var(--vcs-diff-marker, var(--dsw-alias-brand-primary)) 16%, transparent);
+}
+
+.vcs-diff-line-stage[aria-disabled='true'] {
+  cursor: default;
+  opacity: 0.35;
+}
+
+/* Multi-line selection highlight, single-column split drag guard, and floating bar. */
+[data-line-selected] {
+  box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--dsw-alias-state-business-primary) 12%, transparent);
+}
+
+.vcs-diff-body[data-selecting-side='left'] [data-diff-side='right'],
+.vcs-diff-body[data-selecting-side='right'] [data-diff-side='left'] {
+  user-select: none;
+}
+
+.vcs-diff-selection-bar {
+  position: absolute;
+  right: 12px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 6px);
+  background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1));
+  box-shadow: 0 4px 14px var(--dsw-alias-shadow, rgb(0 0 0 / 22%));
+}
+
+.vcs-diff-selection-btn {
+  box-sizing: border-box;
+  height: 24px;
+  padding: 0 10px;
+  border: 0.5px solid transparent;
+  border-radius: 4px;
+  background: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-bg-base);
+  font-family: var(--dsw-font-family, system-ui, -apple-system, sans-serif);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 22px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.vcs-diff-selection-btn[data-stage-selection='unstage'] {
+  border-color: var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+}
+
+.vcs-diff-selection-btn:hover:not([aria-disabled='true']) {
+  filter: brightness(1.06);
+}
+
+.vcs-diff-selection-btn[data-stage-selection='unstage']:hover:not([aria-disabled='true']) {
+  filter: none;
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.vcs-diff-selection-btn[aria-disabled='true'] {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .vcs-diff-sign {
@@ -225,6 +436,22 @@
 .vcs-diff-add > .vcs-diff-number:first-of-type,
 .vcs-diff-del > .vcs-diff-number:first-of-type {
   box-shadow: inset 3px 0 0 var(--vcs-diff-marker);
+}
+
+/* Merged view encodes staging state in the 3px left bar: solid for staged,
+   dashed for unstaged, without shifting line-number alignment. */
+.vcs-diff-line[data-stage-state='unstaged'] > .vcs-diff-number:first-of-type,
+.vcs-diff-side-line[data-stage-state='unstaged'] > .vcs-diff-number:first-of-type,
+.vcs-diff-cell[data-stage-state='unstaged'] > .vcs-diff-number:first-of-type {
+  box-shadow: none;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--vcs-diff-marker) 0 4px,
+    transparent 4px 7px
+  );
+  background-position: left top;
+  background-size: 3px 100%;
+  background-repeat: no-repeat;
 }
 
 .vcs-diff-add .vcs-diff-sign,
