@@ -1,80 +1,111 @@
-# AGENTS
+# Agent Guidelines
 
-本文件是 dsh-vcs-panel 项目的助手规则，主体沿用工作区公共助手规则。开始项目任务前，先阅读本文件；项目专属要求写入本文，具体约束在其适用范围内优先。“优先”和“考虑”表示可根据任务调整的默认选择，其余要求在适用范围内执行。本文中的项目文件路径均相对于项目根目录。
+> This file is auto-generated and should be immutable. NEVER edit it by hand.
 
-## 项目入口
+Rules for assistant work in this project.
+Project-specific rules live in `AGENTS.local.md`, `README.md`, and the documents they link.
+Read them before starting, and let them take precedence within their scope.
+Words `prefer` and `consider` mark defaults that allow task-specific judgment.
+Otherwise, follow the general guidelines stated below.
 
-产品理念、形态与关键决策见 `DESIGN.md`；路由、数据形状、构建、图布局、上限与复用来源见 `IMPLEMENTATION.md`；命令与安装说明见 `README.md`。
+## Language and Internationalization
 
-文档中的命令、参数和示例应与实际脚本一致。
+- Communicate in the user's preferred language, following the current conversation when none is stated.
+- Write `AGENTS.md` in English, and use English for code identifiers.
+  Keep established technical terms in English where precision benefits.
+- Follow the README and design-document language conventions recorded in `AGENTS.local.md`.
+- Keep user-facing text translatable through the project's localization mechanism.
 
-## 语言与术语
+## Working Principles
 
-与用户使用当前对话的语言交流。用户文档以英文为主：`README.md` 为英文，`README.zh.md` 为中文；`DESIGN.md`、`IMPLEMENTATION.md`、`CHANGELOG.md` 等开发文档沿用中文。代码标识符使用英文；技术术语保留准确、可检索的写法。新增界面文案通过本地化资源提供，并同步维护 DSH 支持的全部语言（zh、en、ja、es、fr、de、ru、pt）。
+- When recurring cases support a shared rule, state it and suggest the abstraction or convention that follows.
+  Distinguish evidence from inference, and favor connections that simplify future decisions.
+  Do not invent abstractions merely to claim novelty.
+- When replacing a design, update its callers and remove the superseded path in the same change.
+  Retain compatibility layers only when the user explicitly requests a compatibility boundary;
+  state its scope and intended removal condition.
+- When changing validation or behavior with rejection cases, pair valid inputs with rejected counterparts.
+  Assert the intended error and relevant failure invariants.
+  Retain bug reproducers as regression tests.
+- Before reporting a change as complete, run the project's documented build, lint, and test commands,
+  and report any failures with their output.
+- Commit after each phase of work is done.
 
-## 工作原则
+## Code Design
 
-- 从用户目标和相关设计出发，先理解变更需要回答的问题，再选择实现方式。
-- 从重复案例中提炼共享规则，让抽象简化后续决策。陈述发现时区分观察证据与推断。
-- 替换设计时，同步更新调用方并移除被替代的路径。兼容层需要明确的兼容需求、适用范围和退出条件。
-- 将外部输入尽早归一化为明确的领域结构。状态、消息和错误使用稳定字段与明确语义，字符串用于文本本身。
-- 优先复用项目已有的领域逻辑与控件。保留必要的顺序状态；采用变换、映射或归约时，以清晰度和性能为依据。
-- 保留用户编辑，围绕当前任务修改。发现实现与愿景有差距时，记录差距并提出方案；产品目标的调整遵循用户授权。
+Where these rules are silent, follow the language's idioms and the project's existing conventions.
 
-## 命名
+Represent semantic states, internal messages, and errors with domain types.
+Parse external text into structured data early; use strings when the data itself is textual.
+Before using a string-keyed map, distinguish text storage or interning from structured data better modeled
+with records or interfaces.
 
-名称表达调用方关心的意义：
+Prefer declarative transformations such as map, filter, and fold over mutable accumulators.
+Keep mutation for essential sequential state or when a functional rewrite would materially harm clarity or performance.
 
-- 值按其识别的对象或承担的职责命名。
-- 同一模块内，一个词保持一个含义；相同语义跨模块沿用相同词汇。
-- 区分对象自身的类别与特定使用方赋予的角色。
-- 过渡状态按其等待完成的事件命名，使生命周期可读。
-- 专业术语及其他外部协议的字段和术语保持原有拼写。
+Prefer direct construction of plain data unless a constructor performs additional work,
+enforces an invariant, or establishes a visibility boundary.
+Do not add a constructor that merely repackages a literal.
 
-## 验证
+Prefer generated implementations when their behavior exactly matches the intended semantics.
+Write manual implementations only when additional local invariants require them.
 
-迭代时先运行受影响的测试。运行时代码变更完成后执行项目的完整测试与检查；发行时按项目说明打包。具体命令与验证重点见 `README.md`。本项目的完整检查为 `node --test`；`client.js` 由 `npm run build` 从 `src/` 生成，不手改；打包检查用 `npm pack --dry-run`。安装、升级与卸载验证使用假 `DSH_HOME` 的 `dsh plugin` 命令，不操作真实 profile。
+## Project Documentation and Design Records
 
-行为或校验变更同时覆盖有效输入与对应的拒绝、缺失或冲突情形。断言具体结果及关键状态，将问题复现保留为回归测试。
+- Record the project's document layout, file roles, and canonical design location in `AGENTS.local.md`.
+- Keep one home per canonical rule, in the document that owns its semantic boundary.
+- Outside that home, prefer concise pointers over repeated explanations.
+- Keep dependent examples and links consistent with the canonical rule.
+- Adopting, changing, or promoting a canonical design requires user permission;
+  an approval given earlier in the conversation or recorded in the design record suffices.
+- When moving or merging content, remove superseded sections or files and update incoming links in the same change.
 
-界面变更通过运行中的 DSH Web 界面验证；可用时优先查看实际页面，检查常用操作、键盘焦点、窗口尺寸和状态恢复。报告中明确区分夹具测试与实机观察，并说明实际执行的检查。
-实机环境用 `scripts/fixture.mjs` 生成夹具仓库，用工作区的 `tools/dsh-web-dev.mjs` 在一次性 profile 中启动 DSH Web，步骤见 `TODO.md`“新会话从这里开始”；写操作前确认面板打开的是夹具仓库。
+## Documentation Style
 
-验证操作保持范围明确；交互检查结束后恢复临时状态和测试视口。开发源码、profile 的 `link:` 安装副本与运行中的应用分开管理，具体职责以 `README.md` 为准。
+Keep every README concise. State the purpose, give the reader what they need to get started,
+and link to the appropriate home for detailed guidance.
 
-## 文档职责
+Establish motivation and context before introducing machinery; explain which question each mechanism answers.
+Introduce concepts before relying on them, and let information density rise gradually.
+Use technical terminology where precise, explaining specialized terms at first use with source-level intuition
+or a concrete example.
 
-每条长期规则拥有一个明确的归属位置，其他文档通过简短引用连接。移动或合并内容时，同步更新链接、示例和相关说明，删除重复段落。
+Connect paragraphs with reasoning that explains the next step, especially before increasing technical detail.
+Use connectives that state the actual logical relationship.
+Use direct subjects and verbs, and name concrete operations.
+Prefer positive explanations. Retain negation that clarifies a live alternative, formal exclusion,
+or implementation limit.
 
-`DESIGN.md` 描述产品理念、形态与关键决策；`IMPLEMENTATION.md` 描述路由、数据形状、构建、算法、上限与复用来源；实现状态、待办任务、排期与调试记录放在 `TODO.md`，每项任务写明范围与完成标准。
-`README.md` 是面向用户的简洁宣传。第三方版权与许可声明由 `NOTICE` 承载。
+Give each paragraph one overarching point.
+Develop it through motivation, mechanism, evidence, or consequence; split the paragraph when its question changes.
+Use lists or tables for independent inventories.
+Let paragraph and sentence lengths follow the argument, avoiding formulaic rhythms and repeated contrastive phrasing.
+Use parallel construction when it clarifies a comparison, enumeration, or invariant.
 
-使用说明描述可用操作，版本日志记录实现变化，测试记录保存观察与证据。临时记录中的长期价值应整理到对应文档，再清理临时内容。
+During prose-only revisions, including compression, preserve technical scope, equations, examples,
+established terminology, and the short explanations that connect technical facts.
+After revising, read the document from beginning to end to check its progression and concept order.
 
-## 文档写作
+Wrap English prose around 90–120 characters, breaking after sentence or clause punctuation, or before connectives.
+Commas count as clause punctuation.
+Keep complete sentences together when they fit and allow short final lines.
+Preserve code blocks and other structural Markdown.
+Use the project's documented reflow command where available.
 
-- 先交代动机与问题，再引入概念和机制；说明每个机制回答什么问题。
-- 每段集中回答一个问题，通过理由、机制、证据或结果展开。问题改变时另起一段。
-- 独立事项使用列表，并列维度使用表格；段落之间保留必要的推理衔接。
-- 使用具体主语、直接动词和明确操作。压缩文字时保留连接技术事实的解释。
-- 用语专业简练，优先正向陈述目标与选择。摒弃预设质疑、反复自证和无关免责；使用“不是”等否定表达前，确认它确实澄清了关键区别。
-- 纯文字修订保持技术含义、示例和既定术语一致。完成后通读全文，检查概念引入顺序、论证推进和重复内容。
-- Markdown 按语义分段，换行尊重句子与短语边界，保留代码块和结构。
+## Commit Messages
 
-## 版本管理
+Use `prefix: lowercase description`, on one line with no trailing period.
+Describe what changed. For `feat`, name the capability directly; use a leading `add` only when it improves clarity.
 
-大版本的升级时机由用户决定。助手可以提出升级建议及理由，经用户明确同意后再调整主版本号。常规迭代沿用当前大版本。
+| Prefix | When to use |
+|--------|-------------|
+| `feat` | A capability users did not have before. |
+| `incr` | Incremental progress: fixes, polish, tuning, or extensions of an existing capability. |
+| `sisy` | Mechanical changes or internal restructuring with no behavior change. |
+| `vibe` | Exploratory or prototype work that may be revised or replaced. |
+| `repo` | Repository housekeeping, dependencies, migrations, or file reorganization. |
+| `docs` | Documentation-only changes, including doc comments and code comments. |
+| `test` | Test changes without production code changes. |
 
-## 提交信息
-
-执行提交时使用 `prefix: lowercase description`，单行、英文、末尾无句号，直接说明变更。
-
-| 前缀 | 用途 |
-| --- | --- |
-| `feat` | 新的用户可见能力 |
-| `incr` | 修复、打磨、调优或小幅功能改进 |
-| `sisy` | 行为保持一致的机械修改或内部重构 |
-| `vibe` | 探索性或原型工作 |
-| `repo` | 仓库维护、依赖、迁移或目录整理 |
-| `docs` | 文档与注释修改 |
-| `test` | 独立的测试修改 |
+Use the prefix of the commit's primary intent.
+Split commits whose intents are independent.
