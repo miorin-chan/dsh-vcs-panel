@@ -18,7 +18,7 @@ export function UntrackedStat({ count, label, locale }: { count: number; label: 
   const formatted = formatCount(count, locale)
   return (
     <span className="vcs-dim vcs-untracked-stat" title={label}>
-      <span aria-hidden="true">U +{formatted}</span>
+      <span aria-hidden="true">+{formatted}</span>
       <span className="vcs-sr-only">{label} {formatted}</span>
     </span>
   )

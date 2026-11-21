@@ -542,9 +542,9 @@ export function DetailPane({
   const worktreeStat = summaryCounts !== null && summaryCounts.changed > 0 ? (
     <>
       <span className="vcs-dim">{formatPlural(t, 'detail.fileCount', summaryCounts.changed, locale)}</span>
+      <UntrackedStat count={summaryCounts.untracked} label={t('status.untracked')} locale={locale} />
       {summaryCounts.added > 0 ? <span className="vcs-add">+{formatCount(summaryCounts.added, locale)}</span> : null}
       {summaryCounts.deleted > 0 ? <span className="vcs-del">−{formatCount(summaryCounts.deleted, locale)}</span> : null}
-      <UntrackedStat count={summaryCounts.untracked} label={t('status.untracked')} locale={locale} />
     </>
   ) : null
   const commitCounts = isWorktree || commitState.commit === null ? null : commitSummary(commitState.commit.files)

@@ -1688,9 +1688,9 @@ export function ChangeTree({
             <span className="vcs-tree-spacer" />
             <span className="vcs-tree-stat vcs-dim">{formatPlural(t, 'detail.fileCount', row.count, locale)}</span>
             <span className="vcs-tree-stat">
+              <UntrackedStat count={row.untracked} label={t('status.untracked')} locale={locale} />
               {row.added > 0 ? <span className="vcs-add">+{formatCount(row.added, locale)}</span> : null}
               {row.deleted > 0 ? <span className="vcs-del">−{formatCount(row.deleted, locale)}</span> : null}
-              <UntrackedStat count={row.untracked} label={t('status.untracked')} locale={locale} />
             </span>
           </button>
         </div>

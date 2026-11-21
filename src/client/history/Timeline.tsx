@@ -160,8 +160,8 @@ function WorktreeMeta({ status, statusState, t, locale }: { status: TimelineStat
   return (
     <>
       <span className="vcs-worktree-change-count">{formatPlural(t, 'timeline.changes', summary.changed, locale)}</span>
-      <LineStat added={summary.added} deleted={summary.deleted} locale={locale} />
       <UntrackedStat count={summary.untracked} label={t('status.untracked')} locale={locale} />
+      <LineStat added={summary.added} deleted={summary.deleted} locale={locale} />
     </>
   )
 }

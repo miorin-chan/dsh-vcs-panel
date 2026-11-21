@@ -1147,6 +1147,7 @@ test('added and untracked rows carry distinct letters and labels', async () => {
         entries: [
           { path: 'new.txt', status: 'U', untracked: true, added: 0, deleted: 0 },
           { path: 'notes/', status: 'U', untracked: true, directory: true, added: 0, deleted: 0 },
+          { path: 'tracked.txt', status: 'M', added: 3, deleted: 1 },
         ],
       },
     ]
@@ -1185,8 +1186,12 @@ test('added and untracked rows carry distinct letters and labels', async () => {
     const [stagedHead, unstagedHead] = treeEl.querySelectorAll('.vcs-tree-group-head')
     assert.equal(stagedHead.querySelector('[title="status.untracked"]'), null)
     const untrackedStat = unstagedHead.querySelector('[title="status.untracked"]')
-    assert.equal(textOf(untrackedStat.querySelector('[aria-hidden="true"]')), 'U +2')
+    assert.equal(textOf(untrackedStat.querySelector('[aria-hidden="true"]')), '+2')
     assert.equal(textOf(untrackedStat.querySelector('.vcs-sr-only')), 'status.untracked 2')
+    assert.deepEqual(
+      [...untrackedStat.parentElement.children],
+      [untrackedStat, unstagedHead.querySelector('.vcs-add'), unstagedHead.querySelector('.vcs-del')],
+    )
 
     const [addedStatus] = addedHead.querySelectorAll('.vcs-status')
     assert.equal(textOf(addedStatus), 'A')
