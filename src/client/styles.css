@@ -328,8 +328,7 @@
   overscroll-behavior: contain;
 }
 
-.vcs-worktree-menu .vcs-picker-menu-note,
-.vcs-branch-menu > .vcs-picker-menu-note {
+.vcs-picker-menu > .vcs-picker-menu-note {
   margin: 4px 6px 2px;
   font-size: 11px;
   color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
@@ -352,24 +351,32 @@
 
 .vcs-repository-check {
   justify-content: center;
-  width: 30px;
-  height: auto;
+  width: 28px;
   padding: 0;
 }
 
-.vcs-repository-check[aria-disabled='true'] {
+.vcs-picker-menu [role='menuitemcheckbox'][aria-disabled='true'] {
   cursor: default;
 }
 
-.vcs-repo-item,
-.vcs-worktree-item {
-  min-height: 32px;
-  height: auto;
-  padding-block: 4px;
+.vcs-picker-item-detail,
+.vcs-picker-item-badge {
+  overflow: hidden;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 10px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.vcs-worktree-item[aria-disabled='true'] {
-  cursor: default;
+.vcs-picker-item-detail {
+  flex: 0 2 auto;
+  max-width: 50%;
+}
+
+.vcs-picker-item-badge {
+  flex: none;
+  max-width: 40%;
 }
 
 .vcs-menu-item-name small {
@@ -379,7 +386,7 @@
   text-overflow: ellipsis;
 }
 
-.vcs-worktree-check {
+.vcs-repository-checkmark {
   display: inline-grid;
   place-items: center;
   flex: none;

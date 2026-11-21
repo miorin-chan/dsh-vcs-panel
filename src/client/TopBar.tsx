@@ -15,7 +15,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { KeyboardEvent, MouseEvent, MouseEventHandler, ReactNode } from 'react'
+import type { ComponentPropsWithoutRef, KeyboardEvent, MouseEvent, ReactNode } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 
 import type {
@@ -340,12 +340,9 @@ function BranchSwitcher({
               <p className="vcs-picker-menu-note">{t('switch.empty')}</p>
             ) : null}
             {branches.map(entry => (
-              <button
+              <PickerItem
                 key={entry.name}
-                type="button"
-                role="menuitemradio"
-                aria-checked={entry.current ? 'true' : 'false'}
-                className="vcs-menu-item"
+                checked={entry.current}
                 data-branch-item=""
                 data-branch-current={entry.current ? 'true' : undefined}
                 title={entry.name}
@@ -373,9 +370,8 @@ function BranchSwitcher({
                   )
                 }}
               >
-                <span className="vcs-menu-item-name">{entry.name}</span>
-                {entry.current ? <CheckIcon /> : null}
-              </button>
+                {entry.name}
+              </PickerItem>
             ))}
           </div>
           {branchesTruncated ? (
@@ -492,30 +488,27 @@ function HeaderPicker({
   )
 }
 
-/** One item in a single-selection menu group. */
-interface PickerRadioItemProps {
+interface PickerItemProps extends ComponentPropsWithoutRef<'button'> {
   checked: boolean
-  title: string
-  onClick: MouseEventHandler<HTMLButtonElement>
-  className?: string
-  currentLabel?: string
-  children: ReactNode
+  detail?: string | null
+  badge?: string
 }
 
-/** One item in a single-selection menu group. */
-function PickerRadioItem({ checked, title, onClick, className, currentLabel, children }: PickerRadioItemProps) {
+/** Compact selectable row shared by the branch, repository, and worktree menus. */
+function PickerItem({ checked, detail, badge, className, children, role = 'menuitemradio', ...buttonProps }: PickerItemProps) {
   return (
     <button
+      {...buttonProps}
       type="button"
-      role="menuitemradio"
+      role={role}
       className={className ? `vcs-menu-item ${className}` : 'vcs-menu-item'}
       tabIndex={-1}
       aria-checked={checked}
-      title={title}
-      onClick={onClick}
     >
       <span className="vcs-menu-item-name">{children}</span>
-      {checked ? <span className="vcs-worktree-current">{currentLabel}</span> : null}
+      {detail ? <span className="vcs-picker-item-detail">{detail}</span> : null}
+      {badge ? <span className="vcs-picker-item-badge">{badge}</span> : null}
+      {checked ? <CheckIcon /> : null}
     </button>
   )
 }
@@ -592,13 +585,13 @@ function RepositoryPicker({
                       tabIndex={-1}
                       onClick={() => { if (!last) onToggle(entry.path) }}
                     >
-                      <span className="vcs-worktree-check" aria-hidden="true">{included ? <CheckIcon /> : null}</span>
+                      <span className="vcs-repository-checkmark" aria-hidden="true">{included ? <CheckIcon /> : null}</span>
                     </button>
                   ) : null}
-                  <PickerRadioItem
+                  <PickerItem
                     className="vcs-repo-item"
-                    currentLabel={t('repositories.current')}
                     checked={selected}
+                    detail={entry.enclosing ? null : entry.path}
                     title={entry.path}
                     onClick={event => {
                       const fromPointer = event.detail > 0
@@ -607,8 +600,7 @@ function RepositoryPicker({
                     }}
                   >
                     {entry.name}
-                    {entry.enclosing ? null : <small>{entry.path}</small>}
-                  </PickerRadioItem>
+                  </PickerItem>
                 </div>
               )
             })}
@@ -668,24 +660,18 @@ function WorktreePicker({
             const checked = checkedPaths.includes(path)
             const last = checked && checkedPaths.length === 1
             return (
-              <button
+              <PickerItem
                 key={path}
-                type="button"
                 role="menuitemcheckbox"
-                className="vcs-menu-item vcs-worktree-item"
-                tabIndex={-1}
-                aria-checked={checked}
-                aria-disabled={last ? 'true' : undefined}
-                title={path}
+                checked={checked}
+                detail={refLabel === name ? null : refLabel}
+                badge={path === sessionPath ? t('top.sessionWorktree') : undefined}
+                aria-disabled={last || undefined}
+                title={refLabel === null || refLabel === name ? path : `${path}\n${refLabel}`}
                 onClick={() => { if (!last) onToggle(path) }}
               >
-                <span className="vcs-worktree-check" aria-hidden="true">{checked ? <CheckIcon /> : null}</span>
-                <span className="vcs-menu-item-name">
-                  {name}
-                  {refLabel === null || refLabel === name ? null : <small>{refLabel}</small>}
-                </span>
-                {path === sessionPath ? <span className="vcs-worktree-current">{t('top.sessionWorktree')}</span> : null}
-              </button>
+                {name}
+              </PickerItem>
             )
           })}
         </div>
