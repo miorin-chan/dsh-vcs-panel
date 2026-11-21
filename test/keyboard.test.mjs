@@ -2315,6 +2315,36 @@ test('floating menus survive internal scroll, close on outside scroll/blur, and 
     harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-menu', t, locale: 'en-US' }))
     await harness.settle()
     const body = harness.document.body
+    const repoBtn = body.querySelector('.vcs-repo-button')
+    const timeline = body.querySelector('.vcs-timeline-scroll')
+    assert.notEqual(timeline, null)
+    harness.keyDown(repoBtn, 'ArrowDown')
+    await harness.settle()
+    const repoMenu = body.querySelector('.vcs-repo-menu')
+    assert.notEqual(repoMenu, null)
+    const repoItem = repoMenu.querySelector('[aria-checked="true"]')
+    assert.ok(harness.document.activeElement === repoItem, 'opening the repository menu focuses the current repository')
+
+    fakeWin.window.dispatch('scroll', { target: body }, true)
+    await harness.settle()
+    assert.ok(body.querySelector('.vcs-repo-menu') === repoMenu, 'page scroll keeps the repository menu open')
+    fakeWin.window.dispatch('scroll', { target: timeline }, true)
+    await harness.settle()
+    assert.ok(body.querySelector('.vcs-repo-menu') === repoMenu, 'timeline scroll keeps the repository menu open')
+    assert.ok(harness.document.activeElement === repoItem, 'scroll keeps focus on the current repository')
+
+    harness.keyDown(repoItem, 'Escape')
+    await harness.settle()
+    assert.equal(body.querySelector('.vcs-repo-menu'), null, 'Escape closes the repository menu')
+    assert.ok(harness.document.activeElement === repoBtn, 'Escape restores focus to the repository button')
+
+    harness.keyDown(repoBtn, 'ArrowDown')
+    await harness.settle()
+    assert.notEqual(body.querySelector('.vcs-repo-menu'), null)
+    harness.dispatchDocument('pointerdown', { target: body })
+    await harness.settle()
+    assert.equal(body.querySelector('.vcs-repo-menu'), null, 'outside click closes the repository menu')
+
     const branchBtn = body.querySelector('.vcs-branch-button')
     assert.notEqual(branchBtn, null)
 

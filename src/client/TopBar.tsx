@@ -532,6 +532,7 @@ function RepositoryPicker({ repositories, current, onRepoChange, onManageReposit
       buttonLabel={current === undefined ? undefined : t('top.repositoryLabel', { name: summary })}
       title={current?.path}
       disabled={repositories.length === 0 && onManageRepositories === undefined}
+      dismissOnScroll={false}
       itemSelector=".vcs-menu-item"
     >
       {close => (
