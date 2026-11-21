@@ -246,6 +246,119 @@ function parseJson<T>(text: string): T {
   return JSON.parse(text) as T
 }
 
+interface RepositoryTimelinePreviewProps {
+  api: Api
+  sessionId: string
+  entry: RepositoryRow
+  saved?: PerRepoSelection
+  scrollOffset: number
+  onScroll: (offset: number) => void
+  onSelect: (entry: RepositoryRow, node: string) => void
+  t: Translate
+  locale?: string
+}
+
+/** An expanded sibling can be browsed without changing the operation target. */
+function RepositoryTimelinePreview({
+  api, sessionId, entry, saved, scrollOffset, onScroll, onSelect, t, locale,
+}: RepositoryTimelinePreviewProps) {
+  const [log, setLog] = useState<LogAnswer | null>(null)
+  const [error, setError] = useState<ApiFailure | null>(null)
+  const [skip, setSkip] = useState(0)
+  const [retry, setRetry] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [statuses, setStatuses] = useState<StatusMap>({})
+  const [cursor, setCursor] = useState(0)
+  const control = useRef<TimelineControl | null>(null)
+  const moving = useRef(false)
+  const worktrees = useMemo(() => checkedWorktrees(repositoryWorktrees(entry), saved?.worktrees ?? []), [entry, saved])
+  const checkoutPaths = useMemo(() => worktrees.map(tree => tree.path), [worktrees])
+  const siblingApi = useMemo(() => createApi(sessionId, { worktreeOf: entry.path }), [sessionId, entry.path])
+  const capabilities = entry.capabilities
+  const commitBased = capabilities?.workingCopy === 'commit'
+  const ref = capabilities?.ranges?.some(range => range.value === saved?.ref) ? saved?.ref : capabilities?.defaultRange
+  const showCurrentHead = checkoutPaths.length === 1 && checkoutPaths[0] === entry.path
+
+  useEffect(() => {
+    const controller = new AbortController()
+    for (const path of checkoutPaths) {
+      const reader = path === entry.path ? api : siblingApi
+      reader.status(path, controller.signal, { readOnly: true }).then(data => {
+        if (!controller.signal.aborted) setStatuses(previous => ({ ...previous, [path]: { status: 'ready', data, error: null } }))
+      }, error => {
+        if (!controller.signal.aborted) setStatuses(previous => ({ ...previous, [path]: { status: 'error', data: null, error: failureOf(error) } }))
+      })
+    }
+    return () => { controller.abort() }
+  }, [api, checkoutPaths, entry.path, siblingApi])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setLoading(true)
+    setError(null)
+    const worktreePaths = !showCurrentHead && (ref !== 'all' || commitBased) ? checkoutPaths : []
+    api.log(entry.path, { ref, limit: PAGE_SIZE, skip, worktrees: worktreePaths }, controller.signal).then(page => {
+      if (controller.signal.aborted) return
+      setLog(previous => ({ ...page, commits: [...(previous?.commits.slice(0, skip) ?? []), ...page.commits] }))
+    }, error => {
+      if (!controller.signal.aborted) setError(failureOf(error))
+    }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => { controller.abort() }
+  }, [api, checkoutPaths, commitBased, entry.path, ref, retry, showCurrentHead, skip])
+
+  const { commits, rows, layout } = useMemo(() => {
+    const heads = new Map(log?.worktreeHeads?.map(tree => [tree.path, tree.head]))
+    const checkouts: ViewWorktree[] = worktrees.map(tree => {
+      const status = statuses[tree.path] ?? IDLE_STATUS
+      const head = heads.get(tree.path) ?? status.data?.workingCopy?.commitId ?? status.data?.branch?.oid ?? tree.head ?? null
+      return {
+        ...tree,
+        head,
+        id: worktreeNode(tree.path),
+        label: commitBased ? workingCopyLabel(tree, worktrees.length > 1)
+          : worktrees.length > 1 ? t('timeline.worktreeNamed', { name: tree.name }) : t('timeline.worktree'),
+        refLabel: worktreeRefLabel({ branch: status.data?.branch?.name ?? tree.branch, head }, t),
+        status: status.data,
+        statusState: status.status,
+      }
+    })
+    const source = log?.commits ?? []
+    const commits = viewCommits(commitBased ? attachWorkingCopies(source, checkouts)
+      : showCurrentHead ? source : source.map(commit => ({ ...commit, refs: sharedRefs(commit.refs ?? []) })))
+    const rows = commitBased ? NO_WORKTREE_ROWS : checkouts
+    return { commits, rows, layout: buildGraph(graphInput(commits, rows)) }
+  }, [commitBased, log, showCurrentHead, statuses, t, worktrees])
+  const selectedRow = Math.min(cursor, commits.length + rows.length - 1)
+  useLayoutEffect(() => {
+    if (!moving.current) return
+    moving.current = false
+    control.current?.restoreFocus()
+  }, [selectedRow])
+
+  function activate(index: number) {
+    const node = nodeAt(commits, index, { worktrees: rows })
+    if (node !== null) onSelect(entry, node)
+  }
+  const nextSkip = log?.nextSkip ?? null
+  return (
+    <Timeline
+      commits={timelineCommits(commits)} layout={layout} worktrees={timelineWorktrees(rows)}
+      selectedRow={selectedRow} onSelectRow={activate} onOpen={() => { activate(selectedRow) }}
+      onMove={delta => {
+        const next = Math.max(0, Math.min(commits.length + rows.length - 1, selectedRow + delta))
+        if (selectedRow < 0 || next === selectedRow) return
+        moving.current = true
+        setCursor(next)
+      }}
+      control={control} t={t} locale={locale} initialScrollTop={scrollOffset} onScrollOffset={onScroll}
+      loading={loading && log === null}
+      loadingMore={loading && log !== null} error={error} truncated={log?.truncated === true}
+      hasMore={nextSkip !== null} onLoadMore={() => { if (nextSkip !== null) setSkip(nextSkip) }}
+      onRetry={() => { setRetry(value => value + 1) }}
+    />
+  )
+}
+
 /** Standard Sidebar tab props plus the active UI locale, visibility, and a one-shot focus request. */
 export interface VcsViewProps {
   sessionId: string
@@ -307,6 +420,7 @@ export function VcsView({
   const attemptedDirsRef = useRef(new Map<string, number>())
   const directoryRequestsRef = useRef(new Map<string, AbortController>())
   const perRepoRef = useRef(new Map<string, PerRepoSelection>())
+  const repositoryScrollRef = useRef(new Map<string, number>())
   // The backend each discovered repository used on the last answer.
   const repositoryVcsRef = useRef(new Map<string, string>())
   const pageControllerRef = useRef<AbortController | null>(null)
@@ -335,6 +449,8 @@ export function VcsView({
   const visibleRepositories = state.repositoryScope === 'all'
     ? repositories.list
     : repositories.list.filter(entry => state.checkedRepositories.includes(entry.path))
+  const showRepositoryGroups = repositories.list.length > 1
+  const expandedRepositories = state.expandedRepositories ?? (state.repo === null ? [] : [state.repo])
   const repositoryReady = repositories.status === 'ready' && repoInfo !== null && sessionRef.current === sessionId
   const worktrees = useMemo(() => repositoryWorktrees(repoInfo), [repoInfo])
   const checkedTrees = useMemo(() => checkedWorktrees(worktrees, state.worktrees), [worktrees, state.worktrees])
@@ -623,13 +739,14 @@ export function VcsView({
   }
 
   /** Remember one repository's selection and restore the next one's. */
-  const switchRepo = useCallback((entry: RepositoryRow | null) => {
+  const switchRepo = useCallback((entry: RepositoryRow | null, node?: string) => {
     const nextRepo = entry?.path ?? null
     const nextCapabilities = entry?.capabilities
     pendingDetailFocusRef.current = false
     navZoneRef.current = 'timeline'
     const current = stateRef.current
     if (current.repo !== null && current.repo !== nextRepo) {
+      repositoryScrollRef.current.set(current.repo, timelineScrollRef.current)
       perRepoRef.current.set(current.repo, {
         node: current.node,
         nodeChosen: current.nodeChosen,
@@ -659,14 +776,15 @@ export function VcsView({
     clearBranches()
     resetActionsUi()
     anchorRef.current = null
-    timelineScrollRef.current = 0
+    timelineScrollRef.current = node === undefined && nextRepo !== null ? repositoryScrollRef.current.get(nextRepo) ?? 0 : 0
     update({
       repo: nextRepo,
       worktrees: checkedWorktrees(repositoryWorktrees(entry), saved?.worktrees ?? []).map(tree => tree.path),
-      node: saved?.node ?? null,
-      nodeChosen: saved?.nodeChosen ?? false,
-      dirs: saved?.dirs ?? {},
-      collapsed: saved?.collapsed ?? {},
+      expandedRepositories: current.expandedRepositories ?? (current.repo === null ? null : [current.repo]),
+      node: node ?? saved?.node ?? null,
+      nodeChosen: node !== undefined || (saved?.nodeChosen ?? false),
+      dirs: node === undefined || node === saved?.node ? saved?.dirs ?? {} : {},
+      collapsed: node === undefined || node === saved?.node ? saved?.collapsed ?? {} : {},
       folds: {},
       anchor: null,
       ref,
@@ -680,6 +798,28 @@ export function VcsView({
       update({ checkedRepositories: [...current.checkedRepositories, entry.path] })
     }
     switchRepo(entry)
+    if (showRepositoryGroups && !expandedRepositories.includes(entry.path)) {
+      update({ expandedRepositories: [...expandedRepositories, entry.path] })
+    }
+  }
+
+  const toggleRepositoryGroup = (path: string) => {
+    update({ expandedRepositories: expandedRepositories.includes(path)
+      ? expandedRepositories.filter(open => open !== path)
+      : [...expandedRepositories, path] })
+  }
+
+  const selectPreviewNode = (entry: RepositoryRow, node: string) => {
+    switchRepo(entry, node)
+    panelOwnsFocusRef.current = true
+    if (singleColumn) {
+      navZoneRef.current = 'tree'
+      pendingDetailFocusRef.current = true
+      pendingRestoreFocusRef.current = true
+      setSingleView('detail')
+    } else {
+      pendingReadyFocusRef.current = true
+    }
   }
 
   const applyRepositoryScope = (scope: RepositoryScope, checked: string[]) => {
@@ -764,7 +904,10 @@ export function VcsView({
       else if (previousVcs !== undefined && previousVcs !== nextEntry?.vcs) {
         // The same path now reads through another backend: drop the old
         // backend's selection, folds, and caches instead of reusing them.
-        if (nextRepo !== null) perRepoRef.current.delete(nextRepo)
+        if (nextRepo !== null) {
+          perRepoRef.current.delete(nextRepo)
+          repositoryScrollRef.current.delete(nextRepo)
+        }
         switchRepo(nextEntry)
       } else {
         const previous = stateRef.current.worktrees
@@ -962,6 +1105,7 @@ export function VcsView({
     pendingRestoreFocusRef.current = false
     pendingDetailFocusRef.current = false
     perRepoRef.current.clear()
+    repositoryScrollRef.current.clear()
     repositoryVcsRef.current.clear()
     diffCacheRef.current.clear()
     commitCacheRef.current.clear()
@@ -997,12 +1141,15 @@ export function VcsView({
         return true
       }
     }
-    if (showTimeline && timelineControl.current?.restoreFocus() === true) {
-      panelOwnsFocusRef.current = true
-      navZoneRef.current = 'timeline'
-      return true
+    if (!showTimeline) return false
+    if (timelineControl.current?.restoreFocus() !== true) {
+      const header = rootRef.current?.querySelector<HTMLElement>('.vcs-repository-group-header[aria-current="true"]')
+      if (header === null || header === undefined) return false
+      header.focus({ preventScroll: true })
     }
-    return false
+    panelOwnsFocusRef.current = true
+    navZoneRef.current = 'timeline'
+    return true
   }, [missingTool, repositories.status, showTimeline, singleColumn, singleView, visible])
   restoreNavFocusRef.current = restoreNavFocus
 
@@ -1033,6 +1180,8 @@ export function VcsView({
     const index = (active as HTMLElement).dataset.timelineIndex
     if (index === undefined) return
     if (!rootRef.current?.contains(active)) return
+    const group = findAncestor(active, rootRef.current, node => hasClass(node, 'vcs-repository-group'))
+    if (group !== null && group.dataset?.active === undefined) return
     if (index === String(selectedRow)) return
     timelineControl.current?.restoreFocus()
   }, [hasOpenOverlay, selectedRow, showTimeline, visible])
@@ -1526,6 +1675,37 @@ export function VcsView({
     </div>
   ) : null
 
+  const activeTimeline = missingToolMessage ?? (
+    <Timeline
+      key={historyScope}
+      commits={timelineCommits(commits)}
+      layout={layout}
+      worktrees={timelineWorktrees(worktreeRows)}
+      selectedRow={selectedRow}
+      onSelectRow={selectRow}
+      onMove={moveTimeline}
+      onOpen={openDetail}
+      control={timelineControl}
+      t={t}
+      locale={locale}
+      loading={log.status === 'loading' || waitingForSnapshots || (log.error !== null && settledHistoryKey !== historyKey)}
+      loadingMore={log.loadingMore}
+      error={log.error}
+      hasMore={log.hasMore}
+      truncated={log.truncated}
+      onLoadMore={() => { void loadMore() }}
+      canLoadMore={currentHistory && !waitingForSnapshots}
+      onRetry={() => { refreshInBackground(['history']) }}
+      onRefActions={timelineRefActions}
+      onCommitActions={timelineCommitActions}
+      initialScrollTop={timelineScrollRef.current}
+      onScrollOffset={top => {
+        timelineScrollRef.current = top
+        persistSoon()
+      }}
+    />
+  )
+
   return (
     <div
       ref={rootRef}
@@ -1623,43 +1803,24 @@ export function VcsView({
         <div className="vcs-main">
           {showTimeline ? (
             <section className="vcs-sidebar" style={singleColumn ? undefined : { width: `${state.sidebarWidth}px` }}>
-              <RepositoryTimelines
-                repositories={visibleRepositories}
-                current={state.repo}
-                onActivate={activateRepository}
-                t={t}
-              >
-                {missingToolMessage ?? (
-                  <Timeline
-                    key={historyScope}
-                    commits={timelineCommits(commits)}
-                    layout={layout}
-                    worktrees={timelineWorktrees(worktreeRows)}
-                    selectedRow={selectedRow}
-                    onSelectRow={selectRow}
-                    onMove={moveTimeline}
-                    onOpen={openDetail}
-                    control={timelineControl}
-                    t={t}
-                    locale={locale}
-                    loading={log.status === 'loading' || waitingForSnapshots || (log.error !== null && settledHistoryKey !== historyKey)}
-                    loadingMore={log.loadingMore}
-                    error={log.error}
-                    hasMore={log.hasMore}
-                    truncated={log.truncated}
-                    onLoadMore={() => { void loadMore() }}
-                    canLoadMore={currentHistory && !waitingForSnapshots}
-                    onRetry={() => { refreshInBackground(['history']) }}
-                    onRefActions={timelineRefActions}
-                    onCommitActions={timelineCommitActions}
-                    initialScrollTop={timelineScrollRef.current}
-                    onScrollOffset={top => {
-                      timelineScrollRef.current = top
-                      persistSoon()
-                    }}
-                  />
-                )}
-              </RepositoryTimelines>
+              {showRepositoryGroups ? (
+                <RepositoryTimelines
+                  repositories={visibleRepositories}
+                  current={state.repo}
+                  expanded={expandedRepositories}
+                  onToggle={toggleRepositoryGroup}
+                  renderTimeline={(entry, active) => active ? activeTimeline : (
+                    <RepositoryTimelinePreview
+                      key={JSON.stringify([sessionId, entry.path, entry.vcs, manual.history, manual.working])}
+                      api={api} sessionId={sessionId} entry={entry} saved={perRepoRef.current.get(entry.path)}
+                      scrollOffset={repositoryScrollRef.current.get(entry.path) ?? 0}
+                      onScroll={offset => { repositoryScrollRef.current.set(entry.path, offset) }}
+                      onSelect={selectPreviewNode} t={t} locale={locale}
+                    />
+                  )}
+                  t={t}
+                />
+              ) : activeTimeline}
             </section>
           ) : null}
           {!singleColumn ? (

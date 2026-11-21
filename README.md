@@ -20,7 +20,8 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
   with branches, bookmarks, and tags.
   Use the repository menu to show **All repositories** or **Selected only**.
   Check the repositories to include in the selected view.
-  Open a repository's group in the timeline to make it current for details and actions.
+  Expand or collapse each repository group independently.
+  Select a row in an expanded timeline to make its repository current for details and actions.
   **Manage repositories** lets you preview and add a folder of repositories or register a specific nested repository,
   and picks Git or Jujutsu for a repository that carries both markers.
   Discovery rules are saved relative to the session directory in `.dsh/vcs-panel.json`.

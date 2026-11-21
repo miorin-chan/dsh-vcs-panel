@@ -1017,7 +1017,7 @@ select.vcs-repository-kind {
   border-bottom: 0.5px solid var(--dsw-alias-border-l2);
 }
 
-.vcs-repository-group[data-active] {
+.vcs-repository-group[data-open] {
   display: flex;
   flex: 1 0 min(12rem, 70%);
   flex-direction: column;
@@ -1033,7 +1033,6 @@ select.vcs-repository-kind {
 .vcs-repository-group-header[aria-expanded='true'] {
   background: var(--dsw-alias-bg-layer-2);
   font-weight: 500;
-  cursor: default;
 }
 
 .vcs-timeline {

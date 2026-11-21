@@ -60,6 +60,8 @@ export interface PanelState {
   /** Which repositories get timeline groups, and the paths checked for selected mode. */
   repositoryScope: RepositoryScope
   checkedRepositories: string[]
+  /** Null opens the initial repository, while an empty list keeps every group closed. */
+  expandedRepositories: string[] | null
   /** The selected checkout paths, in display order. */
   worktrees: string[]
   /** The selected timeline node, or null before the status answers. */
@@ -111,6 +113,7 @@ export function defaultState(): PanelState {
     repo: null,
     repositoryScope: 'all',
     checkedRepositories: [],
+    expandedRepositories: null,
     worktrees: [],
     node: null,
     nodeChosen: false,
@@ -200,7 +203,7 @@ export function sanitizeState(raw: unknown): PanelState {
   const stored = raw
   state.repo = textOrNull(stored.repo)
   if (stored.repositoryScope === 'selected') state.repositoryScope = 'selected'
-  for (const field of ['checkedRepositories', 'worktrees'] as const) {
+  for (const field of ['checkedRepositories', 'expandedRepositories', 'worktrees'] as const) {
     const paths = stored[field]
     if (Array.isArray(paths)) {
       state[field] = [...new Set(paths.filter((path): path is string => textOrNull(path) !== null))]
