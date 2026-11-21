@@ -51,10 +51,15 @@ export interface ReadingAnchor {
   offset: number
 }
 
+export type RepositoryScope = 'all' | 'selected'
+
 /** What the panel remembers per Session. */
 export interface PanelState {
   /** The selected repository root, or null before one is chosen. */
   repo: string | null
+  /** Which repositories get timeline groups, and the paths checked for selected mode. */
+  repositoryScope: RepositoryScope
+  checkedRepositories: string[]
   /** The selected checkout paths, in display order. */
   worktrees: string[]
   /** The selected timeline node, or null before the status answers. */
@@ -104,6 +109,8 @@ export interface PreferredNodeStatus {
 export function defaultState(): PanelState {
   return {
     repo: null,
+    repositoryScope: 'all',
+    checkedRepositories: [],
     worktrees: [],
     node: null,
     nodeChosen: false,
@@ -192,8 +199,12 @@ export function sanitizeState(raw: unknown): PanelState {
   if (!isRecord(raw) || Array.isArray(raw)) return state
   const stored = raw
   state.repo = textOrNull(stored.repo)
-  if (Array.isArray(stored.worktrees)) {
-    state.worktrees = [...new Set(stored.worktrees.filter((path): path is string => textOrNull(path) !== null))]
+  if (stored.repositoryScope === 'selected') state.repositoryScope = 'selected'
+  for (const field of ['checkedRepositories', 'worktrees'] as const) {
+    const paths = stored[field]
+    if (Array.isArray(paths)) {
+      state[field] = [...new Set(paths.filter((path): path is string => textOrNull(path) !== null))]
+    }
   }
   state.node = isNode(stored.node) ? stored.node : null
   state.nodeChosen = state.node !== null && stored.nodeChosen === true

@@ -18,7 +18,9 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
   so a wide Sidebar gives the diff its full width.
 - **Timeline & lane graph.** Browse working changes and topological commit history together,
   with branches, bookmarks, and tags.
-  Click the repository name in the header to switch repositories.
+  Use the repository menu to show **All repositories** or **Selected only**.
+  Check the repositories to include in the selected view.
+  Open a repository's group in the timeline to make it current for details and actions.
   **Manage repositories** lets you preview and add a folder of repositories or register a specific nested repository,
   and picks Git or Jujutsu for a repository that carries both markers.
   Discovery rules are saved relative to the session directory in `.dsh/vcs-panel.json`.

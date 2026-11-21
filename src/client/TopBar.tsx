@@ -33,6 +33,7 @@ import { TAG_BUSY_KEYS } from './tag.js'
 import { COMMIT_BUSY_KEYS } from './commit.js'
 import { useFloatingMenu } from './useFloatingMenu.js'
 import { workingCopyLabel, worktreeRefLabel } from './worktrees.js'
+import type { RepositoryScope } from './state.js'
 
 /** Ref badges shown in the header before the rest are left to the timeline. */
 const HEADER_REFS = 3
@@ -98,16 +99,19 @@ function AheadBehind({ ahead, behind }: { ahead: number; behind: number }) {
   )
 }
 
-/** Props of the compact top-bar segmented switch shared by the pickers. */
-interface RangeHeaderProps {
-  options: readonly HistoryRange[]
-  refMode: string
-  onRefMode: (ref: string) => void
+interface RangeHeaderProps<Value extends string> {
+  options: readonly (Omit<HistoryRange, 'value'> & { value: Value })[]
+  refMode: Value
+  onRefMode: (value: Value) => void
+  label?: string
+  groupLabel?: string
   t: Translate
 }
 
-/** Compact top-bar segmented switch shared by the worktree and branch pickers. */
-function RangeHeader({ options, refMode, onRefMode, t }: RangeHeaderProps) {
+/** Compact segmented switch shared by the header pickers. */
+function RangeHeader<Value extends string>({
+  options, refMode, onRefMode, label = 'history.commitsLabel', groupLabel = 'history.refLabel', t,
+}: RangeHeaderProps<Value>) {
   const moveSegment = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
     const radios = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? [])
@@ -123,9 +127,9 @@ function RangeHeader({ options, refMode, onRefMode, t }: RangeHeaderProps) {
   return (
     <div className="vcs-picker-header">
       <span className="vcs-picker-menu-title vcs-picker-range-label" aria-hidden="true">
-        {t('history.commitsLabel')}
+        {t(label)}
       </span>
-      <div className="vcs-picker-range" role="group" aria-label={t('history.refLabel')}>
+      <div className="vcs-picker-range" role="group" aria-label={t(groupLabel)}>
         {options.map(option => (
           <button
             key={option.value}
@@ -398,13 +402,15 @@ interface HeaderPickerProps {
   indicator?: ReactNode
   filtered?: boolean
   itemSelector?: string
+  initialFocusSelector?: string
   children: (close: (restore: boolean) => void) => ReactNode
 }
 
 /** An anchored menu for choices already loaded. Its rows decide when to close. */
 function HeaderPicker({
   kind, label, summary, buttonLabel, title, disabled = false,
-  dismissOnScroll, showTitle = true, indicator = null, filtered = false, itemSelector = '[aria-checked]', children,
+  dismissOnScroll, showTitle = true, indicator = null, filtered = false,
+  itemSelector = '[aria-checked]', initialFocusSelector = '[aria-checked="true"]', children,
 }: HeaderPickerProps) {
   const [position, setPosition] = useState<MenuPosition | null>(null)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
@@ -428,13 +434,14 @@ function HeaderPicker({
     if (!open) return undefined
     const frame = requestAnimationFrame(() => {
       const menu = menuRef.current
-      const target = menu?.querySelector<HTMLElement>('[aria-checked="true"]')
+      if (menu?.contains(document.activeElement)) return
+      const target = menu?.querySelector<HTMLElement>(initialFocusSelector)
         ?? menu?.querySelector<HTMLElement>(itemSelector)
         ?? menu
       target?.focus()
     })
     return () => { cancelAnimationFrame(frame) }
-  }, [close, disabled, itemSelector, open])
+  }, [close, disabled, initialFocusSelector, itemSelector, open])
 
   return (
     <div className="vcs-picker-wrap" onBlur={onBlur}>
@@ -491,11 +498,12 @@ interface PickerRadioItemProps {
   title: string
   onClick: MouseEventHandler<HTMLButtonElement>
   className?: string
+  currentLabel?: string
   children: ReactNode
 }
 
 /** One item in a single-selection menu group. */
-function PickerRadioItem({ checked, title, onClick, className, children }: PickerRadioItemProps) {
+function PickerRadioItem({ checked, title, onClick, className, currentLabel, children }: PickerRadioItemProps) {
   return (
     <button
       type="button"
@@ -507,7 +515,7 @@ function PickerRadioItem({ checked, title, onClick, className, children }: Picke
       onClick={onClick}
     >
       <span className="vcs-menu-item-name">{children}</span>
-      {checked ? <CheckIcon /> : null}
+      {checked ? <span className="vcs-worktree-current">{currentLabel}</span> : null}
     </button>
   )
 }
@@ -516,48 +524,96 @@ function PickerRadioItem({ checked, title, onClick, className, children }: Picke
 interface RepositoryPickerProps {
   repositories: readonly RepositoryRow[]
   current: RepositoryRow | undefined
+  scope: RepositoryScope
+  checked: readonly string[]
+  onScopeChange?: (scope: RepositoryScope) => void
+  onToggle?: (path: string) => void
   onRepoChange: (path: string, fromPointer: boolean) => void
   onManageRepositories?: (restoreFocus: () => void) => void
   t: Translate
 }
 
-/** The repository choice is exclusive; activating a row closes the menu. */
-function RepositoryPicker({ repositories, current, onRepoChange, onManageRepositories, t }: RepositoryPickerProps) {
+const REPOSITORY_RANGES = [
+  { value: 'all', label: 'repositories.all', title: 'repositories.allTitle' },
+  { value: 'selected', label: 'repositories.selected', title: 'repositories.selectedTitle' },
+] as const
+
+function RepositoryPicker({
+  repositories, current, scope, checked, onScopeChange, onToggle, onRepoChange, onManageRepositories, t,
+}: RepositoryPickerProps) {
   const summary = current?.name ?? t('top.noRepository')
+  const showScope = repositories.length > 1 && onScopeChange !== undefined && onToggle !== undefined
+  const filtered = showScope && scope === 'selected'
+  const currentLabel = current === undefined ? t('top.noRepository') : t('top.repositoryLabel', { name: summary })
   return (
     <HeaderPicker
       kind="repo"
       label={t('top.repositories')}
       summary={summary}
-      buttonLabel={current === undefined ? undefined : t('top.repositoryLabel', { name: summary })}
-      title={current?.path}
+      buttonLabel={filtered ? `${currentLabel} · ${t('repositories.selected')}` : currentLabel}
+      title={filtered ? `${current?.path ?? summary}\n${t('repositories.selectedTitle')}` : current?.path}
       disabled={repositories.length === 0 && onManageRepositories === undefined}
       dismissOnScroll={false}
-      itemSelector=".vcs-menu-item"
+      showTitle={!showScope}
+      filtered={filtered}
+      indicator={filtered ? <FilterIcon /> : null}
+      itemSelector=".vcs-menu-item, .vcs-range-option"
+      initialFocusSelector='.vcs-repo-item[aria-checked="true"]'
     >
       {close => (
         <>
+          {showScope ? (
+            <RangeHeader
+              options={REPOSITORY_RANGES}
+              refMode={scope}
+              onRefMode={onScopeChange}
+              label="top.repositories"
+              groupLabel="repositories.scope"
+              t={t}
+            />
+          ) : null}
           <div className="vcs-picker-choices" role="group">
             {repositories.map(entry => {
               const selected = entry === current
+              const included = checked.includes(entry.path)
+              const last = included && checked.length === 1
+              const checkLabel = t('repositories.include', { name: entry.name })
               return (
-                <PickerRadioItem
-                  key={entry.path}
-                  className="vcs-repo-item"
-                  checked={selected}
-                  title={entry.path}
-                  onClick={event => {
-                    const fromPointer = event.detail > 0
-                    if (!selected) onRepoChange(entry.path, fromPointer)
-                    close(selected || !fromPointer)
-                  }}
-                >
-                  {entry.name}
-                  {entry.enclosing ? null : <small>{entry.path}</small>}
-                </PickerRadioItem>
+                <div className="vcs-repository-choice" key={entry.path}>
+                  {showScope ? (
+                    <button
+                      type="button"
+                      className="vcs-menu-item vcs-repository-check"
+                      role="menuitemcheckbox"
+                      aria-checked={included}
+                      aria-disabled={last || undefined}
+                      aria-label={checkLabel}
+                      title={last ? t('repositories.keepOne') : checkLabel}
+                      tabIndex={-1}
+                      onClick={() => { if (!last) onToggle(entry.path) }}
+                    >
+                      <span className="vcs-worktree-check" aria-hidden="true">{included ? <CheckIcon /> : null}</span>
+                    </button>
+                  ) : null}
+                  <PickerRadioItem
+                    className="vcs-repo-item"
+                    currentLabel={t('repositories.current')}
+                    checked={selected}
+                    title={entry.path}
+                    onClick={event => {
+                      const fromPointer = event.detail > 0
+                      if (!selected) onRepoChange(entry.path, fromPointer)
+                      close(selected || !fromPointer)
+                    }}
+                  >
+                    {entry.name}
+                    {entry.enclosing ? null : <small>{entry.path}</small>}
+                  </PickerRadioItem>
+                </div>
               )
             })}
           </div>
+          {showScope && !filtered ? <p className="vcs-picker-menu-note">{t('repositories.selectionHint')}</p> : null}
           {onManageRepositories === undefined ? null : (
             <button
               type="button"
@@ -712,6 +768,10 @@ function SyncButton({ branch, syncing, onSync, t, locale }: SyncButtonProps) {
 export interface TopBarProps {
   repositories: readonly RepositoryRow[]
   repo: string | null
+  repositoryScope?: RepositoryScope
+  checkedRepositories?: readonly string[]
+  onRepositoryScope?: (scope: RepositoryScope) => void
+  onToggleRepository?: (path: string) => void
   onRepoChange: (repo: string, fromPointer: boolean) => void
   onManageRepositories?: (restoreFocus: () => void) => void
   status: StatusData | null
@@ -750,7 +810,8 @@ export interface TopBarProps {
 
 /** Render the panel header. */
 export function TopBar({
-  repositories, repo, onRepoChange, onManageRepositories, status, capabilities, refMode, onRefMode, onRefresh, refreshing,
+  repositories, repo, repositoryScope = 'all', checkedRepositories = [], onRepositoryScope, onToggleRepository,
+  onRepoChange, onManageRepositories, status, capabilities, refMode, onRefMode, onRefresh, refreshing,
   worktrees = [], checkedPaths = [], onToggleWorktree, sessionPath,
   revalidating = false, onSync, syncing, staging = false, branches = [], branchesStatus = 'idle', branchesError = null,
   branchesTruncated = false, onLoadBranches = () => {}, onSwitchBranch = () => {}, onBranchActions = () => {},
@@ -832,6 +893,10 @@ export function TopBar({
       <RepositoryPicker
         repositories={repositories}
         current={currentRepository}
+        scope={repositoryScope}
+        checked={checkedRepositories}
+        onScopeChange={onRepositoryScope}
+        onToggle={onToggleRepository}
         onRepoChange={onRepoChange}
         onManageRepositories={onManageRepositories}
         t={t}

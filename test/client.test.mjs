@@ -59,6 +59,8 @@ test('defaultState is fresh each time', () => {
 test('sanitizeState keeps accepted values and drops unknown ones', () => {
   const state = sanitizeState({
     repo: '/repo',
+    repositoryScope: 'selected',
+    checkedRepositories: ['/repo', '/other', '/repo', 1, ''],
     node: 'abcdef1234567890',
     nodeChosen: true,
     dirs: { 'unstaged|tmp': true, 'untracked|old': true, bad: 'yes' },
@@ -73,6 +75,9 @@ test('sanitizeState keeps accepted values and drops unknown ones', () => {
     tab: 'history',
   })
   assert.equal(state.repo, '/repo')
+  assert.equal(state.repositoryScope, 'selected')
+  assert.deepEqual(state.checkedRepositories, ['/repo', '/other'])
+  assert.equal(sanitizeState({ repositoryScope: 'unknown' }).repositoryScope, 'all')
   assert.equal(state.node, 'abcdef1234567890')
   assert.equal(state.nodeChosen, true)
   assert.deepEqual(state.dirs, { 'unstaged|tmp': true })

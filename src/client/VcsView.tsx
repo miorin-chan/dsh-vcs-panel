@@ -18,7 +18,7 @@ import type {
 import {
   loadState, nodePatch, saveState, SIDEBAR_MAX, SIDEBAR_MIN, WORKING_COPY, WORKTREE, worktreeNode, worktreePath,
 } from './state.js'
-import type { PanelState, ReadingAnchor } from './state.js'
+import type { PanelState, ReadingAnchor, RepositoryScope } from './state.js'
 import type { DirRow, GroupRow, UntrackedChild } from './detail/tree.js'
 import type { CommitState, DetailPaneControl, DetailStatusState } from './detail/DetailPane.jsx'
 import type { DiffFetchResult } from './detail/ChangeTree.jsx'
@@ -51,6 +51,7 @@ import { BranchDialog } from './BranchDialogs.jsx'
 import { TagDialog } from './TagDialog.jsx'
 import { CommitDialog } from './CommitDialog.jsx'
 import { RepositoryConfigDialog } from './RepositoryConfigDialog.jsx'
+import { RepositoryTimelines } from './RepositoryTimelines.jsx'
 import { useRepoActions } from './useRepoActions.js'
 import { useVcsWatch } from './useVcsWatch.js'
 import { TimelineSkeleton, TreeSkeleton } from './skeleton.jsx'
@@ -331,6 +332,9 @@ export function VcsView({
   const showTimeline = !singleColumn || singleView === 'timeline'
   const showDetail = !singleColumn || singleView === 'detail'
   const repoInfo = repositories.list.find(entry => entry.path === state.repo) ?? null
+  const visibleRepositories = state.repositoryScope === 'all'
+    ? repositories.list
+    : repositories.list.filter(entry => state.checkedRepositories.includes(entry.path))
   const repositoryReady = repositories.status === 'ready' && repoInfo !== null && sessionRef.current === sessionId
   const worktrees = useMemo(() => repositoryWorktrees(repoInfo), [repoInfo])
   const checkedTrees = useMemo(() => checkedWorktrees(worktrees, state.worktrees), [worktrees, state.worktrees])
@@ -642,6 +646,10 @@ export function VcsView({
       ? savedRef
       : (nextCapabilities?.defaultRange ?? 'all')
     setStatuses({})
+    setLog(idleLog())
+    logKeyRef.current = ''
+    pageControllerRef.current?.abort()
+    pageControllerRef.current = null
     setSingleView('timeline')
     setNotice(null)
     resetDirectories()
@@ -665,7 +673,33 @@ export function VcsView({
     })
   }, [abortBranches, clearBranches, resetActionsUi, resetDirectories, update])
 
-  /** Change only the view. No operation may infer a write target from a checked set. */
+  const activateRepository = (entry: RepositoryRow) => {
+    const current = stateRef.current
+    if (entry.path === current.repo) return
+    if (current.repositoryScope === 'selected' && !current.checkedRepositories.includes(entry.path)) {
+      update({ checkedRepositories: [...current.checkedRepositories, entry.path] })
+    }
+    switchRepo(entry)
+  }
+
+  const applyRepositoryScope = (scope: RepositoryScope, checked: string[]) => {
+    const current = stateRef.current
+    update({ repositoryScope: scope, checkedRepositories: checked })
+    if (scope === 'selected' && (current.repo === null || !checked.includes(current.repo))) {
+      switchRepo(pickRepository(repositories.list.filter(entry => checked.includes(entry.path))))
+    }
+  }
+
+  const toggleCheckedRepository = (path: string) => {
+    const { repositoryScope, checkedRepositories } = stateRef.current
+    const checked = checkedRepositories.includes(path)
+    if (checked && checkedRepositories.length === 1) return
+    applyRepositoryScope(repositoryScope, checked
+      ? checkedRepositories.filter(current => current !== path)
+      : [...checkedRepositories, path])
+  }
+
+  /** Change only the timeline within the current repository. */
   const toggleCheckedWorktree = (path: string) => {
     const current = stateRef.current
     const next = toggleWorktree(worktrees, current.worktrees, path)
@@ -716,10 +750,15 @@ export function VcsView({
         error: null, cwd: typeof answer?.cwd === 'string' ? answer.cwd : null,
         configError: typeof answer?.configError === 'string' ? answer.configError : null,
       })
-      const previousRepo = stateRef.current.repo
+      const { repo: previousRepo, repositoryScope, checkedRepositories } = stateRef.current
       const previousVcs = previousRepo === null ? undefined : repositoryVcsRef.current.get(previousRepo)
       repositoryVcsRef.current = new Map(list.map((entry): [string, string] => [entry.path, entry.vcs]))
-      const nextEntry = pickRepository(list, previousRepo)
+      const defaultEntry = pickRepository(list, previousRepo)
+      const included = list.filter(entry => checkedRepositories.includes(entry.path))
+      if (included.length === 0 && defaultEntry !== null) included.push(defaultEntry)
+      const checked = included.map(entry => entry.path)
+      if (!samePaths(checked, checkedRepositories) && list.length > 0) update({ checkedRepositories: checked })
+      const nextEntry = repositoryScope === 'selected' ? pickRepository(included, previousRepo) : defaultEntry
       const nextRepo = nextEntry?.path ?? null
       if (nextRepo !== previousRepo) switchRepo(nextEntry)
       else if (previousVcs !== undefined && previousVcs !== nextEntry?.vcs) {
@@ -1479,6 +1518,14 @@ export function VcsView({
     )
   }
 
+  const missingToolMessage = missingTool ? (
+    <div className="vcs-center">
+      <p className="vcs-empty-title">{t('error.vcsMissing')}</p>
+      <p className="vcs-note">{t('error.vcsMissingHint')} {errorMessage(t, status.error)}</p>
+      <button type="button" className="vcs-button" onClick={() => { refresh() }}>{t('error.retry')}</button>
+    </div>
+  ) : null
+
   return (
     <div
       ref={rootRef}
@@ -1504,6 +1551,10 @@ export function VcsView({
         repositories={repositories.list}
         onManageRepositories={restoreFocus => { setRepositoryManagement({ sessionId, restoreFocus }) }}
         repo={state.repo}
+        repositoryScope={state.repositoryScope}
+        checkedRepositories={state.checkedRepositories}
+        onRepositoryScope={scope => { applyRepositoryScope(scope, stateRef.current.checkedRepositories) }}
+        onToggleRepository={toggleCheckedRepository}
         worktrees={worktrees}
         checkedPaths={checkedPaths}
         onToggleWorktree={toggleCheckedWorktree}
@@ -1511,7 +1562,7 @@ export function VcsView({
         onRepoChange={(repo, fromPointer) => {
           const entry = repositories.list.find(candidate => candidate.path === repo)
           if (entry === undefined || entry.path === state.repo) return
-          switchRepo(entry)
+          activateRepository(entry)
           if (fromPointer) {
             panelOwnsFocusRef.current = true
             pendingReadyFocusRef.current = true
@@ -1568,44 +1619,47 @@ export function VcsView({
           <p className="vcs-empty-title">{t('empty.repository')}</p>
           <p className="vcs-note">{t('empty.repositoryHint')}</p>
         </div>
-      ) : missingTool ? (
-        <div className="vcs-center">
-          <p className="vcs-empty-title">{t('error.vcsMissing')}</p>
-          <p className="vcs-note">{t('error.vcsMissingHint')} {errorMessage(t, status.error)}</p>
-          <button type="button" className="vcs-button" onClick={() => { refresh() }}>{t('error.retry')}</button>
-        </div>
       ) : (
         <div className="vcs-main">
           {showTimeline ? (
             <section className="vcs-sidebar" style={singleColumn ? undefined : { width: `${state.sidebarWidth}px` }}>
-              <Timeline
-                key={historyScope}
-                commits={timelineCommits(commits)}
-                layout={layout}
-                worktrees={timelineWorktrees(worktreeRows)}
-                selectedRow={selectedRow}
-                onSelectRow={selectRow}
-                onMove={moveTimeline}
-                onOpen={openDetail}
-                control={timelineControl}
+              <RepositoryTimelines
+                repositories={visibleRepositories}
+                current={state.repo}
+                onActivate={activateRepository}
                 t={t}
-                locale={locale}
-                loading={log.status === 'loading' || waitingForSnapshots || (log.error !== null && settledHistoryKey !== historyKey)}
-                loadingMore={log.loadingMore}
-                error={log.error}
-                hasMore={log.hasMore}
-                truncated={log.truncated}
-                onLoadMore={() => { void loadMore() }}
-                canLoadMore={currentHistory && !waitingForSnapshots}
-                onRetry={() => { refreshInBackground(['history']) }}
-                onRefActions={timelineRefActions}
-                onCommitActions={timelineCommitActions}
-                initialScrollTop={timelineScrollRef.current}
-                onScrollOffset={top => {
-                  timelineScrollRef.current = top
-                  persistSoon()
-                }}
-              />
+              >
+                {missingToolMessage ?? (
+                  <Timeline
+                    key={historyScope}
+                    commits={timelineCommits(commits)}
+                    layout={layout}
+                    worktrees={timelineWorktrees(worktreeRows)}
+                    selectedRow={selectedRow}
+                    onSelectRow={selectRow}
+                    onMove={moveTimeline}
+                    onOpen={openDetail}
+                    control={timelineControl}
+                    t={t}
+                    locale={locale}
+                    loading={log.status === 'loading' || waitingForSnapshots || (log.error !== null && settledHistoryKey !== historyKey)}
+                    loadingMore={log.loadingMore}
+                    error={log.error}
+                    hasMore={log.hasMore}
+                    truncated={log.truncated}
+                    onLoadMore={() => { void loadMore() }}
+                    canLoadMore={currentHistory && !waitingForSnapshots}
+                    onRetry={() => { refreshInBackground(['history']) }}
+                    onRefActions={timelineRefActions}
+                    onCommitActions={timelineCommitActions}
+                    initialScrollTop={timelineScrollRef.current}
+                    onScrollOffset={top => {
+                      timelineScrollRef.current = top
+                      persistSoon()
+                    }}
+                  />
+                )}
+              </RepositoryTimelines>
             </section>
           ) : null}
           {!singleColumn ? (
@@ -1631,7 +1685,8 @@ export function VcsView({
           ) : null}
           {showDetail ? (
             <section className="vcs-content">
-              {detailNode === null || state.node === WORKTREE || state.node === WORKING_COPY
+              {missingTool ? (singleColumn ? missingToolMessage : null)
+                : detailNode === null || state.node === WORKTREE || state.node === WORKING_COPY
                 || (worktreePath(state.node) !== null && selectedTree === null) ? (
                 commitBased && selectedTree !== null && detailStatus.status === 'error'
                   ? <p className="vcs-note" role="alert">{t('changes.error')} {errorMessage(t, detailStatus.error)}</p>

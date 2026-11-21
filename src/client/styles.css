@@ -257,7 +257,7 @@
   color: var(--dsw-alias-brand-primary);
 }
 
-/* Long worktree and branch lists scroll independently, leaving the header range filter pinned. */
+/* Long picker lists scroll independently, leaving the header range filter pinned. */
 .vcs-picker-header {
   display: flex;
   flex: none;
@@ -333,6 +333,32 @@
   margin: 4px 6px 2px;
   font-size: 11px;
   color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
+}
+
+.vcs-repo-menu .vcs-picker-header {
+  flex-wrap: wrap;
+}
+
+.vcs-repository-choice {
+  display: flex;
+  align-items: stretch;
+}
+
+.vcs-repository-choice .vcs-repo-item {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.vcs-repository-check {
+  justify-content: center;
+  width: 30px;
+  height: auto;
+  padding: 0;
+}
+
+.vcs-repository-check[aria-disabled='true'] {
+  cursor: default;
 }
 
 .vcs-repo-item,
@@ -969,6 +995,39 @@ select.vcs-repository-kind {
 }
 
 /* Timeline ---------------------------------------------------------------- */
+
+.vcs-repository-groups {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.vcs-repository-group {
+  flex: none;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.vcs-repository-group[data-active] {
+  display: flex;
+  flex: 1 0 min(12rem, 70%);
+  flex-direction: column;
+}
+
+.vcs-repository-group-header {
+  min-height: 30px;
+  height: auto;
+  padding: 4px 8px;
+  border-radius: 0;
+}
+
+.vcs-repository-group-header[aria-expanded='true'] {
+  background: var(--dsw-alias-bg-layer-2);
+  font-weight: 500;
+  cursor: default;
+}
 
 .vcs-timeline {
   display: flex;

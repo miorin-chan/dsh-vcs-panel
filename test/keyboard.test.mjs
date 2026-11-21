@@ -129,6 +129,9 @@ class FakeElement {
   }
 
   matchesSelector(selector) {
+    if (selector.includes(',')) return selector.split(',').some(part => this.matchesSelector(part.trim()))
+    const compound = /^(\.[\w-]+)(\[.+\])$/u.exec(selector)
+    if (compound !== null) return this.matchesSelector(compound[1]) && this.matchesSelector(compound[2])
     const exact = /^\[([a-z0-9-]+)="([^"]*)"\]$/iu.exec(selector)
     if (exact !== null) return this.attributes.get(exact[1]) === exact[2]
     const present = /^\[([a-z0-9-]+)\]$/iu.exec(selector)
@@ -2576,8 +2579,15 @@ test('VcsView scopes in-flight writes per repository without locking another rep
   const shaA = 'a'.repeat(40)
   const shaB = 'b'.repeat(40)
   let releaseSyncA = null
+  const syncTargets = []
   const json = body => ({ ok: true, status: 200, async json() { return body } })
   const savedFetch = globalThis.fetch
+  const savedStorage = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
+  const stored = new Map()
+  Object.defineProperty(globalThis, 'sessionStorage', {
+    configurable: true,
+    value: { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value) },
+  })
   globalThis.fetch = async (url, init) => {
     const parsed = new URL(url, 'http://127.0.0.1')
     const repo = parsed.searchParams.get('repo') ?? (init?.body ? JSON.parse(init.body).repo : null)
@@ -2607,6 +2617,7 @@ test('VcsView scopes in-flight writes per repository without locking another rep
       })
     }
     if (parsed.pathname === '/api/vcs.sync') {
+      syncTargets.push(repo)
       if (repo === '/repo-a') await new Promise(resolve => { releaseSyncA = resolve })
       return json({ upstream: 'origin/main', pulled: 0, pushed: 1 })
     }
@@ -2633,8 +2644,39 @@ test('VcsView scopes in-flight writes per repository without locking another rep
     await harness.settle()
     const body = harness.document.body
     const picker = body.querySelector('.vcs-repo-button')
-    const repoItems = () => body.querySelector('.vcs-repo-menu').querySelectorAll('[role="menuitemradio"]')
+    const menu = () => body.querySelector('.vcs-repo-menu')
+    const repoItems = () => menu().querySelectorAll('.vcs-repo-item')
+    const checks = () => menu().querySelectorAll('[role="menuitemcheckbox"]')
+    const ranges = () => menu().querySelectorAll('.vcs-range-option')
+    const groups = () => body.querySelectorAll('.vcs-repository-group-header')
     const syncBtn = body.querySelector('.vcs-sync')
+
+    assert.equal(groups().length, 2, 'all discovered repositories get a group')
+    assert.equal(groups()[0].attributes.get('aria-expanded'), 'true')
+    picker.focus()
+    harness.keyDown(picker, 'ArrowDown')
+    await harness.settle()
+    harness.keyDown(harness.document.activeElement, 'Home')
+    assert.equal(harness.document.activeElement, ranges()[0])
+    harness.keyDown(ranges()[0], 'ArrowRight')
+    assert.equal(harness.document.activeElement, ranges()[1])
+    harness.keyClick(ranges()[1])
+    await harness.settle()
+    assert.equal(picker.attributes.has('data-filtered'), true)
+    assert.equal(groups().length, 0, 'one visible repository uses the plain timeline')
+    assert.equal(harness.document.activeElement, ranges()[1])
+    assert.equal(checks()[0].attributes.get('aria-disabled'), 'true')
+    harness.keyClick(checks()[0])
+    assert.equal(checks()[0].attributes.get('aria-checked'), 'true', 'the last choice cannot be removed')
+    checks()[1].focus()
+    harness.keyClick(checks()[1])
+    await harness.settle()
+    assert.equal(harness.document.activeElement, checks()[1])
+    assert.equal(groups().length, 2)
+    assert.equal(groups()[0].attributes.get('aria-expanded'), 'true', 'checking B leaves A current')
+    assert.equal(textOf(picker), 'repo-a')
+    harness.keyDown(checks()[1], 'Escape')
+    assert.equal(harness.document.activeElement, picker)
 
     // Start sync on repo-a.
     syncBtn.props.onClick()
@@ -2655,6 +2697,9 @@ test('VcsView scopes in-flight writes per repository without locking another rep
     harness.keyDown(picker, 'ArrowDown')
     await harness.settle()
     harness.keyDown(repoItems()[0], 'ArrowDown')
+    assert.equal(harness.document.activeElement, checks()[1])
+    harness.keyDown(checks()[1], 'ArrowDown')
+    assert.equal(harness.document.activeElement, repoItems()[1])
     harness.keyClick(repoItems()[1])
     await harness.settle()
     assert.equal(textOf(picker), 'repo-b')
@@ -2679,10 +2724,41 @@ test('VcsView scopes in-flight writes per repository without locking another rep
     assert.equal(body.querySelector('.vcs-sync').attributes.get('aria-busy'), 'true')
     releaseSyncA()
     await harness.settle()
+    groups()[0].focus()
+    harness.keyDown(groups()[0], 'ArrowDown')
+    assert.equal(harness.document.activeElement, groups()[1])
+    harness.keyClick(groups()[1])
+    await harness.settle()
+    assert.equal(groups()[1].attributes.get('aria-expanded'), 'true')
+    assert.equal(textOf(picker), 'repo-b')
+    harness.mouseClick(body.querySelector('.vcs-sync'))
+    await harness.settle()
+    assert.deepEqual(syncTargets, ['/repo-a', '/repo-b'])
+
+    harness.unmount()
+    harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-multirepo', t, locale: 'en-US' }))
+    await harness.settle()
+    const restoredPicker = body.querySelector('.vcs-repo-button')
+    assert.equal(textOf(restoredPicker), 'repo-b')
+    assert.equal(restoredPicker.attributes.has('data-filtered'), true)
+    harness.mouseClick(restoredPicker)
+    await harness.settle()
+    assert.deepEqual(checks().map(item => item.attributes.get('aria-checked')), ['true', 'true'])
+    harness.mouseClick(checks()[1])
+    await harness.settle()
+    assert.equal(textOf(restoredPicker), 'repo-a', 'a hidden current repository falls back to a visible one')
+    assert.equal(groups().length, 0)
+    harness.keyClick(ranges()[0])
+    await harness.settle()
+    assert.equal(groups().length, 2)
+    assert.equal(restoredPicker.attributes.has('data-filtered'), false)
+    assert.deepEqual(checks().map(item => item.attributes.get('aria-checked')), ['true', 'false'])
   } finally {
     globalThis.fetch = savedFetch
     fakeWin.restore()
     harness.unmount()
+    if (savedStorage === undefined) delete globalThis.sessionStorage
+    else Object.defineProperty(globalThis, 'sessionStorage', savedStorage)
     restore()
   }
 })
