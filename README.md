@@ -19,7 +19,7 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
 - **Timeline & lane graph.** Browse working changes and topological commit history together,
   with branches, bookmarks, and tags.
   Use the repository menu to show **All repositories** or **Selected only**.
-  Check the repositories to include in the selected view.
+  Click a repository row to include or exclude it in the selected view.
   Expand or collapse each repository group independently.
   Select a row in an expanded timeline to make its repository current for details and actions.
   **Manage repositories** lets you preview and add a folder of repositories or register a specific nested repository,

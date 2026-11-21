@@ -520,9 +520,8 @@ interface RepositoryPickerProps {
   current: RepositoryRow | undefined
   scope: RepositoryScope
   checked: readonly string[]
-  onScopeChange?: (scope: RepositoryScope) => void
-  onToggle?: (path: string) => void
-  onRepoChange: (path: string, fromPointer: boolean) => void
+  onScopeChange: (scope: RepositoryScope) => void
+  onToggle: (path: string) => void
   onManageRepositories?: (restoreFocus: () => void) => void
   t: Translate
 }
@@ -533,10 +532,10 @@ const REPOSITORY_RANGES = [
 ] as const
 
 function RepositoryPicker({
-  repositories, cwd, current, scope, checked, onScopeChange, onToggle, onRepoChange, onManageRepositories, t,
+  repositories, cwd, current, scope, checked, onScopeChange, onToggle, onManageRepositories, t,
 }: RepositoryPickerProps) {
   const summary = current?.name ?? t('top.noRepository')
-  const showScope = repositories.length > 1 && onScopeChange !== undefined && onToggle !== undefined
+  const showScope = repositories.length > 1
   const filtered = showScope && scope === 'selected'
   const currentLabel = current === undefined ? t('top.noRepository') : t('top.repositoryLabel', { name: summary })
   return (
@@ -568,47 +567,32 @@ function RepositoryPicker({
           ) : null}
           <div className="vcs-picker-choices" role="group">
             {repositories.map(entry => {
-              const selected = entry === current
-              const included = checked.includes(entry.path)
-              const last = included && checked.length === 1
+              const included = !showScope || checked.includes(entry.path)
+              const last = included && (!showScope || checked.length === 1)
               const pathLabel = sessionRelativePath(cwd, entry.path)
               const detail = pathLabel === entry.name ? null : pathLabel
-              const checkLabel = t('repositories.include', { name: detail ? `${entry.name} · ${detail}` : entry.name })
+              const keepOne = last ? t('repositories.keepOne') : undefined
               return (
-                <div className="vcs-repository-choice" key={entry.path}>
-                  {showScope ? (
-                    <button
-                      type="button"
-                      className="vcs-menu-item vcs-repository-check"
-                      role="menuitemcheckbox"
-                      aria-checked={included}
-                      aria-disabled={last || undefined}
-                      aria-label={checkLabel}
-                      title={last ? t('repositories.keepOne') : checkLabel}
-                      tabIndex={-1}
-                      onClick={() => { if (!last) onToggle(entry.path) }}
-                    >
-                      <span className="vcs-repository-checkmark" aria-hidden="true">{included ? <CheckIcon /> : null}</span>
-                    </button>
-                  ) : null}
-                  <PickerItem
-                    className="vcs-repo-item"
-                    checked={selected}
-                    detail={detail}
-                    title={entry.path}
-                    onClick={event => {
-                      const fromPointer = event.detail > 0
-                      if (!selected) onRepoChange(entry.path, fromPointer)
-                      close(selected || !fromPointer)
-                    }}
-                  >
-                    {entry.name}
-                  </PickerItem>
-                </div>
+                <PickerItem
+                  key={entry.path}
+                  className="vcs-repo-item"
+                  role="menuitemcheckbox"
+                  checked={included}
+                  detail={detail}
+                  aria-disabled={last || undefined}
+                  aria-description={keepOne}
+                  aria-label={showScope ? t('repositories.include', { name: detail ? `${entry.name} · ${detail}` : entry.name }) : undefined}
+                  title={keepOne ? `${entry.path}\n${keepOne}` : entry.path}
+                  onClick={() => { if (!last) onToggle(entry.path) }}
+                >
+                  {entry.name}
+                </PickerItem>
               )
             })}
           </div>
-          {showScope && !filtered ? <p className="vcs-picker-menu-note">{t('repositories.selectionHint')}</p> : null}
+          {showScope && (!filtered || checked.length === 1) ? (
+            <p className="vcs-picker-menu-note">{t(filtered ? 'repositories.keepOne' : 'repositories.selectionHint')}</p>
+          ) : null}
           {onManageRepositories === undefined ? null : (
             <button
               type="button"
@@ -760,9 +744,8 @@ export interface TopBarProps {
   repo: string | null
   repositoryScope?: RepositoryScope
   checkedRepositories?: readonly string[]
-  onRepositoryScope?: (scope: RepositoryScope) => void
-  onToggleRepository?: (path: string) => void
-  onRepoChange: (repo: string, fromPointer: boolean) => void
+  onRepositoryScope: (scope: RepositoryScope) => void
+  onToggleRepository: (path: string) => void
   onManageRepositories?: (restoreFocus: () => void) => void
   status: StatusData | null
   capabilities: RepositoryCapabilities | null
@@ -801,7 +784,7 @@ export interface TopBarProps {
 /** Render the panel header. */
 export function TopBar({
   repositories, cwd, repo, repositoryScope = 'all', checkedRepositories = [], onRepositoryScope, onToggleRepository,
-  onRepoChange, onManageRepositories, status, capabilities, refMode, onRefMode, onRefresh, refreshing,
+  onManageRepositories, status, capabilities, refMode, onRefMode, onRefresh, refreshing,
   worktrees = [], checkedPaths = [], onToggleWorktree, sessionPath,
   revalidating = false, onSync, syncing, staging = false, branches = [], branchesStatus = 'idle', branchesError = null,
   branchesTruncated = false, onLoadBranches = () => {}, onSwitchBranch = () => {}, onBranchActions = () => {},
@@ -888,7 +871,6 @@ export function TopBar({
         checked={checkedRepositories}
         onScopeChange={onRepositoryScope}
         onToggle={onToggleRepository}
-        onRepoChange={onRepoChange}
         onManageRepositories={onManageRepositories}
         t={t}
       />

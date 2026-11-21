@@ -325,9 +325,10 @@ function RepositoryTimelinePreview({
     const source = log?.commits ?? []
     const commits = viewCommits(commitBased ? attachWorkingCopies(source, checkouts)
       : showCurrentHead ? source : source.map(commit => ({ ...commit, refs: sharedRefs(commit.refs ?? []) })))
-    const rows = commitBased ? NO_WORKTREE_ROWS : checkouts
+    // Keep the working copy selectable when its history has no rows to open.
+    const rows = commitBased && (loading || commits.length > 0) ? NO_WORKTREE_ROWS : checkouts
     return { commits, rows, layout: buildGraph(graphInput(commits, rows)) }
-  }, [commitBased, log, showCurrentHead, statuses, t, worktrees])
+  }, [commitBased, loading, log, showCurrentHead, statuses, t, worktrees])
   const selectedRow = Math.min(cursor, commits.length + rows.length - 1)
   useLayoutEffect(() => {
     if (!moving.current) return
@@ -790,18 +791,6 @@ export function VcsView({
       ref,
     })
   }, [abortBranches, clearBranches, resetActionsUi, resetDirectories, update])
-
-  const activateRepository = (entry: RepositoryRow) => {
-    const current = stateRef.current
-    if (entry.path === current.repo) return
-    if (current.repositoryScope === 'selected' && !current.checkedRepositories.includes(entry.path)) {
-      update({ checkedRepositories: [...current.checkedRepositories, entry.path] })
-    }
-    switchRepo(entry)
-    if (showRepositoryGroups && !expandedRepositories.includes(entry.path)) {
-      update({ expandedRepositories: [...expandedRepositories, entry.path] })
-    }
-  }
 
   const toggleRepositoryGroup = (path: string) => {
     update({ expandedRepositories: expandedRepositories.includes(path)
@@ -1740,15 +1729,6 @@ export function VcsView({
         checkedPaths={checkedPaths}
         onToggleWorktree={toggleCheckedWorktree}
         sessionPath={repoInfo?.enclosing === true ? state.repo : null}
-        onRepoChange={(repo, fromPointer) => {
-          const entry = repositories.list.find(candidate => candidate.path === repo)
-          if (entry === undefined || entry.path === state.repo) return
-          activateRepository(entry)
-          if (fromPointer) {
-            panelOwnsFocusRef.current = true
-            pendingReadyFocusRef.current = true
-          }
-        }}
         status={checkedPaths.length > 1 ? null : status.data}
         capabilities={capabilities}
         refMode={state.ref}
