@@ -1729,6 +1729,7 @@ export function VcsView({
     >
       <TopBar
         repositories={repositories.list}
+        cwd={repositories.cwd}
         onManageRepositories={restoreFocus => { setRepositoryManagement({ sessionId, restoreFocus }) }}
         repo={state.repo}
         repositoryScope={state.repositoryScope}

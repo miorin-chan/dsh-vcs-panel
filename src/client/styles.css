@@ -344,15 +344,43 @@
 }
 
 .vcs-repository-choice .vcs-repo-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-content: center;
+  gap: 2px 0;
   flex: 1;
   min-width: 0;
   width: auto;
+  height: auto;
+  min-height: 28px;
+  padding-block: 6px;
+}
+
+.vcs-repo-item .vcs-menu-item-name {
+  grid-area: 1 / 1;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.vcs-repo-item .vcs-icon {
+  grid-area: 1 / 2;
+  align-self: start;
+  margin-inline-start: 8px;
+}
+
+.vcs-repo-item .vcs-picker-item-detail {
+  grid-column: 1 / -1;
+  max-width: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .vcs-repository-check {
+  align-items: flex-start;
   justify-content: center;
   width: 28px;
-  padding: 0;
+  height: auto;
+  padding: 7px 0;
 }
 
 .vcs-picker-menu [role='menuitemcheckbox'][aria-disabled='true'] {

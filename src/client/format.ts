@@ -41,6 +41,18 @@ export function splitPath(path: string): { dir: string; base: string } {
   return { dir: path.slice(0, cut + 1), base: path.slice(cut + 1) }
 }
 
+/** Show a repository relative to the session directory when one contains the other. */
+export function sessionRelativePath(cwd: string | null | undefined, path: string): string {
+  if (!cwd) return path
+  const windows = /^(?:[a-z]:|\\\\)/i.test(cwd)
+  const root = (windows ? cwd.replaceAll('\\', '/') : cwd).replace(/\/+$/u, '')
+  const normalized = (windows ? path.replaceAll('\\', '/') : path).replace(/\/+$/u, '')
+  if (normalized === root) return '.'
+  if (normalized.startsWith(`${root}/`)) return normalized.slice(root.length + 1)
+  if (root.startsWith(`${normalized}/`)) return root.slice(normalized.length + 1).split('/').map(() => '..').join('/')
+  return path
+}
+
 /**
  * Shorten a commit id to Git's usual seven characters.
  * @param sha - a commit id.

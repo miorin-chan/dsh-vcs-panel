@@ -7,7 +7,7 @@ import {
 } from '../lib/client/state.js'
 import {
   branchOpMessage, commitOpMessage, errorMessage, formatCommitTime, formatCount, formatDateTime, lineCounts,
-  shortChangeId, shortSha, splitPath, statusKey, switchMessage, syncMessage, tagOpMessage,
+  sessionRelativePath, shortChangeId, shortSha, splitPath, statusKey, switchMessage, syncMessage, tagOpMessage,
 } from '../lib/client/format.js'
 import { branchActions, isDestructiveAction, remoteBranchActions } from '../lib/client/branch.js'
 import { tagActions } from '../lib/client/tag.js'
@@ -217,6 +217,19 @@ test('loadState survives unreadable storage', () => {
   }
   assert.deepEqual(loadState('s', storage), defaultState())
   assert.doesNotThrow(() => saveState('s', defaultState(), storage))
+})
+
+test('repository paths use the session directory without stripping unrelated prefixes', () => {
+  assert.equal(sessionRelativePath('/project', '/project/packages/frontend/shared'), 'packages/frontend/shared')
+  assert.equal(sessionRelativePath('/project/', '/project/packages/backend/shared'), 'packages/backend/shared')
+  assert.equal(sessionRelativePath('/project/', '/project'), '.')
+  assert.equal(sessionRelativePath('/project/packages/frontend', '/project'), '../..')
+  assert.equal(sessionRelativePath('/project', '/project-other/shared'), '/project-other/shared')
+  assert.equal(sessionRelativePath(null, '/project/shared'), '/project/shared')
+  assert.equal(sessionRelativePath('/', '/project'), 'project')
+  assert.equal(sessionRelativePath('C:\\project\\', 'C:\\project\\packages\\shared'), 'packages/shared')
+  assert.equal(sessionRelativePath('C:\\project', 'D:\\project\\shared'), 'D:\\project\\shared')
+  assert.equal(sessionRelativePath('/project', '/project/name\\with-backslash'), 'name\\with-backslash')
 })
 
 test('format helpers describe paths, ids, and statuses', () => {

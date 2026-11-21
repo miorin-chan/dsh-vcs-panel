@@ -27,7 +27,7 @@ import {
   Arrow, BranchIcon, CheckIcon, Chevron, FilterIcon, IconButton, LockIcon, RefreshIcon, RefBadge, SyncIcon,
   TimelineBesideIcon, Turning, WorkingCopyBadge,
 } from './ui.jsx'
-import { errorMessage, formatCount, formatPlural, shortChangeId } from './format.js'
+import { errorMessage, formatCount, formatPlural, sessionRelativePath, shortChangeId } from './format.js'
 import { BRANCH_BUSY_KEYS } from './branch.js'
 import { TAG_BUSY_KEYS } from './tag.js'
 import { COMMIT_BUSY_KEYS } from './commit.js'
@@ -516,6 +516,7 @@ function PickerItem({ checked, detail, badge, className, children, role = 'menui
 /** State and callbacks of the repository picker. */
 interface RepositoryPickerProps {
   repositories: readonly RepositoryRow[]
+  cwd: string | null | undefined
   current: RepositoryRow | undefined
   scope: RepositoryScope
   checked: readonly string[]
@@ -532,7 +533,7 @@ const REPOSITORY_RANGES = [
 ] as const
 
 function RepositoryPicker({
-  repositories, current, scope, checked, onScopeChange, onToggle, onRepoChange, onManageRepositories, t,
+  repositories, cwd, current, scope, checked, onScopeChange, onToggle, onRepoChange, onManageRepositories, t,
 }: RepositoryPickerProps) {
   const summary = current?.name ?? t('top.noRepository')
   const showScope = repositories.length > 1 && onScopeChange !== undefined && onToggle !== undefined
@@ -570,7 +571,9 @@ function RepositoryPicker({
               const selected = entry === current
               const included = checked.includes(entry.path)
               const last = included && checked.length === 1
-              const checkLabel = t('repositories.include', { name: entry.name })
+              const pathLabel = sessionRelativePath(cwd, entry.path)
+              const detail = pathLabel === entry.name ? null : pathLabel
+              const checkLabel = t('repositories.include', { name: detail ? `${entry.name} · ${detail}` : entry.name })
               return (
                 <div className="vcs-repository-choice" key={entry.path}>
                   {showScope ? (
@@ -591,7 +594,7 @@ function RepositoryPicker({
                   <PickerItem
                     className="vcs-repo-item"
                     checked={selected}
-                    detail={entry.enclosing ? null : entry.path}
+                    detail={detail}
                     title={entry.path}
                     onClick={event => {
                       const fromPointer = event.detail > 0
@@ -753,6 +756,7 @@ function SyncButton({ branch, syncing, onSync, t, locale }: SyncButtonProps) {
  */
 export interface TopBarProps {
   repositories: readonly RepositoryRow[]
+  cwd: string | null | undefined
   repo: string | null
   repositoryScope?: RepositoryScope
   checkedRepositories?: readonly string[]
@@ -796,7 +800,7 @@ export interface TopBarProps {
 
 /** Render the panel header. */
 export function TopBar({
-  repositories, repo, repositoryScope = 'all', checkedRepositories = [], onRepositoryScope, onToggleRepository,
+  repositories, cwd, repo, repositoryScope = 'all', checkedRepositories = [], onRepositoryScope, onToggleRepository,
   onRepoChange, onManageRepositories, status, capabilities, refMode, onRefMode, onRefresh, refreshing,
   worktrees = [], checkedPaths = [], onToggleWorktree, sessionPath,
   revalidating = false, onSync, syncing, staging = false, branches = [], branchesStatus = 'idle', branchesError = null,
@@ -878,6 +882,7 @@ export function TopBar({
     <div className="vcs-topbar">
       <RepositoryPicker
         repositories={repositories}
+        cwd={cwd}
         current={currentRepository}
         scope={repositoryScope}
         checked={checkedRepositories}
