@@ -576,7 +576,7 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
   对话框 `<select>` 采用 `appearance: none` 单行截断并配 `.vcs-dialog-select-caret` 居中箭头与右缘渐隐遮罩。
   `DetailPane` 用 `${repo}|${node}|${revision}` 键缓存已读提交详情（`commitCache`，
   上限 `COMMIT_CACHE_LIMIT = 200`），避免反复切换提交重复请求，并在刷新或切仓时清空。
-  时间线工作区行、详情工具栏与「未暂存」分组在增删行数后显示灰色 `U +N`（`.vcs-untracked-stat`）：
+  时间线工作区行、详情工具栏与「未暂存」分组在增删行数前显示灰色 `+N`（`.vcs-untracked-stat`）：
   `N` 取 `untrackedTotal`，未跟踪目录按 Git 返回的条目算一项，
   展开前后不变；`0` 时隐藏，提示与读屏文本沿用 `status.untracked`；
   单栏窄详情在工具栏统计被隐藏时另起一行 `.vcs-detail-stat-narrow` 显示同一组数字。

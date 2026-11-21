@@ -1052,7 +1052,7 @@ select.vcs-repository-kind {
   max-width: 110px;
 }
 
-.vcs-timeline-meta > :is(.vcs-worktree-ref, .vcs-worktree-change-count, :last-child:not(.vcs-untracked-stat)) {
+.vcs-timeline-meta > :is(.vcs-worktree-ref, .vcs-worktree-change-count, :last-child:not(.vcs-untracked-stat, .vcs-add, .vcs-del)) {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
