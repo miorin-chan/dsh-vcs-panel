@@ -554,9 +554,12 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 锚点行未渲染时沿“文件行 → 父目录链 → 分组行”降级。
 
 顶部栏的菜单只保留临时打开状态。仓库与工作树菜单共用 `HeaderPicker`，本地分支菜单每次打开时重读，
-期间保留上一份列表。 工作树与本地分支菜单共用 `RangeHeader` 顶栏固定分段开关（`.vcs-picker-header`，
-`提交` 标签配 `.vcs-picker-range` 分段胶囊，支持 `←`/`→` 与 `↑`/`↓` 导航，工作树菜单为 `全部`/`仅所选`，
-单工作树 Git 分支菜单为 `全部`/`仅 HEAD`），选项来自 `capabilities.ranges` 并同步更新同一个 `ref`；
+期间保留上一份列表。 三个菜单共用 `PickerHeader` 顶栏（`.vcs-picker-header`）：`.vcs-picker-header-title` 名称、可选的
+`.vcs-picker-range` 分段胶囊（支持 `←`/`→` 与 `↑`/`↓` 导航）和 `.vcs-picker-actions` 里的 `PickerAction` 图标操作。
+仓库菜单为 `仓库` 配 `全部`/`仅所选` 与齿轮 `.vcs-repo-manage`；
+工作树菜单为 `提交` 配 `全部`/`仅所选` 与 `+ 新建`（`.vcs-worktree-create`）；
+单工作树 Git 分支菜单为 `提交` 配 `全部`/`仅 HEAD`。
+提交范围的选项来自 `capabilities.ranges` 并同步更新同一个 `ref`；
 偏离 `defaultRange` 时仅在当前主入口触发按钮（单工作树 Git 为 `.vcs-branch-button`，
 其余为 `.vcs-worktree-button`）标出 `data-filtered` 并附带 `FilterIcon`。 Jujutsu 按工作树路径索引工作副本节点，
 将多个指向同一提交的工作区标记合并到该提交行，不生成虚拟节点。 顶部栏菜单与 `RefActionsMenu` 共用 `useFloatingMenu.js`，

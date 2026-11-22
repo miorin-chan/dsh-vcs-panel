@@ -14,7 +14,7 @@ const dictionary: LocaleDict = Object.freeze({
   "top.repositories": "仓库",
   "top.repositoryLabel": "仓库：{name}",
   "repositories.scope": "仓库显示范围",
-  "repositories.all": "所有仓库",
+  "repositories.all": "全部",
   "repositories.selected": "仅所选",
   "repositories.allTitle": "显示所有发现的仓库",
   "repositories.selectedTitle": "只显示勾选的仓库",

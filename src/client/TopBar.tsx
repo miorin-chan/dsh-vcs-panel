@@ -15,7 +15,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ComponentPropsWithoutRef, KeyboardEvent, MouseEvent, ReactNode } from 'react'
+import type { ComponentPropsWithoutRef, KeyboardEvent, MouseEvent, ReactNode, Ref } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 
 import type {
@@ -24,8 +24,8 @@ import type {
 import type { ApiFailure } from './api.js'
 import type { MenuPoint, Notice, RefEntry } from './useRepoActions.js'
 import {
-  Arrow, BranchIcon, CheckIcon, Chevron, FilterIcon, IconButton, LockIcon, RefreshIcon, RefBadge, SyncIcon,
-  TimelineBesideIcon, Turning, WorkingCopyBadge,
+  Arrow, BranchIcon, CheckIcon, Chevron, FilterIcon, IconButton, LockIcon, MoreIcon, PlusIcon, RefreshIcon, RefBadge,
+  SettingsIcon, SyncIcon, TimelineBesideIcon, Turning, WorkingCopyBadge,
 } from './ui.jsx'
 import { errorMessage, formatCount, formatPlural, sessionRelativePath, shortChangeId } from './format.js'
 import { BRANCH_BUSY_KEYS } from './branch.js'
@@ -99,20 +99,42 @@ function AheadBehind({ ahead, behind }: { ahead: number; behind: number }) {
   )
 }
 
-interface RangeHeaderProps<Value extends string> {
+/** A segmented switch in a picker header: its choices, the chosen one, and its group name. */
+interface HeaderRange<Value extends string> {
   options: readonly (Omit<HistoryRange, 'value'> & { value: Value })[]
-  refMode: Value
-  onRefMode: (value: Value) => void
-  label?: string
-  groupLabel?: string
-  action?: ReactNode
+  value: Value
+  onChange: (value: Value) => void
+  /** Translated accessible name of the switch. */
+  label: string
+}
+
+interface PickerHeaderProps<Value extends string> {
+  /** Translated name shown at the start of the row. */
+  title: string
+  range?: HeaderRange<Value>
+  /** Icon actions at the end of the row. */
+  actions?: ReactNode
   t: Translate
 }
 
-/** Compact segmented switch shared by the header pickers. */
-function RangeHeader<Value extends string>({
-  options, refMode, onRefMode, label = 'history.commitsLabel', groupLabel = 'history.refLabel', action, t,
-}: RangeHeaderProps<Value>) {
+/**
+ * The one header row every picker menu shares: its name, an optional compact
+ * segmented switch beside it, and icon actions at the end. The row stays put
+ * while the choices under it scroll.
+ */
+function PickerHeader<Value extends string>({ title, range, actions, t }: PickerHeaderProps<Value>) {
+  return (
+    <div className="vcs-picker-header">
+      <span className="vcs-picker-header-title" aria-hidden="true">{title}</span>
+      {range === undefined ? null : <RangeSwitch range={range} t={t} />}
+      {actions === undefined ? null : <span className="vcs-picker-actions">{actions}</span>}
+    </div>
+  )
+}
+
+/** Compact segmented switch; `←` / `→` move between its segments. */
+function RangeSwitch<Value extends string>({ range, t }: { range: HeaderRange<Value>; t: Translate }) {
+  const { options, value, onChange, label } = range
   const moveSegment = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
     const radios = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? [])
@@ -126,29 +148,55 @@ function RangeHeader<Value extends string>({
     radios[next]?.focus()
   }
   return (
-    <div className="vcs-picker-header">
-      <span className="vcs-picker-menu-title vcs-picker-range-label" aria-hidden="true">
-        {t(label)}
-      </span>
-      <div className="vcs-picker-range" role="group" aria-label={t(groupLabel)}>
-        {options.map(option => (
-          <button
-            key={option.value}
-            type="button"
-            role="menuitemradio"
-            className="vcs-range-option"
-            tabIndex={-1}
-            aria-checked={option.value === refMode}
-            title={t(option.title)}
-            onClick={() => { if (option.value !== refMode) onRefMode(option.value) }}
-            onKeyDown={moveSegment}
-          >
-            {t(option.label)}
-          </button>
-        ))}
-      </div>
-      {action}
+    <div className="vcs-picker-range" role="group" aria-label={label}>
+      {options.map(option => (
+        <button
+          key={option.value}
+          type="button"
+          role="menuitemradio"
+          className="vcs-range-option"
+          tabIndex={-1}
+          aria-checked={option.value === value}
+          title={t(option.title)}
+          onClick={() => { if (option.value !== value) onChange(option.value) }}
+          onKeyDown={moveSegment}
+        >
+          {t(option.label)}
+        </button>
+      ))}
     </div>
+  )
+}
+
+interface PickerActionProps extends Omit<ComponentPropsWithoutRef<'button'>, 'children'> {
+  /** Accessible name and tooltip. */
+  label: string
+  icon: ReactNode
+  /** Short visible text after the icon, for an action the icon alone leaves ambiguous. */
+  text?: string
+  /** Why the action is unavailable; it stays focusable and says so. */
+  unavailable?: string
+  buttonRef?: Ref<HTMLButtonElement>
+}
+
+/** An icon action in a picker header row. */
+function PickerAction({ label, icon, text, unavailable, buttonRef, className, ...buttonProps }: PickerActionProps) {
+  return (
+    <button
+      {...buttonProps}
+      ref={buttonRef}
+      type="button"
+      role="menuitem"
+      className={className ? `vcs-menu-item vcs-picker-action ${className}` : 'vcs-menu-item vcs-picker-action'}
+      tabIndex={-1}
+      aria-label={label}
+      aria-disabled={unavailable === undefined ? undefined : true}
+      aria-description={unavailable}
+      title={unavailable === undefined ? label : `${label} · ${unavailable}`}
+    >
+      {icon}
+      {text === undefined ? null : <span className="vcs-picker-action-text" aria-hidden="true">{text}</span>}
+    </button>
   )
 }
 
@@ -327,9 +375,13 @@ function BranchSwitcher({
           onKeyDown={onMenuKeyDown}
         >
           {branchRanges.length > 0 ? (
-            <RangeHeader options={branchRanges} refMode={refMode} onRefMode={onRefMode} t={t} />
+            <PickerHeader
+              title={t('history.commitsLabel')}
+              range={{ options: branchRanges, value: refMode, onChange: onRefMode, label: t('history.refLabel') }}
+              t={t}
+            />
           ) : (
-            <p className="vcs-picker-menu-title">{t('top.switchBranch')}</p>
+            <PickerHeader title={t('top.switchBranch')} t={t} />
           )}
           <div className="vcs-picker-choices">
             {branchesStatus === 'loading' ? (
@@ -396,7 +448,6 @@ interface HeaderPickerProps {
   title?: string
   disabled?: boolean
   dismissOnScroll?: boolean
-  showTitle?: boolean
   indicator?: ReactNode
   filtered?: boolean
   itemSelector?: string
@@ -408,7 +459,7 @@ interface HeaderPickerProps {
 /** An anchored menu for choices already loaded. Its rows decide when to close. */
 function HeaderPicker({
   kind, label, summary, buttonLabel, title, disabled = false,
-  dismissOnScroll, showTitle = true, indicator = null, filtered = false,
+  dismissOnScroll, indicator = null, filtered = false,
   itemSelector = '[aria-checked]', initialFocusSelector = '[aria-checked="true"]', onMenuKeyDown, children,
 }: HeaderPickerProps) {
   const [position, setPosition] = useState<MenuPosition | null>(null)
@@ -484,7 +535,6 @@ function HeaderPicker({
             if (!event.defaultPrevented) onKeyDown(event)
           }}
         >
-          {showTitle ? <p className="vcs-picker-menu-title">{label}</p> : null}
           {children(close)}
         </div>
       ) : null}
@@ -542,6 +592,7 @@ function RepositoryPicker({
   const showScope = repositories.length > 1
   const filtered = showScope && scope === 'selected'
   const currentLabel = current === undefined ? t('top.noRepository') : t('top.repositoryLabel', { name: summary })
+  const manageLabel = t('repositoryConfig.manage')
   return (
     <HeaderPicker
       kind="repo"
@@ -551,7 +602,6 @@ function RepositoryPicker({
       title={filtered ? `${current?.path ?? summary}\n${t('repositories.selectedTitle')}` : current?.path}
       disabled={repositories.length === 0 && onManageRepositories === undefined}
       dismissOnScroll={false}
-      showTitle={!showScope}
       filtered={filtered}
       indicator={filtered ? <FilterIcon /> : null}
       itemSelector=".vcs-menu-item, .vcs-range-option"
@@ -559,22 +609,32 @@ function RepositoryPicker({
     >
       {close => (
         <>
-          {showScope ? (
-            <RangeHeader
-              options={REPOSITORY_RANGES}
-              refMode={scope}
-              onRefMode={onScopeChange}
-              label="top.repositories"
-              groupLabel="repositories.scope"
-              t={t}
-            />
-          ) : null}
+          <PickerHeader
+            title={t('top.repositories')}
+            range={showScope
+              ? { options: REPOSITORY_RANGES, value: scope, onChange: onScopeChange, label: t('repositories.scope') }
+              : undefined}
+            actions={onManageRepositories === undefined ? undefined : (
+              <PickerAction
+                className="vcs-repo-manage"
+                label={manageLabel}
+                icon={<SettingsIcon />}
+                onClick={() => {
+                  close(false)
+                  onManageRepositories(() => close(true))
+                }}
+              />
+            )}
+            t={t}
+          />
           <div className="vcs-picker-choices" role="group">
+            {repositories.length === 0 ? <p className="vcs-picker-menu-note">{t('top.noRepository')}</p> : null}
             {repositories.map(entry => {
               const included = !showScope || checked.includes(entry.path)
               const last = included && (!showScope || checked.length === 1)
               const pathLabel = sessionRelativePath(cwd, entry.path)
-              const detail = pathLabel === entry.name ? null : pathLabel
+              // The session directory itself (`.`) needs no path line under its name.
+              const detail = pathLabel === entry.name || pathLabel === '.' ? null : pathLabel
               const keepOne = last ? t('repositories.keepOne') : undefined
               return (
                 <PickerItem
@@ -597,20 +657,6 @@ function RepositoryPicker({
           {showScope && (!filtered || checked.length === 1) ? (
             <p className="vcs-picker-menu-note">{t(filtered ? 'repositories.keepOne' : 'repositories.selectionHint')}</p>
           ) : null}
-          {onManageRepositories === undefined ? null : (
-            <button
-              type="button"
-              className="vcs-menu-item"
-              role="menuitem"
-              tabIndex={-1}
-              onClick={() => {
-                close(false)
-                onManageRepositories(() => close(true))
-              }}
-            >
-              <span className="vcs-menu-item-name">{t('repositoryConfig.manage')}</span>
-            </button>
-          )}
         </>
       )}
     </HeaderPicker>
@@ -657,34 +703,27 @@ function WorktreePicker({
   }
   function renderOptions(close: (restore: boolean) => void) {
     const restore = () => close(true)
-    const create = (
-      <button
-        ref={createRef}
-        type="button"
-        role="menuitem"
-        className="vcs-menu-item vcs-worktree-icon-action vcs-worktree-create"
-        tabIndex={-1}
-        aria-label={createLabel}
-        aria-keyshortcuts="+"
-        aria-disabled={disabledCreate !== undefined || undefined}
-        aria-description={disabledCreate}
-        title={disabledCreate === undefined ? createLabel : `${createLabel} · ${disabledCreate}`}
-        onClick={() => { startCreate(close) }}
-      >
-        <span aria-hidden="true">+</span>
-        <span className="vcs-worktree-create-label" aria-hidden="true">{t('worktree.new')}</span>
-      </button>
-    )
     return (
       <>
-        {ranges.length > 0 ? (
-          <RangeHeader options={ranges} refMode={refMode} onRefMode={onRefMode} action={create} t={t} />
-        ) : (
-          <div className="vcs-picker-header">
-            <span className="vcs-picker-menu-title vcs-picker-range-label">{label}</span>
-            {create}
-          </div>
-        )}
+        <PickerHeader
+          title={ranges.length > 0 ? t('history.commitsLabel') : label}
+          range={ranges.length > 0
+            ? { options: ranges, value: refMode, onChange: onRefMode, label: t('history.refLabel') }
+            : undefined}
+          actions={(
+            <PickerAction
+              buttonRef={createRef}
+              className="vcs-worktree-create"
+              label={createLabel}
+              icon={<PlusIcon />}
+              text={t('worktree.new')}
+              unavailable={disabledCreate}
+              aria-keyshortcuts="+"
+              onClick={() => { startCreate(close) }}
+            />
+          )}
+          t={t}
+        />
         <div className="vcs-picker-choices">
           {worktrees.map(tree => {
             const { path, name } = tree
@@ -749,13 +788,14 @@ function WorktreePicker({
                   title={actionsLabel}
                   onClick={event => { openActions(event.currentTarget) }}
                 >
-                  <span aria-hidden="true">…</span>
+                  <MoreIcon />
                 </button>
               </div>
             )
           })}
         </div>
-        {worktrees.length > 1 ? (
+        {/* Explain the locked row only while one is locked. */}
+        {worktrees.length > 1 && checkedPaths.length === 1 ? (
           <p className="vcs-picker-menu-note">{keepOne}</p>
         ) : null}
       </>
@@ -770,7 +810,6 @@ function WorktreePicker({
       buttonLabel={filtered && currentRange !== undefined ? `${summary} · ${t(currentRange.label)}` : undefined}
       title={currentRange === undefined ? undefined : t(currentRange.title)}
       dismissOnScroll={false}
-      showTitle={false}
       onMenuKeyDown={(event, close) => {
         if (event.key !== '+') return
         event.preventDefault()

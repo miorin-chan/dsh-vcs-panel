@@ -199,13 +199,6 @@
   outline: none;
 }
 
-.vcs-picker-menu-title {
-  margin: 2px 6px 6px;
-  color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
-  font-size: 11px;
-  font-weight: 500;
-}
-
 .vcs-picker-menu-note {
   margin: 2px 6px 6px;
   color: var(--dsw-alias-label-secondary);
@@ -257,21 +250,58 @@
   color: var(--dsw-alias-brand-primary);
 }
 
-/* Long picker lists scroll independently, leaving the header range filter pinned. */
+/* Every picker menu opens with one header row: its name, a compact segmented
+   switch beside it, and icon actions at the end. Long lists scroll under it,
+   so the switch and actions stay in reach; a narrow locale wraps the row
+   rather than clipping it. */
 .vcs-picker-header {
   display: flex;
   flex: none;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 6px;
-  padding: 0 2px 6px 6px;
+  gap: 4px 8px;
+  min-height: 24px;
+  margin-bottom: 4px;
+  padding: 0 0 6px 6px;
   border-bottom: 0.5px solid var(--dsw-alias-border-l1, var(--dsw-alias-border-l2));
 }
 
-.vcs-picker-range-label {
+.vcs-picker-header-title {
   flex: none;
-  margin: 0;
+  color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.vcs-picker-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  margin-inline-start: auto;
+}
+
+.vcs-menu-item.vcs-picker-action {
+  justify-content: center;
+  gap: 4px;
+  width: auto;
+  min-width: 24px;
+  height: 24px;
+  padding-inline: 5px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.vcs-menu-item.vcs-picker-action:hover:not(:focus) {
+  color: var(--dsw-alias-label-primary);
+}
+
+.vcs-picker-action[aria-disabled='true'] {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.vcs-picker-action-text {
+  font-size: 11px;
 }
 
 .vcs-picker-range {
@@ -334,10 +364,6 @@
   color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
 }
 
-.vcs-repo-menu .vcs-picker-header {
-  flex-wrap: wrap;
-}
-
 .vcs-picker-menu .vcs-repo-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -387,9 +413,15 @@
   max-width: 50%;
 }
 
+/* A tag, so it reads apart from the branch beside it. */
 .vcs-picker-item-badge {
   flex: none;
+  box-sizing: border-box;
   max-width: 40%;
+  padding: 0 5px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 4px;
+  line-height: 15px;
 }
 
 .vcs-menu-item-name small {
@@ -397,15 +429,6 @@
   overflow: hidden;
   color: var(--dsw-alias-label-secondary);
   text-overflow: ellipsis;
-}
-
-.vcs-worktree-menu .vcs-picker-header {
-  flex-wrap: wrap;
-  justify-content: flex-start;
-}
-
-.vcs-worktree-create {
-  margin-inline-start: auto;
 }
 
 .vcs-worktree-choice {
@@ -438,20 +461,13 @@
 .vcs-menu-item.vcs-worktree-icon-action {
   flex: none;
   justify-content: center;
-  width: auto;
-  min-width: 26px;
-  padding-inline: 5px;
-  gap: 4px;
+  width: 26px;
+  padding: 0;
   color: var(--dsw-alias-label-secondary);
 }
 
-.vcs-worktree-icon-action[aria-disabled='true'] {
-  cursor: default;
-  opacity: 0.65;
-}
-
-.vcs-worktree-create-label {
-  font-size: 11px;
+.vcs-menu-item.vcs-worktree-icon-action:hover:not(:focus) {
+  color: var(--dsw-alias-label-primary);
 }
 
 .vcs-worktree-current {
@@ -1937,6 +1953,15 @@ select.vcs-repository-kind {
 
 .vcs-chevron[data-open] {
   transform: rotate(90deg);
+}
+
+/* Header pickers open downward, like DSH's own dropdown triggers. */
+.vcs-picker-button .vcs-chevron {
+  transform: rotate(90deg);
+}
+
+.vcs-picker-button .vcs-chevron[data-open] {
+  transform: rotate(-90deg);
 }
 
 /* Status letters shared by group, directory, and file rows. */

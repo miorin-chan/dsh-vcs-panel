@@ -18,12 +18,12 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
   so a wide Sidebar gives the diff its full width.
 - **Timeline & lane graph.** Browse working changes and topological commit history together,
   with branches, bookmarks, and tags.
-  Use the repository menu to show **All repositories** or **Selected only**.
+  Use the repository menu header to show **All** repositories or only the **Selected** ones.
   Click a repository row to include or exclude it in the selected view.
   Expand or collapse each repository group independently.
   Select a row in an expanded timeline to make its repository current for details and actions.
-  **Manage repositories** lets you preview and add a folder of repositories or register a specific nested repository,
-  and picks Git or Jujutsu for a repository that carries both markers.
+  The gear in the same header opens **Manage repositories**, where you preview and add a folder of repositories
+  or register a specific nested repository, and pick Git or Jujutsu for a repository that carries both markers.
   Discovery rules are saved relative to the session directory in `.dsh/vcs-panel.json`.
 - **Worktrees on one graph.** In **Worktrees**, check Git worktrees or Jujutsu workspaces
   and switch **Commits** between **All** (default) and **Selected** in the menu header;
@@ -33,7 +33,8 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
   The session worktree is selected by default.
   Git shows a changes row for each selected worktree; Jujutsu marks each selected working-copy commit with `name@`.
   Checking a worktree leaves the session directory and checkouts in place.
-- **Create and remove working copies.** Use **New** in the worktree menu to create a Git worktree or Jujutsu workspace.
+- **Create and remove working copies.** Use **+ New** in the worktree menu header
+  to create a Git worktree or Jujutsu workspace.
   A destination such as `../topic` creates a checkout beside the current repository.
   Git can create a branch, check out an available local branch, or detach `HEAD`.
   Jujutsu creates a working-copy commit on the chosen parent revision.

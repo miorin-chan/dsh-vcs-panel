@@ -5,11 +5,12 @@ Licensed under the MIT License; see LICENSE.
 This product contains adapted third-party work:
 
 1. FileDiff component and diff toolbar icons
-   Files: src/client/diff/FileDiff.jsx, src/client/diff/FileDiff.css, src/client/ui.jsx
+   Files: src/client/diff/FileDiff.ts, src/client/diff/FileDiff.css, src/client/ui.tsx
    Source: DeepSeek Harness, packages @deepseek-ai/dsh-client-ui-deliverables
            (src/client/FileDiff.tsx and FileDiff.module.css) and
            @deepseek-ai/dsh-client-ui-primitives (compare-split-outline,
-           wrap-fill, and nowrap-fill icon glyphs)
+           wrap-fill, nowrap-fill, settings-outline, plus-outline, and
+           ellipsis-outline icon glyphs)
    Copyright (c) 2026 DeepSeek
    License: MIT (see licenses/MIT-DeepSeek.txt)
 

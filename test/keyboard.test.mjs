@@ -2579,6 +2579,92 @@ test('TopBar repository rows filter in place and return keyboard focus to the tr
   }
 })
 
+test('TopBar menus open on one header row with icon actions and show notes only when they apply', async () => {
+  const harness = createHarness({ width: 300 })
+  const restore = harness.installGlobals()
+  try {
+    const { TopBar } = await loadClientModule('src/client/TopBar.tsx', harness)
+    const repositories = [
+      { path: '/project', name: 'project' },
+      { path: '/project/packages/api', name: 'api' },
+    ]
+    const worktrees = [
+      { path: '/project', name: 'project', branch: 'main' },
+      { path: '/topic', name: 'topic', branch: 'topic' },
+    ]
+    const ranges = [
+      { value: 'all', label: 'history.all', title: 'history.allTitle' },
+      { value: 'HEAD', label: 'history.selectedWorktrees', title: 'history.selectedWorktreesTitle' },
+    ]
+    const managed = []
+    const created = []
+    const render = checkedPaths => harness.mount(harness.react.createElement(TopBar, {
+      repositories,
+      cwd: '/project',
+      repo: '/project',
+      checkedRepositories: ['/project'],
+      onRepositoryScope: () => {},
+      onToggleRepository: () => {},
+      onManageRepositories: restoreFocus => { managed.push(restoreFocus) },
+      capabilities: { ranges, worktreeCreate: true },
+      refMode: 'all',
+      onRefMode: () => {},
+      worktrees,
+      checkedPaths,
+      sessionPath: '/project',
+      onToggleWorktree: () => {},
+      onCreateWorktree: restoreFocus => { created.push(restoreFocus) },
+      onWorktreeActions: () => {},
+      repoBusy: false,
+      worktreeBusy: false,
+      t,
+    }))
+    const body = harness.document.body
+    render(['/project'])
+
+    // Repository menu: name, scope switch, and the manage action share the header row.
+    harness.mouseClick(body.querySelector('.vcs-repo-button'))
+    const repoMenu = () => body.querySelector('.vcs-repo-menu')
+    const repoHeader = repoMenu().querySelector('.vcs-picker-header')
+    assert.equal(textOf(repoHeader.querySelector('.vcs-picker-header-title')), 'top.repositories')
+    assert.deepEqual(repoHeader.querySelectorAll('.vcs-range-option').map(textOf), ['repositories.all', 'repositories.selected'])
+    const manage = repoHeader.querySelector('.vcs-repo-manage')
+    assert.equal(manage.attributes.get('role'), 'menuitem')
+    assert.equal(manage.attributes.get('aria-label'), 'repositoryConfig.manage')
+    assert.equal(manage.attributes.get('title'), 'repositoryConfig.manage')
+    assert.equal(repoMenu().querySelectorAll('[role="menuitem"]').length, 1, 'no manage row is left under the list')
+    const [root, nested] = repoMenu().querySelectorAll('.vcs-repo-item')
+    assert.equal(root.querySelector('.vcs-picker-item-detail'), null, 'the session directory shows no "." path')
+    assert.equal(textOf(nested.querySelector('.vcs-picker-item-detail')), 'packages/api')
+    harness.keyClick(manage)
+    assert.equal(managed.length, 1)
+    assert.equal(repoMenu(), null, 'opening the manager closes the menu')
+
+    // Worktree menu: the create action uses the same header action shape.
+    harness.mouseClick(body.querySelector('.vcs-worktree-button'))
+    const worktreeMenu = () => body.querySelector('.vcs-worktree-menu')
+    const worktreeHeader = worktreeMenu().querySelector('.vcs-picker-header')
+    assert.equal(textOf(worktreeHeader.querySelector('.vcs-picker-header-title')), 'history.commitsLabel')
+    const create = worktreeHeader.querySelector('.vcs-worktree-create')
+    assert.ok(create.classList.contains('vcs-picker-action'))
+    assert.equal(create.attributes.get('aria-label'), 'worktree.createWorktree')
+    assert.equal(create.attributes.get('aria-keyshortcuts'), '+')
+    assert.equal(textOf(create), 'worktree.new')
+    assert.equal(textOf(worktreeMenu().querySelector('.vcs-picker-item-badge')), 'top.sessionWorktree')
+    const notes = () => worktreeMenu().querySelectorAll('.vcs-picker-menu-note').map(textOf)
+    assert.deepEqual(notes(), ['top.keepWorktree'], 'the note explains the one locked row')
+
+    render(['/project', '/topic'])
+    assert.notEqual(worktreeMenu(), null)
+    assert.deepEqual(notes(), [], 'with no row locked the note stays away')
+    harness.keyClick(create)
+    assert.equal(created.length, 1)
+  } finally {
+    harness.unmount()
+    restore()
+  }
+})
+
 test('VcsView scopes in-flight writes per repository without locking another repository', async () => {
   const harness = createHarness({ width: 1000 })
   const restore = harness.installGlobals()
@@ -3677,7 +3763,7 @@ test('VcsView combines Git worktree and range choices and isolates diffs by work
     const branchRanges = () => branchMenu().querySelectorAll('.vcs-range-option')
     const branchItems = () => branchMenu().querySelectorAll('[data-branch-item]')
     assert.equal(branchMenu().querySelector('.vcs-picker-header') !== null, true)
-    assert.equal(textOf(branchMenu().querySelector('.vcs-picker-range-label')), 'history.commitsLabel')
+    assert.equal(textOf(branchMenu().querySelector('.vcs-picker-header-title')), 'history.commitsLabel')
     assert.deepEqual(branchRanges().map(textOf), ['history.all', 'history.head'])
     assert.deepEqual(branchRanges().map(item => item.attributes.get('aria-checked')), ['true', 'false'])
     assert.equal(harness.document.activeElement, branchItems()[0], 'branch menu focuses the checked-out branch first')
@@ -3704,7 +3790,7 @@ test('VcsView combines Git worktree and range choices and isolates diffs by work
     harness.keyDown(button, 'ArrowDown')
     await harness.settle()
     assert.equal(menu().querySelector('.vcs-picker-header') !== null, true, 'range switch sits in the menu header')
-    assert.equal(textOf(menu().querySelector('.vcs-picker-range-label')), 'history.commitsLabel')
+    assert.equal(textOf(menu().querySelector('.vcs-picker-header-title')), 'history.commitsLabel')
     assert.deepEqual(ranges().map(item => textOf(item)), ['history.all', 'history.selectedWorktrees'])
     assert.deepEqual(ranges().map(item => item.attributes.get('aria-checked')), ['false', 'true'], 'worktree menu stays synced with the branch range toggle')
     assert.equal(harness.document.activeElement, ranges()[1], 'opening focuses the active range segment')
@@ -4825,7 +4911,8 @@ test('VcsView manages repositories from an empty picker and refreshes after a su
       trigger.focus()
       harness.keyDown(trigger, 'ArrowDown')
       await harness.settle()
-      assert.equal(q('[role="menuitem"]'), document.activeElement, 'the empty picker focuses its only item')
+      assert.ok(q('[role="menuitem"]') === document.activeElement, 'the empty picker focuses its only action')
+      assert.match(textOf(q('.vcs-repo-menu')), /top\.noRepository/u, 'the empty list says so under the header')
       harness.keyClick(document.activeElement)
       await harness.settle()
       assert.equal(document.activeElement, q('[id="vcs-repository-config-title"]'))
@@ -4900,9 +4987,14 @@ test('VcsView manages repositories from an empty picker and refreshes after a su
     trigger.focus()
     harness.keyDown(trigger, 'ArrowDown')
     await harness.settle()
-    harness.keyDown(document.activeElement, 'End')
-    assert.equal(document.activeElement, q('[role="menuitem"]'))
-    harness.keyClick(document.activeElement)
+    const manage = q('.vcs-repo-manage')
+    assert.ok(q('.vcs-repo-menu').querySelector('.vcs-picker-header').querySelector('.vcs-repo-manage') === manage,
+      'the manage action sits in the menu header row')
+    assert.equal(q('.vcs-repo-menu').querySelectorAll('[role="menuitem"]').length, 1, 'the list keeps no second manage entry')
+    assert.equal(manage.attributes.get('aria-label'), 'repositoryConfig.manage')
+    harness.keyDown(document.activeElement, 'Home')
+    assert.ok(document.activeElement === manage, 'Home reaches the header action first')
+    harness.keyClick(manage)
     await harness.settle()
     const disclosure = dialog().querySelector('[aria-controls="vcs-repository-sources"]')
     const sources = dialog().querySelector('[id="vcs-repository-sources"]')
