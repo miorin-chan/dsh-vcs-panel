@@ -108,6 +108,9 @@ export interface RepositoryCapabilities {
   readonly tagOps: boolean
   /** Whether the commit menu's writes are available. */
   readonly commitOps: boolean
+  readonly worktreeCreate?: boolean
+  readonly worktreeRemove?: boolean
+  readonly worktreeForget?: boolean
   /** History ranges, in menu order. */
   readonly ranges: readonly HistoryRange[]
   /** The range the panel starts in. */
@@ -124,7 +127,27 @@ export interface WorktreeInfo {
   head: string | null
   /** The branch it has checked out, or null when detached. */
   branch: string | null
+  primary?: boolean
+  canRemove?: boolean
+  canForget?: boolean
+  locked?: boolean
+  inUse?: boolean
 }
+
+export type WorktreeRemovalAction = 'remove' | 'forget'
+export type WorktreeCreateMode = 'new' | 'existing' | 'detach'
+
+export type WorktreeCreateRequest = { action: 'create'; path: string } & (
+  | { mode: 'new'; name?: string; revision?: string }
+  | { mode: 'existing'; name: string }
+  | { mode: 'detach'; revision?: string }
+  | { mode?: undefined; name?: string; revision?: string }
+)
+
+export type WorktreeRequest = WorktreeCreateRequest | ({ action: WorktreeRemovalAction; worktree: string } & (
+  | { expectedName: string }
+  | { expectedBranch: string | null; expectedHead?: string }
+))
 
 /** One repository the Session may show. */
 export interface RepositoryInfo {
@@ -410,6 +433,7 @@ export interface BranchesAnswer {
   branches: Array<{
     name: string
     current: boolean
+    occupied?: boolean
   }>
   truncated: boolean
 }
@@ -609,6 +633,8 @@ export interface Api {
   tagOp(repo: string, action: 'delete' | 'push', target: TagOpTarget): Promise<TagOpAnswer>
   /** Run one commit action on an existing commit. */
   commitOp(repo: string, action: CommitMenuAction, target: CommitOpTarget): Promise<CommitOpAnswer>
+  /** Create, remove, or forget a checkout of the selected repository. */
+  worktree(repo: string, request: WorktreeRequest): Promise<{ path: string }>
 }
 
 /** Whether a decoded body is an object or array, as the route answers always are. */
@@ -860,6 +886,10 @@ export function createApi(sessionId: string, options: ApiOptions = {}): Api {
         tag: target.tag,
         remote: target.remote,
       })
+    },
+
+    worktree(repo, request) {
+      return post('/api/vcs.worktree', { repo, ...request })
     },
 
     commitOp(repo, action, target) {

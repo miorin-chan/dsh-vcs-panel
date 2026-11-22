@@ -309,6 +309,18 @@ const ERROR_KEYS: Readonly<Record<string, string>> = {
   'repository-config-conflict': 'error.repositoryConfigConflict',
   'repository-config-write-failed': 'error.repositoryConfigWriteFailed',
   'repository-path-unavailable': 'error.repositoryPathUnavailable',
+  'worktree-protected': 'error.worktreeProtected',
+  'worktree-in-use': 'error.worktreeInUse',
+  'worktree-locked': 'error.worktreeLocked',
+  'worktree-dirty': 'error.worktreeDirty',
+  'worktree-unreferenced': 'error.worktreeUnreferenced',
+  'worktree-unsupported': 'error.worktreeUnsupported',
+  'worktree-failed': 'error.worktreeFailed',
+  'worktree-partial': 'error.worktreePartial',
+  'worktree-path-invalid': 'error.worktreePathInvalid',
+  'worktree-revision-invalid': 'error.worktreeRevisionInvalid',
+  'worktree-exists': 'error.worktreeExists',
+  'worktree-stale': 'error.worktreeStale',
 }
 
 /**

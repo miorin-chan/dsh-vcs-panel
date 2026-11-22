@@ -19,6 +19,9 @@ export interface GitWorktree {
   branch: string | null
   /** Head commit id, or null when unreadable or the null oid. */
   head: string | null
+  primary: boolean
+  locked: boolean
+  prunable: boolean
 }
 
 /** One browsable tree, from either backend's discovery. */
@@ -31,6 +34,11 @@ export interface Worktree {
   branch?: string | null
   /** Head commit id, or null when the backend cannot report one. */
   head: string | null
+  primary?: boolean
+  locked?: boolean
+  canRemove?: boolean
+  canForget?: boolean
+  inUse?: boolean
 }
 
 /** Which trees one discovery may offer. */
@@ -49,15 +57,17 @@ export interface WorktreeOptions {
 export function* parseGitWorktrees(stdout: string): Generator<GitWorktree> {
   const records = stdout.split('\0\0')
   records.pop() // The last split is outside a complete record.
-  for (const record of records) {
+  for (const [index, record] of records.entries()) {
     const [first, ...fields] = record.split('\0')
     if (!first.startsWith('worktree ')) continue
     const path = first.slice('worktree '.length)
-    if (!isAbsolute(path) || fields.some(field => field === 'bare' || field === 'prunable' || field.startsWith('prunable '))) continue
+    if (!isAbsolute(path) || fields.includes('bare')) continue
     const branch = fields.find(field => field.startsWith(BRANCH_PREFIX))?.slice(BRANCH_PREFIX.length) || null
     const oid = fields.find(field => field.startsWith('HEAD '))?.slice(5)
     const head = isFullSha(oid) && !/^0+$/u.test(oid) ? oid : null
-    yield { path, branch, head }
+    const locked = fields.some(field => field === 'locked' || field.startsWith('locked '))
+    const prunable = fields.some(field => field === 'prunable' || field.startsWith('prunable '))
+    yield { path, branch, head, primary: index === 0, locked, prunable }
   }
 }
 
@@ -94,7 +104,8 @@ export async function* discoverGitWorktrees(
   if (result.lossy) throw outputTooLarge()
   if (result.exitCode !== 0) return
 
-  const entries = [...parseGitWorktrees(result.stdout)]
+  const entries = [...parseGitWorktrees(result.stdout)].filter(entry => !entry.prunable)
+    .map(({ path, branch, head, primary, locked }) => ({ path, branch, head, primary, locked }))
   const anchor = entries.find(entry => sameRepoPath(entry.path, root))
   const matches = (path: string): boolean => paths === null || paths.some(requested => sameRepoPath(path, requested))
   if (anchor !== undefined && matches(root)) yield { ...anchor, path: root }

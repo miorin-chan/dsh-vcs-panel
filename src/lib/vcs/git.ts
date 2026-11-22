@@ -71,6 +71,8 @@ import { StageHistory } from '../stage-history.js'
 import type { StageHistoryTips, StageReplayResult, StageResult } from '../stage-history.js'
 import type { Worktree, WorktreeOptions } from '../worktrees.js'
 import { discoverGitWorktrees, gitCommonDirAt } from '../worktrees.js'
+import { createGitWorktree, removeGitWorktree } from '../git-worktree-ops.js'
+import type { RecheckTarget, WorktreeChange, WorktreeCreate } from '../worktree-ops.js'
 import type { VcsCapabilities } from './capabilities.js'
 import { GIT_CAPABILITIES, GIT_WORKTREE_CAPABILITIES } from './capabilities.js'
 import type {
@@ -293,6 +295,14 @@ export class GitBackend {
     options?: WorktreeOptions,
   ): AsyncGenerator<Worktree> {
     return discoverGitWorktrees(this.ctx, this.git, root, signal, options)
+  }
+
+  createWorktree(root: string, common: string, request: WorktreeCreate, signal: AbortSignal, recheck: RecheckTarget, changed: WorktreeChange): Promise<void> {
+    return createGitWorktree(this.ctx, this.git, root, common, request, signal, recheck, changed)
+  }
+
+  deleteWorktree(root: string, _common: string, tree: Worktree, _action: 'remove' | 'forget', signal: AbortSignal, recheck: RecheckTarget, changed: WorktreeChange): Promise<void> {
+    return removeGitWorktree(this.ctx, this.git, root, tree, signal, recheck, changed)
   }
 
   /**
@@ -948,7 +958,7 @@ export class GitBackend {
         'for-each-ref',
         '--sort=-committerdate',
         '--count', String(BRANCH_MAX + 1),
-        '--format=%(refname)%00%(HEAD)',
+        '--format=%(refname)%00%(HEAD)%00%(worktreepath)%00',
         'refs/heads',
       ],
       { cwd: root, signal },
@@ -958,15 +968,15 @@ export class GitBackend {
       throw new VcsError('internal', 'Local branches could not be read.')
     }
     const branches = []
-    for (const line of result.stdout.split('\n')) {
+    for (const line of result.stdout.split(/\0\r?\n/u)) {
       if (line === '') continue
-      const [ref, marker] = line.split(String.fromCharCode(0))
+      const [ref, marker, worktreePath] = line.split('\0')
       // The full ref is unambiguous even when a tag or remote branch shares
       // the short name; the menu only ever shows the part below refs/heads/.
       if (typeof ref !== 'string' || !ref.startsWith('refs/heads/')) continue
       const name = ref.slice('refs/heads/'.length)
       if (name === '') continue
-      branches.push({ name, current: marker === '*' })
+      branches.push({ name, current: marker === '*', occupied: Boolean(worktreePath) })
     }
     const truncated = branches.length > BRANCH_MAX
     return { branches: truncated ? branches.slice(0, BRANCH_MAX) : branches, truncated }

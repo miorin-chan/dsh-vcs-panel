@@ -71,6 +71,10 @@ function menuPosition(point: MenuPoint, size: MenuSize): MenuPosition {
 
 /** The localized row label for one action of one target kind. */
 function actionLabel(target: RefMenuTarget, action: string, t: Translate): string {
+  if (target.kind === 'worktree') {
+    return t(action === 'forget' ? 'worktree.forgetWorkspace'
+      : target.commitBased ? 'worktree.removeWorkspace' : 'worktree.removeWorktree')
+  }
   if (target.kind === 'branch' && action === 'merge') {
     return t('branch.merge', { branch: target.name })
   }
@@ -140,7 +144,9 @@ export function RefActionsMenu({ target, busy, t, onChoose, onClose }: RefAction
     ? measured
     : { width: MENU_WIDTH, height: target.actions.length * ITEM_HEIGHT + EXTRA_HEIGHT }
   const position = menuPosition(target, size)
-  const menuLabel = target.kind === 'commit'
+  const menuLabel = target.kind === 'worktree'
+    ? t('worktree.actions', { name: target.name })
+    : target.kind === 'commit'
     ? t('commit.menuLabel', { sha: target.name })
     : target.kind === 'tag'
       ? t('tag.menuLabel', { tag: target.name })
@@ -166,7 +172,7 @@ export function RefActionsMenu({ target, busy, t, onChoose, onClose }: RefAction
     >
       <p className="vcs-ref-ops-title">
         <span className="vcs-ref-ops-name">{target.name}</span>
-        {target.kind === 'commit' && target.detail ? (
+        {(target.kind === 'commit' || target.kind === 'worktree') && target.detail ? (
           <span className="vcs-ref-ops-detail" title={target.detail}>{target.detail}</span>
         ) : null}
         {target.kind === 'branch' && target.current ? <span className="vcs-ref-ops-current">{t('branch.current')}</span> : null}
@@ -179,8 +185,8 @@ export function RefActionsMenu({ target, busy, t, onChoose, onClose }: RefAction
         const separated = index > 0 && group !== previousGroup
         const destructive = target.kind === 'commit'
           ? isDestructiveCommitAction(action)
-          : isDestructiveAction(action)
-        const disabledReason = target.disabledActions?.[action]
+          : target.kind === 'worktree' ? action === 'remove' : isDestructiveAction(action)
+        const disabledReason = target.disabledActions?.[action] ?? (target.kind === 'worktree' && busy ? t('error.busy') : undefined)
         const disabled = busy || disabledReason !== undefined
         return (
           <div key={action}>
@@ -191,10 +197,14 @@ export function RefActionsMenu({ target, busy, t, onChoose, onClose }: RefAction
               className={`vcs-menu-item vcs-ref-ops-item${destructive ? ' vcs-ref-ops-danger' : ''}`}
               data-ops-item=""
               aria-disabled={disabled ? 'true' : undefined}
+              aria-description={target.kind === 'worktree' ? disabledReason : undefined}
               title={disabledReason ?? label}
               onClick={() => { if (!disabled) onChoose(action) }}
             >
               <span className="vcs-menu-item-name">{label}</span>
+              {target.kind === 'worktree' && disabledReason !== undefined ? (
+                <span className="vcs-worktree-action-reason" aria-hidden="true">{disabledReason}</span>
+              ) : null}
             </button>
           </div>
         )

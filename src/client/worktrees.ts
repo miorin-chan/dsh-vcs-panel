@@ -2,7 +2,9 @@
 
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 
-import type { CommitNode, RepositoryInfo, VcsRef, WorktreeInfo } from './api.js'
+import type {
+  CommitNode, RepositoryCapabilities, RepositoryInfo, VcsRef, WorktreeInfo, WorktreeRemovalAction,
+} from './api.js'
 import { shortSha } from './format.js'
 import {
   preferredNode, WORKING_COPY, WORKTREE, worktreeNode, worktreePath,
@@ -38,6 +40,23 @@ export function repositoryWorktrees(repository: RepositoryInfo | null | undefine
 export function checkedWorktrees(worktrees: readonly WorktreeInfo[], paths: readonly string[]): WorktreeInfo[] {
   const checked = worktrees.filter(tree => paths.includes(tree.path))
   return checked.length > 0 || worktrees.length === 0 ? checked : [worktrees[0]]
+}
+
+/** Localized reason an action on a catalog row cannot run. */
+export function worktreeActionReason(
+  action: WorktreeRemovalAction,
+  tree: WorktreeInfo,
+  sessionPath: string | null | undefined,
+  capabilities: Pick<RepositoryCapabilities, 'worktreeRemove' | 'worktreeForget'>,
+): string | undefined {
+  if (tree.path === sessionPath) return 'worktree.sessionProtected'
+  if (tree.primary === true) return 'worktree.primaryProtected'
+  if (tree.inUse === true) return 'error.worktreeInUse'
+  if (tree.locked === true) return 'error.worktreeLocked'
+  const supported = action === 'remove' ? capabilities.worktreeRemove : capabilities.worktreeForget
+  const allowed = action === 'remove' ? tree.canRemove : tree.canForget
+  if (supported !== true) return 'error.worktreeUnsupported'
+  return allowed === true ? undefined : 'error.worktreeProtected'
 }
 
 /** Toggle one checkout's selection, keeping at least one selected. */

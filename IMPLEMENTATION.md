@@ -14,13 +14,13 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 
 | 路由 | 查询参数 | 应答字段 |
 | --- | --- | --- |
-| `GET /api/vcs.repositories` | `sessionId` | `cwd`、`repositories[]`（`path`、`name`、`enclosing`、`vcs`、`availableVcs`、`capabilities`、`sources[]`、`worktrees[]`：`path`、`name`、`head`、Git 的 `branch`）、`truncated`、`worktreesTruncated`、`configError?` |
+| `GET /api/vcs.repositories` | `sessionId` | `cwd`、`repositories[]`（`path`、`name`、`enclosing`、`vcs`、`availableVcs`、`capabilities`、`sources[]`、`worktrees[]` 含 `path`、`name`、`head`、Git 的 `branch`，以及 `primary?`、`locked?`、`inUse?`、`canRemove?`、`canForget?`）、`truncated`、`worktreesTruncated`、`configError?` |
 | `GET /api/vcs.repository-config` | `sessionId` | `revision`、`scanDirectories[]`、`repositories[]`（条目含 `path`、`available`）、`backends[]`（条目含 `path`、`vcs`、`available`）、`error?` |
 | `GET /api/vcs.repository-preview` | `sessionId`、`path`、`kind`（`directory` 或 `repository`） | `repositories[]`（相对 `path`、`name`、`vcs`、`availableVcs`）、`truncated` |
 | `POST /api/vcs.repository-config` | JSON `{ sessionId, revision, scanDirectories, repositories, backends? }`（两个路径数组，以及 `{ path, vcs }` 偏好数组） | 同配置 GET |
 | `GET /api/vcs.status` | `sessionId`、`repo`、`worktree?`、`readOnly?`（`1` 跳过 Jujutsu 快照） | `repo`、`vcs`、`capabilities`、`defaultNode`、`branch`、`workingCopy?`、`groups`、`total`、`untrackedTotal`、`truncated`、`stageHistory` |
 | `GET /api/vcs.watch` | `sessionId`、`repo?`、`worktree?`（可重复）、`client?` | SSE `ready` 与 `invalidate`（`domains[]`、`origin?`） |
-| `GET /api/vcs.branches` | `sessionId`、`repo` | `branches[]`（`name`、`current`）、`truncated`（仅 `capabilities.branchSwitch` 为真时可用） |
+| `GET /api/vcs.branches` | `sessionId`、`repo` | `branches[]`（`name`、`current`、`occupied`）、`truncated`（仅 `capabilities.branchSwitch` 为真时可用） |
 | `GET /api/vcs.remotes` | `sessionId`、`repo` | `remotes[]`、`truncated`（`capabilities.tagOps` 或 `capabilities.branchOps` 为真时可用） |
 | `GET /api/vcs.untracked` | `sessionId`、`repo`、`worktree?`、`path`（`/` 结尾） | `path`、`entries[]`（`name`、`path`、`type`）、`truncated`（仅 `capabilities.untracked` 为真时可用） |
 | `GET /api/vcs.diff` | `sessionId`、`repo`、`worktree?`、`scope`、`path`、`oldPath?`、`rev?` | `VcsFileDiff` |
@@ -29,6 +29,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `GET /api/vcs.turn` | `sessionId`、`turn`、`seq?` | `turn`、`head`（`TurnHead \| null`）、`changed`、`added`、`deleted` |
 | `POST /api/vcs.sync` | JSON 请求体 `{ sessionId, repo }` | `upstream`、`pulled`、`pushed`（仅 `capabilities.sync` 为真时可用） |
 | `POST /api/vcs.switch` | JSON 请求体 `{ sessionId, repo, branch }` | `branch`（仅 `capabilities.branchSwitch` 为真时可用） |
+| `POST /api/vcs.worktree` | JSON `{ sessionId, repo, action: 'create', path, mode?, name?, revision? }` 或 `{ sessionId, repo, action: 'remove' \| 'forget', worktree, expectedName?, expectedBranch?, expectedHead? }` | `{ path }`（分别由 `capabilities.worktreeCreate`、`worktreeRemove`、`worktreeForget` 控制） |
 | `POST /api/vcs.branch` | JSON 请求体 `{ sessionId, repo, action, branch, name?, local?, force? }` | 本地：`rename` → `{ from, branch }`；`delete` → `{ branch }`；`merge` → `{ branch, current, result }`；`rebase` → `{ branch, current }`；`push` → `{ branch, upstream, pushed }`。远程：`checkout-remote` → `{ branch, local }`；`delete-remote` → `{ branch }`；`merge-remote` / `pull-remote` → `{ branch, current, result }`（仅 `capabilities.branchOps` 为真时可用） |
 | `POST /api/vcs.tag` | JSON 请求体 `{ sessionId, repo, action, tag, remote? }` | `delete` → `{ tag }`；`push` → `{ tag, remote, pushed }`（仅 `capabilities.tagOps` 为真时可用） |
 | `POST /api/vcs.commit-op` | JSON 请求体 `{ sessionId, repo, action, sha, name?, message?, mode?, checkout? }` | `tag` → `{ tag, sha }`；`branch` → `{ branch, sha, checkedOut?: true }`；`checkout` → `{ sha }`；`cherry-pick` / `revert` / `drop` / `rebase` → `{ sha, current }`；`merge` → `{ sha, current, result }`；`reset` → `{ sha, current, mode }`（仅 `capabilities.commitOps` 为真时可用） |
@@ -83,10 +84,17 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
   录。 Jujutsu 从 `jj workspace list` 的 JSON 模板读取名称、登记路径和工作副本提交。
   实时目录必须指向同一个规范化的 `.jj/repo` 存储（链接文件以 `.jj` 为相对基准）， 且其
   `current_workspace` 名称须匹配登记项。
-  该模板能力从 jj 0.47 提供；
-  旧版本或没有登记路径的工作区保留独立发现的入口视图。 状态与详情读取的 `worktree` 只接收一个目标，
-  历史读取可接收多个无重复的绝对路径；每次根据 `repo` 重新校验。
-  Git 工作区文件路径约束使用所选树的根。 写请求仍只接受原仓库白名单，带 `worktree` 参数一律拒绝。
+  该模板能力从 jj 0.47 提供；旧版本或没有登记路径的工作区保留独立发现的入口视图，生命周期操作要求有当前登记路径。
+  状态与详情读取的 `worktree` 只接收一个目标，历史读取可接收多个无重复的绝对路径；每次根据 `repo` 重新校验。
+  Git 工作区文件路径约束使用所选树的根。
+  生命周期以外的写请求仍以仓库入口为目标，带 `worktree` 参数会被拒绝。
+- **工作树生命周期**：移除和解除关联按当前仓库的实时工作树清单校验确切目标；主目录及活动会话使用的目录受保护。
+  新建使用相对于入口的目标路径或允许范围内的绝对路径；目标必须尚未存在，且处于会话目录内或是入口的直接同级目录。
+  Git 用 `worktree add/remove`，禁止强制移除；Jujutsu 用 `workspace add/forget/remove`，按已安装后端的能力开放。
+  删除前检查可能丢失的文件或提交；JJ 从现有快照只读核对文件路径，再由原生命令保存已跟踪文件的本地修改。
+  使用稀疏检出的 JJ 工作区可解除关联，面板保留其磁盘文件。
+  同一共享存储下的面板写入共用锁。
+  生命周期写入使工作区、历史与仓库发现结果失效。
 - **路径与修订号净化**：`validateRelPath` 拒绝绝对路径、反斜杠、空段、`.`、`..`、`-` 前缀与控制字符，
   Git 侧再包 `:(literal)` pathspec，Jujutsu 侧用 `file:"..."` fileset。
   提交 ID 先做 7–64 位十六进制校验；Git 再经 `rev-parse --verify <sha>^{commit}` 解析，
@@ -113,7 +121,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
   `revert`、`drop`、`merge`、`rebase` 或 `reset`；`sha` 为 7–64 位十六进制；
   `tag` / `branch` 的 `name` 复用引用名校验；`branch` 的可选 `checkout` 必须是布尔值；
   `tag` 的 `message` 是长度不超过 4,000 的字符串；`reset` 的 `mode` 必须是 `soft`、`mixed` 或 `hard`。
-  同一仓库根同时只允许一次写操作，第二次返回 `409 busy`；这些写互相排斥。
+  同一共享存储同时只允许一次面板写操作，第二次返回 `409 busy`。
 
 失败统一返回 `{ error: { code, message } }`，不携带宿主绝对路径、原始命令或堆栈：
 
@@ -125,7 +133,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `output-too-large` | 413 | 子进程输出超出字节上限（`lossy`） |
 | `vcs-missing` / `timeout` | 503 | 宿主缺少 `git`/`jj` 可执行文件，或命令超时 |
 | `internal` | 500 | 未预期的后端失败 |
-| `forbidden` | 403 | 浏览器声明为跨站的写请求，或写请求携带 `worktree` 参数 |
+| `forbidden` | 403 | 浏览器声明为跨站的写请求，或非生命周期写请求携带 `worktree` 参数 |
 | `busy` | 409 | 同一仓库已有写操作在进行 |
 | `no-upstream` | 409 | 分离头指针、分支没有上游，或上游在远程上不存在 |
 | `diverged` | 409 | 分支与上游各有新提交 |
@@ -133,6 +141,10 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `remote-failed` | 502 | 抓取或推送失败：远程不可达、凭据或远程钩子拒绝、与其他推送者竞争 |
 | `switch-blocked` | 409 | 切换被拒绝（本地改动或未跟踪文件会被覆盖、分支已在别的工作树检出） |
 | `switch-failed` | 409 | 切换命令因其他原因失败 |
+| `worktree-path-invalid` / `worktree-revision-invalid` | 400 | 新建目录越界或路径不可用，或者起点无法解析为单个提交 |
+| `worktree-exists` / `worktree-protected` / `worktree-in-use` / `worktree-locked` | 409 | 目录或登记已存在、目录受保护、会话正在使用或工作树已锁定 |
+| `worktree-dirty` / `worktree-unreferenced` / `worktree-stale` | 409 | 工作树含不能安全保留的状态或文件、分离 `HEAD` 上有未保全的提交，或目标自确认后已变化 |
+| `worktree-unsupported` / `worktree-failed` / `worktree-partial` | 409 | 后端能力不足、操作未完成，或仅部分变更已发生 |
 | `branch-invalid` | 400 | 重命名的新名字不是有效分支名 |
 | `branch-exists` | 409 | 重命名的新名字已存在 |
 | `branch-unmerged` | 409 | 删除的分支未完全合并；客户端据此升级为二次确认 |
@@ -180,10 +192,13 @@ Client 仅按能力对象驱动布局，不按后端名称分支：
 | `workingCopy` / `workingCopyNode` | `'row'` / `null` | `'commit'` / `'@'` |
 | `staging` / `untracked` / `aheadBehind` / `sync` / `branchSwitch` / `branchOps` / `tagOps` / `commitOps` / `stageOps` | `true` | `false` |
 | `changeId` / `snapshots` | `false` | `true` |
+| `worktreeCreate` / `worktreeRemove` / `worktreeForget` | 创建及移除 | 创建、解除关联及按已安装版本开放移除 |
 | `ranges`（`defaultRange`） | **`all`**、`HEAD` | **`all`**、`@` |
 
-Git 工作树预览保留 Git 的读取能力。单选其他工作树或多选时，Client 将 `sync`、`branchSwitch`、`branchOps`、
-`tagOps`、`commitOps` 与 `stageOps` 置为 `false`，不提供写入目标；其他工作树的 `status` 也返回只读能力。
+Git 工作树预览保留 Git 的读取能力。
+单选其他工作树或多选时，Client 将 `sync`、`branchSwitch`、`branchOps`、`tagOps`、
+`commitOps` 与 `stageOps` 置为 `false`，其他工作树的 `status` 也返回只读详情能力。
+工作树菜单使用仓库级的生命周期能力，勾选范围不参与这类操作的授权。
 
 两个后端的读写规则差异：
 
@@ -548,7 +563,7 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 统一处理外部指针按下、窗口尺寸变化、失焦退出与键盘移动。 菜单内部滚动不触发关闭；工作树菜单也忽略外部滚动，
 以免调整视图引起的时间线重排打断连续操作。 `RefActionsMenu` 在 `useLayoutEffect` 实测宽高后做视口边界夹紧并设最大宽度。
 
-分支、远程分支、标签与提交操作状态均收敛在 `useRepoActions.js`（由 `VcsView` 持有），维护单一 `menu`、
+工作树、分支、远程分支、标签与提交操作状态均收敛在 `useRepoActions.js`（由 `VcsView` 持有），维护单一 `menu`、
 单一 `dialog`、共享的 `disabledActions` 禁用文案与按仓库区分的 `inFlight` 单飞映射（切换仓库时不丢失原仓库写入态）：
 弹窗自身写入中进行时传入 `busy` 锁定关闭，
 同仓库存在其他写入时传入 `blocked` 只禁用确认并显示 `error.busy` 而不阻断取消；

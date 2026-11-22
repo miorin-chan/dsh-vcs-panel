@@ -19,6 +19,7 @@ const PLURAL_SUFFIX = /^(.*)\.(one|few|many|other)$/u
 /** Count-bearing keys whose wording is label/parenthetical and plural-invariant in all 8 languages. */
 const INVARIANT_COUNT_KEYS = new Set([
   'top.worktreeSelection',
+  'worktree.workspaceSelection',
   'history.count',
   'stage.stageSelected',
   'stage.unstageSelected',

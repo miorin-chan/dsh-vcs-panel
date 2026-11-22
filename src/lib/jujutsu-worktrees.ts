@@ -13,8 +13,9 @@ import type { Worktree, WorktreeOptions } from './worktrees.js'
 
 const REPO_LINK_BYTES = 16 * 1024
 const WORKSPACE_FIELDS = '"name" => name, "head" => target.commit_id()'
-const WORKSPACE_LIST = `json({${WORKSPACE_FIELDS}, "path" => root, "current" => current_workspace}) ++ "\\n"`
+export const WORKSPACE_LIST = `json({${WORKSPACE_FIELDS}, "path" => root, "current" => current_workspace}) ++ "\\n"`
 const CURRENT_WORKSPACE = `if(current_workspace, json({${WORKSPACE_FIELDS}}) ++ "\\n")`
+const WORKSPACE_NAMES = `json({${WORKSPACE_FIELDS}}) ++ "\\n"`
 
 /** One workspace record, as the list template describes it. */
 export interface JjWorkspaceRecord {
@@ -69,10 +70,10 @@ export async function jjCommonDirAt(
   }
 }
 
-async function readWorkspaces(
+export async function readWorkspaces(
   runner: JujutsuRunner,
   cwd: string,
-  template: string,
+  template: string = WORKSPACE_NAMES,
   signal: AbortSignal | undefined,
 ): Promise<JjWorkspaceRecord[] | null> {
   const result = await runner.run(
@@ -107,7 +108,8 @@ export async function* discoverJjWorkspaces(
 
   const current = entries.find(entry => entry.current)
   if (current !== undefined && matches(root)) {
-    yield { path: root, name: current.name, head: current.head }
+    const primary = (await ctx.fs.lstat(join(root, '.jj', 'repo'), undefined, signal))?.type === 'directory'
+    yield { path: root, name: current.name, head: current.head, primary }
   }
   for (const entry of entries) {
     if (entry.current || entry.path === null) continue
@@ -118,6 +120,9 @@ export async function* discoverJjWorkspaces(
     const candidateDir = await jjCommonDirAt(ctx, path, signal)
     if (candidateDir === null || !sameRepoPath(candidateDir, commonDir)) continue
     const actual = (await readWorkspaces(runner, path, CURRENT_WORKSPACE, signal))?.[0]
-    if (actual?.name === entry.name) yield { path, name: entry.name, head: entry.head }
+    if (actual?.name === entry.name) {
+      const primary = (await ctx.fs.lstat(join(path, '.jj', 'repo'), undefined, signal))?.type === 'directory'
+      yield { path, name: entry.name, head: entry.head, primary }
+    }
   }
 }

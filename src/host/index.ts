@@ -75,6 +75,7 @@ const ROUTES: readonly RouteEntry[] = [
   { path: '/api/vcs.branch', key: 'branchOp', method: 'POST' },
   { path: '/api/vcs.tag', key: 'tagOp', method: 'POST' },
   { path: '/api/vcs.commit-op', key: 'commitOp', method: 'POST' },
+  { path: '/api/vcs.worktree', key: 'worktreeOp', method: 'POST' },
   { path: '/api/vcs.stage', key: 'stage', method: 'POST' },
   { path: '/api/vcs.stage-history', key: 'stageHistory', method: 'POST' },
 ]

@@ -50,6 +50,7 @@ import { RefActionsMenu } from './RefActionsMenu.jsx'
 import { BranchDialog } from './BranchDialogs.jsx'
 import { TagDialog } from './TagDialog.jsx'
 import { CommitDialog } from './CommitDialog.jsx'
+import { WorktreeDialog } from './WorktreeDialog.jsx'
 import { RepositoryConfigDialog } from './RepositoryConfigDialog.jsx'
 import { RepositoryTimelines } from './RepositoryTimelines.jsx'
 import { useRepoActions } from './useRepoActions.js'
@@ -421,6 +422,7 @@ export function VcsView({
   const attemptedDirsRef = useRef(new Map<string, number>())
   const directoryRequestsRef = useRef(new Map<string, AbortController>())
   const perRepoRef = useRef(new Map<string, PerRepoSelection>())
+  const createdWorktreesRef = useRef(new Map<string, Set<string>>())
   const repositoryScrollRef = useRef(new Map<string, number>())
   // The backend each discovered repository used on the last answer.
   const repositoryVcsRef = useRef(new Map<string, string>())
@@ -468,7 +470,7 @@ export function VcsView({
   const baseCapabilities = repoInfo?.capabilities ?? status.data?.capabilities ?? null
   const commitBased = baseCapabilities?.workingCopy === 'commit'
   const snapshots = baseCapabilities?.snapshots === true
-  const waitingForRepositories = refreshing === 'refresh' && settledRepositoriesKey !== repositoriesKey
+  const waitingForRepositories = (refreshing === 'refresh' || refreshing === 'worktree') && settledRepositoriesKey !== repositoriesKey
   const waitingForSnapshots = snapshots && refreshing === 'refresh' && settledStatusKey !== statusKey
   const capabilities = useMemo(() => showCurrentHead || baseCapabilities === null ? baseCapabilities : {
     ...baseCapabilities, sync: false, branchSwitch: false, branchOps: false, tagOps: false, commitOps: false, stageOps: false,
@@ -645,7 +647,7 @@ export function VcsView({
     const domains = requester === 'stage' ? ['working']
       : requester === 'tag' ? ['history']
         : requester === 'repositories' ? ['repositories']
-          : requester === 'refresh' ? Object.keys(INITIAL_REVISIONS) : ['working', 'history']
+          : requester === 'refresh' || requester === 'worktree' ? Object.keys(INITIAL_REVISIONS) : ['working', 'history']
     setRefreshing(requester)
     setNotice(null)
     if (domains.includes('working')) {
@@ -659,6 +661,15 @@ export function VcsView({
     }
     setManual(previous => advanceRevisions(previous, domains))
   }, [resetDirectories])
+
+  const onWorktreeChange = useCallback((repo: string, createdPath?: string) => {
+    if (createdPath !== undefined) {
+      const pending = createdWorktreesRef.current.get(repo) ?? new Set<string>()
+      pending.add(createdPath)
+      createdWorktreesRef.current.set(repo, pending)
+    }
+    refresh('worktree')
+  }, [refresh])
 
   const refreshInBackground = useCallback((domains: readonly string[]) => {
     setBackground(previous => advanceRevisions(previous, domains))
@@ -707,6 +718,7 @@ export function VcsView({
     t,
     locale,
     refresh,
+    onWorktreeChange,
     resetReadingForNewHead,
     setNotice,
     clearBranches,
@@ -738,6 +750,18 @@ export function VcsView({
       if (activeZone !== null) navZoneRef.current = activeZone
     }
   }
+
+  /** Select newly created paths once the refreshed catalog can read them. */
+  const selectDiscoveredWorktrees = useCallback((entry: RepositoryRow | null, previous: readonly string[]) => {
+    const catalog = repositoryWorktrees(entry)
+    const pending = entry === null ? undefined : createdWorktreesRef.current.get(entry.path)
+    const selected = [...checkedWorktrees(catalog, previous).map(tree => tree.path), ...(pending ?? [])]
+    if (entry !== null && pending !== undefined) {
+      for (const tree of catalog) pending.delete(tree.path)
+      if (pending.size === 0) createdWorktreesRef.current.delete(entry.path)
+    }
+    return checkedWorktrees(catalog, selected).map(tree => tree.path)
+  }, [])
 
   /** Remember one repository's selection and restore the next one's. */
   const switchRepo = useCallback((entry: RepositoryRow | null, node?: string) => {
@@ -780,7 +804,7 @@ export function VcsView({
     timelineScrollRef.current = node === undefined && nextRepo !== null ? repositoryScrollRef.current.get(nextRepo) ?? 0 : 0
     update({
       repo: nextRepo,
-      worktrees: checkedWorktrees(repositoryWorktrees(entry), saved?.worktrees ?? []).map(tree => tree.path),
+      worktrees: selectDiscoveredWorktrees(entry, saved?.worktrees ?? []),
       expandedRepositories: current.expandedRepositories ?? (current.repo === null ? null : [current.repo]),
       node: node ?? saved?.node ?? null,
       nodeChosen: node !== undefined || (saved?.nodeChosen ?? false),
@@ -790,7 +814,7 @@ export function VcsView({
       anchor: null,
       ref,
     })
-  }, [abortBranches, clearBranches, resetActionsUi, resetDirectories, update])
+  }, [abortBranches, clearBranches, resetActionsUi, resetDirectories, selectDiscoveredWorktrees, update])
 
   const toggleRepositoryGroup = (path: string) => {
     update({ expandedRepositories: expandedRepositories.includes(path)
@@ -900,7 +924,7 @@ export function VcsView({
         switchRepo(nextEntry)
       } else {
         const previous = stateRef.current.worktrees
-        const checked = checkedWorktrees(repositoryWorktrees(nextEntry), previous).map(tree => tree.path)
+        const checked = selectDiscoveredWorktrees(nextEntry, previous)
         if (!samePaths(checked, previous)) update({ worktrees: checked })
       }
       if (foreground && list.length === 0) setRefreshing(null)
@@ -918,7 +942,7 @@ export function VcsView({
       if (foreground) setRefreshing(action => action === 'repositories' ? null : action)
     })
     return () => { controller.abort() }
-  }, [api, repositoriesKey, repositoriesScope, switchRepo, update])
+  }, [api, repositoriesKey, repositoriesScope, selectDiscoveredWorktrees, switchRepo, update])
 
   const lastStatusScope = useRef<string | null>(null)
   // Jujutsu status snapshots only for the manual refresh button. Snapshot reads
@@ -1094,6 +1118,7 @@ export function VcsView({
     pendingRestoreFocusRef.current = false
     pendingDetailFocusRef.current = false
     perRepoRef.current.clear()
+    createdWorktreesRef.current.clear()
     repositoryScrollRef.current.clear()
     repositoryVcsRef.current.clear()
     diffCacheRef.current.clear()
@@ -1249,7 +1274,7 @@ export function VcsView({
         : []
       setBranches({
         status: 'ready',
-        list: list.map(entry => ({ name: entry.name, current: entry.current === true })),
+        list: list.map(entry => ({ name: entry.name, current: entry.current === true, occupied: entry.occupied === true })),
         truncated: answer?.truncated === true,
         error: null,
       })
@@ -1728,6 +1753,10 @@ export function VcsView({
         worktrees={worktrees}
         checkedPaths={checkedPaths}
         onToggleWorktree={toggleCheckedWorktree}
+        onCreateWorktree={actions.openWorktreeCreate}
+        onWorktreeActions={actions.openWorktreeActions}
+        repoBusy={actions.repoBusy}
+        worktreeBusy={actions.worktreeBusy || refreshing === 'worktree'}
         sessionPath={repoInfo?.enclosing === true ? state.repo : null}
         status={checkedPaths.length > 1 ? null : status.data}
         capabilities={capabilities}
@@ -1751,13 +1780,16 @@ export function VcsView({
         branchBusy={actions.branchBusy}
         tagBusy={actions.tagBusy}
         commitBusy={actions.commitBusy}
-        notice={notice}
+        notice={notice?.domain === 'worktree' ? null : notice}
         twoColumns={state.twoColumns}
         twoColumnsFit={!narrow}
         onTwoColumns={setTwoColumns}
         t={t}
         locale={locale}
       />
+      {notice?.domain === 'worktree' ? (
+        <p className="vcs-note vcs-worktree-path" role="status">{notice.text}</p>
+      ) : null}
       {repositories.truncated ? <p className="vcs-note">{formatPlural(t, 'repositories.truncated', repositories.list.length, locale)}</p> : null}
       {repositories.worktreesTruncated ? <p className="vcs-note">{t('repositories.worktreesTruncated')}</p> : null}
       {repositories.configError ? (
@@ -1937,6 +1969,23 @@ export function VcsView({
           onConfirm={actions.confirmDialog}
           t={t}
           locale={locale}
+        />
+      ) : actions.dialog.domain === 'worktree' ? (
+        <WorktreeDialog
+          key={`${actions.dialog.repo}:${actions.dialog.kind}`}
+          request={actions.dialog}
+          error={actions.dialogError}
+          busy={actions.dialogWriting}
+          blocked={actions.repoBusy && !actions.dialogWriting}
+          branches={branches.list.filter(branch => !branch.current && !branch.occupied
+            && !worktrees.some(tree => tree.branch === branch.name))}
+          branchesStatus={branches.status}
+          branchesError={branches.error}
+          branchesTruncated={branches.truncated}
+          loadBranches={loadBranches}
+          onCancel={actions.cancelDialog}
+          onConfirm={actions.confirmWorktree}
+          t={t}
         />
       ) : (
         <CommitDialog

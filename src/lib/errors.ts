@@ -54,6 +54,18 @@ export const ERROR_STATUS = Object.freeze({
   'stage-history-stale': 409,
   'stage-history-unavailable': 409,
   'stage-history-busy': 409,
+  'worktree-path-invalid': 400,
+  'worktree-revision-invalid': 400,
+  'worktree-protected': 409,
+  'worktree-in-use': 409,
+  'worktree-locked': 409,
+  'worktree-dirty': 409,
+  'worktree-unreferenced': 409,
+  'worktree-unsupported': 409,
+  'worktree-exists': 409,
+  'worktree-stale': 409,
+  'worktree-failed': 409,
+  'worktree-partial': 409,
 })
 
 /** One stable error code: a key of {@link ERROR_STATUS}. */

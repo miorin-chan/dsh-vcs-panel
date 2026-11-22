@@ -15,7 +15,7 @@
  * routes with a fake host context, and so `apply` stays thin.
  */
 
-import { isAbsolute } from 'node:path'
+import { basename, dirname, isAbsolute } from 'node:path'
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
@@ -41,7 +41,8 @@ import type { TurnTracker } from './turns.js'
 import { workspaceChangesService } from './turns.js'
 import { createWatchHub, watchClientId } from './watch.js'
 import type { WatchHub, WriteFinish } from './watch.js'
-import { HISTORY, REFS, WORKING } from './watch-repository.js'
+import { HISTORY, REFS, REPOSITORIES, WORKING } from './watch-repository.js'
+import { newWorktreePath, worktreeInUse, worktreeSessionDirectories } from './worktree-ops.js'
 import type { WatchedRepository } from './watch-repository.js'
 import type { Worktree } from './worktrees.js'
 
@@ -87,6 +88,7 @@ export interface VcsRouteHandlers {
   branchOp: RouteHandler
   tagOp: RouteHandler
   commitOp: RouteHandler
+  worktreeOp: RouteHandler
   stage: RouteHandler
   stageHistory: RouteHandler
 }
@@ -167,6 +169,10 @@ interface RunWriteOptions {
   considerHistory?: boolean
   /** Changed view domains reported to watching panels. */
   domains?: readonly string[]
+  /** Canonical owning store for a lifecycle request that already resolved it. */
+  common?: string
+  /** Lifecycle writes can change files or registration before returning an error. */
+  changed?: () => boolean
 }
 
 /** Whether a parsed JSON value is an object the routes can read fields from. */
@@ -367,6 +373,7 @@ export function createHandlers(ctx: HandlersContext, {
   /** Group checkouts of the same backend and store under a session-allowed anchor. */
   async function groupRepositories(roots: DiscoveredRepository[], signal: AbortSignal): Promise<{ repositories: GroupedRepository[], worktreesTruncated: boolean }> {
     const repositories: GroupedRepository[] = []
+    let sessionDirectories: Awaited<ReturnType<typeof worktreeSessionDirectories>> | null | undefined
     let siblings = 0
     let worktreesTruncated = false
     for (const repo of roots) {
@@ -388,18 +395,34 @@ export function createHandlers(ctx: HandlersContext, {
       }
       const worktrees: Worktree[] = [{ path: repo.path, name: repo.name, branch: null, head: null }]
       try {
+        const lifecycle = await backend.lifecycleInfo?.(repo.path, signal)
+        if (lifecycle?.forgotten === true) continue
+        entry.capabilities = lifecycle?.capabilities ?? backend.capabilities
         const commonDir = await backend.commonDir(repo.path, signal)
         if (commonDir !== null) {
           for await (const tree of backend.worktrees(repo.path, signal, { commonDir })) {
             if (sameRepoPath(tree.path, repo.path)) {
-              worktrees[0] = { ...tree, name: tree.name ?? repo.name }
+              worktrees[0] = { ...tree, name: tree.name ?? repo.name, canRemove: false, canForget: false }
             } else if (!worktrees.some(existing => sameRepoPath(existing.path, tree.path))) {
               if (siblings === WORKTREE_MAX) {
                 worktreesTruncated = true
                 break
               }
               siblings += 1
-              worktrees.push({ ...tree, name: tree.name ?? repositoryName(tree.path) })
+              if (sessionDirectories === undefined) {
+                sessionDirectories = await worktreeSessionDirectories(ctx, signal).catch(error => {
+                  if (signal.aborted || isAbortError(error)) throw error
+                  return null
+                })
+              }
+              const inUse = sessionDirectories === null ? undefined : await worktreeInUse(ctx, tree.path, sessionDirectories, signal).catch(error => {
+                if (signal.aborted || isAbortError(error)) throw error
+                return undefined
+              })
+              const eligible = tree.primary === false && !tree.locked && inUse === false
+              worktrees.push({ ...tree, name: tree.name ?? repositoryName(tree.path), inUse,
+                canRemove: eligible && entry.capabilities.worktreeRemove,
+                canForget: eligible && entry.capabilities.worktreeForget })
             }
           }
         }
@@ -594,8 +617,9 @@ export function createHandlers(ctx: HandlersContext, {
     return json(answer)
   }
 
-  /** Repository roots with a write in flight; a second write of one root is refused. */
+  /** Repository roots and stores with a write in flight. */
   const writing = new Set<string>()
+  const creating = new Set<string>()
 
   /**
    * Run one write under the repository's single-flight lock.
@@ -609,13 +633,22 @@ export function createHandlers(ctx: HandlersContext, {
     repo: RepositoryTarget,
     request: Request,
     run: () => Promise<unknown>,
-    { stageHistory = false, considerHistory = false, domains = [WORKING] }: RunWriteOptions = {},
+    { stageHistory = false, considerHistory = false, domains = [WORKING], common, changed }: RunWriteOptions = {},
   ): Promise<Response> {
-    if (writing.has(repo.root)) {
+    const commonDir = common ?? await repo.backend.commonDir(repo.root, request.signal)
+    const store = commonDir === null ? null : await canonicalDirectory(ctx, commonDir, request.signal)
+    const keys = store === null ? [repo.root] : [repo.root, store]
+    // Standard colocated stores have different metadata paths, but own the
+    // same primary checkout. Other stores still synchronize by exact identity.
+    if (store !== null && repo.vcs === 'git' && basename(store) === '.git') keys.push(dirname(store))
+    if (store !== null && repo.vcs === 'jujutsu' && basename(store) === 'repo' && basename(dirname(store)) === '.jj') {
+      keys.push(dirname(dirname(store)))
+    }
+    if (keys.some(key => writing.has(key))) {
       if (stageHistory) throw stageHistoryError('busy')
       throw new VcsError('busy', 'Another write is already running for this repository.')
     }
-    writing.add(repo.root)
+    for (const key of keys) writing.add(key)
     let finish: WriteFinish | undefined
     let succeeded = false
     try {
@@ -626,8 +659,9 @@ export function createHandlers(ctx: HandlersContext, {
       succeeded = true
       return json(result)
     } finally {
-      writing.delete(repo.root)
-      finish?.(succeeded ? domains : undefined, watchClientId(request.headers.get('X-VCS-Client')))
+      for (const key of keys) writing.delete(key)
+      // Failed lifecycle commands can leave changes. Invalidate the initiator too.
+      finish?.(succeeded || changed?.() ? domains : undefined, succeeded ? watchClientId(request.headers.get('X-VCS-Client')) : undefined)
     }
   }
 
@@ -643,7 +677,7 @@ export function createHandlers(ctx: HandlersContext, {
    * @param label - human name of the action, for messages.
    * @returns the parsed body and its target.
    */
-  async function readWrite(request: Request, label: string): Promise<WriteRequest> {
+  async function readWrite(request: Request, label: string, allowLifecycleTarget = false): Promise<WriteRequest> {
     if (request.method !== 'POST') throw badRequest(`${label} is a POST request.`)
     const site = request.headers.get('sec-fetch-site')
     if (site !== null && site !== 'same-origin' && site !== 'none') {
@@ -661,7 +695,7 @@ export function createHandlers(ctx: HandlersContext, {
     if (!isRecord(body)) {
       throw badRequest('The request body must be an object.')
     }
-    if (Object.hasOwn(body, 'worktree') || new URL(request.url).searchParams.has('worktree')) {
+    if ((!allowLifecycleTarget && Object.hasOwn(body, 'worktree')) || new URL(request.url).searchParams.has('worktree')) {
       throw new VcsError('forbidden', 'Worktree previews are read-only.')
     }
     const query = new URLSearchParams()
@@ -883,6 +917,104 @@ export function createHandlers(ctx: HandlersContext, {
     })
   }
 
+  /** Handle `POST /api/vcs.worktree` with a session-authorized repository as anchor. */
+  async function worktreeOp(request: Request): Promise<Response> {
+    const { body, query } = await readWrite(request, 'Worktree lifecycle', true)
+    const { action, path, worktree, mode, name, revision, expectedName, expectedBranch, expectedHead } = body
+    if (action !== 'create' && action !== 'remove' && action !== 'forget') throw badRequest('Choose a worktree lifecycle action.')
+    const signal = request.signal
+    const { cwd } = await requireSession(query)
+    const repo = await requireRepository(query, signal)
+    const backend = repo.backend
+    await backend.require(signal)
+    const capabilities = (await backend.lifecycleInfo?.(repo.root, signal))?.capabilities ?? backend.capabilities
+    const canRun = action === 'create' ? capabilities.worktreeCreate && backend.createWorktree !== undefined
+      : (action === 'remove' ? capabilities.worktreeRemove : capabilities.worktreeForget) && backend.deleteWorktree !== undefined
+    if (!canRun) throw new VcsError('worktree-unsupported', 'This repository does not support that worktree lifecycle action.')
+    const commonDir = await backend.commonDir(repo.root, signal)
+    const common = commonDir === null ? null : await canonicalDirectory(ctx, commonDir, signal)
+    if (common === null) throw new VcsError('worktree-protected', 'The repository storage could not be verified.')
+
+    let mutated = false
+    const changed = () => { mutated = true }
+    const options = { common, domains: [REPOSITORIES, ...REFS], changed: () => mutated }
+    const recheckRepository = async () => {
+      const fresh = await requireRepository(query, signal)
+      const dir = await backend.commonDir(repo.root, signal)
+      if (fresh.vcs !== repo.vcs || !sameRepoPath(fresh.root, repo.root)
+        || dir === null || await canonicalDirectory(ctx, dir, signal) !== common) {
+        throw new VcsError('worktree-stale', 'The repository has changed. Refresh and choose the worktree again.')
+      }
+    }
+    if (action === 'create') {
+      if (typeof path !== 'string') throw new VcsError('worktree-path-invalid', 'Choose a valid new worktree directory.')
+      if (worktree !== undefined || expectedName !== undefined || expectedBranch !== undefined || expectedHead !== undefined) {
+        throw badRequest('Creation takes a new directory, without an existing worktree target.')
+      }
+      if (mode !== undefined && mode !== 'new' && mode !== 'existing' && mode !== 'detach') throw badRequest('Choose a Git checkout mode.')
+      if (name !== undefined && (typeof name !== 'string' || name.trim() === '' || name.length > 255 || /[\u0000-\u001f\u007f]/u.test(name))) {
+        throw badRequest('Choose a valid branch or workspace name.')
+      }
+      if (revision !== undefined && (typeof revision !== 'string' || revision.trim() === '' || revision.length > 1024
+        || revision.startsWith('-') || /[\u0000-\u001f\u007f]/u.test(revision))) {
+        throw new VcsError('worktree-revision-invalid', 'Choose a valid worktree revision.')
+      }
+      return runWrite(repo, request, async () => {
+        await recheckRepository()
+        const destination = await newWorktreePath(ctx, cwd, repo.root, path, signal)
+        const key = process.platform === 'win32' || process.platform === 'darwin' ? destination.toLowerCase() : destination
+        if (creating.has(key)) throw new VcsError('busy', 'Another worktree creation is using this destination.')
+        creating.add(key)
+        try {
+          await backend.createWorktree!(repo.root, common, { path: destination, mode, name, revision }, signal, recheckRepository, changed)
+          return { path: destination }
+        } finally {
+          creating.delete(key)
+        }
+      }, options)
+    }
+    if (typeof worktree !== 'string' || !isAbsolute(worktree) || worktree.includes('\0') || worktree.length > 4096
+      || path !== undefined || mode !== undefined || name !== undefined || revision !== undefined
+      || expectedName !== undefined && typeof expectedName !== 'string'
+      || expectedBranch !== undefined && expectedBranch !== null && typeof expectedBranch !== 'string'
+      || expectedHead !== undefined && expectedHead !== null && validateSha(expectedHead) !== expectedHead) {
+      throw badRequest('Choose a registered worktree by its absolute path.')
+    }
+    const readTarget = async (): Promise<Worktree> => {
+      await recheckRepository()
+      for await (const tree of backend.worktrees(repo.root, signal, { commonDir: common, paths: [worktree] })) {
+        if (tree.path !== worktree) continue
+        const target = await ctx.fs.resolve(tree.path, { signal })
+        const storage = await ctx.fs.resolve(common, { signal })
+        const anchor = await ctx.fs.resolve(repo.root, { signal })
+        if (tree.primary !== false || ctx.fs.contains(target, storage) || ctx.fs.contains(target, anchor)) {
+          throw new VcsError('worktree-protected', 'The primary or current checkout is protected.')
+        }
+        if (tree.locked) throw new VcsError('worktree-locked', 'Unlock this Git worktree before removing it.')
+        if (expectedName !== undefined && expectedName !== tree.name
+          || expectedBranch !== undefined && expectedBranch !== tree.branch
+          || expectedHead !== undefined && expectedHead !== tree.head) {
+          throw new VcsError('worktree-stale', 'The checkout has changed. Refresh and choose it again.')
+        }
+        if (await worktreeInUse(ctx, tree.path, await worktreeSessionDirectories(ctx, signal), signal)) {
+          throw new VcsError('worktree-in-use', 'A DSH session is using this directory.')
+        }
+        return tree
+      }
+      throw new VcsError('worktree-stale', 'That worktree is no longer available from the selected repository.')
+    }
+    return runWrite(repo, request, async () => {
+      const tree = await readTarget()
+      await backend.deleteWorktree!(repo.root, common, tree, action, signal, async () => {
+        const fresh = await readTarget()
+        if (fresh.branch !== tree.branch || fresh.name !== tree.name || (fresh.branch === null && fresh.head !== tree.head)) {
+          throw new VcsError('worktree-stale', 'The checkout has changed. Refresh and choose it again.')
+        }
+      }, changed)
+      return { path: tree.path }
+    }, options)
+  }
+
   /** Handle `POST /api/vcs.stage`. */
   async function stage(request: Request): Promise<Response> {
     const { body, query } = await readWrite(request, 'Staging')
@@ -1027,6 +1159,7 @@ export function createHandlers(ctx: HandlersContext, {
     branchOp: wrap(branchOp),
     tagOp: wrap(tagOp),
     commitOp: wrap(commitOp),
+    worktreeOp: wrap(worktreeOp),
     stage: wrap(stage),
     stageHistory: wrap(stageHistory),
   }

@@ -3373,6 +3373,213 @@ test('ChangeTree runs s and u on focused hunk headers and restores hunk focus af
   }
 })
 
+test('Git worktree lifecycle keeps filters, picks the created checkout, and falls back after removal', async () => {
+  const harness = createHarness({ width: 1000 })
+  const restore = harness.installGlobals()
+  const fakeWin = installFakeWindow()
+  const savedFetch = globalThis.fetch
+  const repo = '/repo'
+  const sibling = '/topic'
+  const head = 'a'.repeat(40)
+  const capabilities = { ...GIT_CAPABILITIES, worktreeCreate: true, worktreeRemove: true }
+  const writes = []
+  let created = false
+  let dirty = true
+  function json(body, status = 200) {
+    return { ok: status === 200, status, async json() { return body } }
+  }
+  globalThis.fetch = async (url, init) => {
+    const { pathname, searchParams } = new URL(url, 'http://127.0.0.1')
+    if (pathname === '/api/vcs.worktree') {
+      assert.equal(init.method, 'POST')
+      assert.equal(init.credentials, 'same-origin')
+      assert.equal(init.headers['content-type'], 'application/json')
+      assert.ok(init.headers['X-VCS-Client'])
+      const payload = JSON.parse(init.body)
+      writes.push(payload)
+      if (payload.action === 'create') {
+        created = true
+      } else {
+        if (dirty) return json({ error: { code: 'worktree-dirty', message: 'Host refusal' } }, 409)
+        created = false
+      }
+      return json({ path: sibling })
+    }
+    assert.equal(searchParams.get('sessionId'), 'lifecycle-session')
+    if (pathname === '/api/vcs.repositories') {
+      const worktrees = [{ path: repo, name: 'repo', branch: 'main', head, primary: true }]
+      if (created) worktrees.push({ path: sibling, name: 'topic', branch: 'topic', head, canRemove: true })
+      return json({ cwd: repo, repositories: [{ path: repo, name: 'repo', vcs: 'git', enclosing: true, capabilities, worktrees }] })
+    }
+    if (pathname === '/api/vcs.branches') return json({ branches: [
+      { name: 'main', current: true, occupied: true },
+      { name: 'occupied', current: false, occupied: true },
+      { name: 'topic', current: false, occupied: false },
+    ], truncated: false })
+    if (pathname === '/api/vcs.status') {
+      return json({ capabilities, defaultNode: 'worktree', branch: { name: 'main', oid: head }, total: 0, groups: {} })
+    }
+    if (pathname === '/api/vcs.log') return json({ commits: [] })
+    throw new Error(`unexpected route: ${pathname}`)
+  }
+  try {
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
+    harness.mount(harness.react.createElement(VcsView, { sessionId: 'lifecycle-session', t }))
+    await harness.settle()
+    const body = harness.document.body
+    const q = selector => body.querySelector(selector)
+    const trigger = q('.vcs-worktree-button')
+    const menu = () => q('.vcs-worktree-menu')
+    const rows = () => menu().querySelectorAll('[role="menuitemcheckbox"]')
+    const ranges = () => menu().querySelectorAll('[role="menuitemradio"]')
+    const field = name => q(`[id="vcs-worktree-${name}"]`)
+    const change = (name, value) => field(name).props.onChange({ currentTarget: { value } })
+    const submit = () => q('.vcs-dialog').props.onSubmit({ preventDefault() {} })
+    const open = async () => {
+      trigger.focus()
+      harness.keyDown(trigger, 'ArrowDown')
+      await harness.settle()
+    }
+
+    await open()
+    harness.keyDown(ranges()[0], 'ArrowRight')
+    harness.keyClick(ranges()[1])
+    await harness.settle()
+    assert.equal(rows()[0].attributes.get('aria-description'), 'top.keepWorktree')
+    harness.keyDown(ranges()[1], 'ArrowDown')
+    assert.ok(harness.document.activeElement === rows()[0], 'vertical navigation reaches the checkbox')
+    harness.keyDown(rows()[0], 'ArrowRight')
+    assert.ok(harness.document.activeElement.classList.contains('vcs-worktree-icon-action'), 'right moves focus to row actions')
+    harness.keyClick(harness.document.activeElement)
+    await harness.settle()
+    const protectedRemove = q('[data-ops-item]')
+    assert.equal(protectedRemove.attributes.get('aria-description'), 'worktree.sessionProtected')
+    harness.keyClick(protectedRemove)
+    await harness.settle()
+    assert.equal(q('.vcs-dialog'), null)
+    assert.deepEqual(writes, [])
+    harness.keyDown(protectedRemove, 'Escape')
+    await harness.settle()
+    assert.ok(harness.document.activeElement === trigger, 'menu dismissal restores the worktree trigger')
+
+    await open()
+    harness.keyDown(ranges()[1], '+')
+    await harness.settle()
+    assert.ok(harness.document.activeElement === field('path'), 'keyboard creation focuses the destination')
+    change('path', '../topic')
+    change('mode', 'existing')
+    await harness.settle()
+    assert.deepEqual(field('branch').children.map(textOf), ['worktree.chooseBranch', 'topic'])
+    submit()
+    assert.equal(writes.length, 0, 'a branch must be chosen')
+    change('branch', 'topic')
+    await harness.settle()
+    submit()
+    await harness.settle()
+    assert.deepEqual(writes, [{ sessionId: 'lifecycle-session', repo, action: 'create', path: '../topic', mode: 'existing', name: 'topic' }])
+    assert.equal(q('.vcs-dialog'), null)
+    assert.ok(harness.document.activeElement === trigger, 'successful creation restores the worktree trigger')
+    assert.match(textOf(body), /worktree\.created/u)
+
+    await open()
+    assert.deepEqual(rows().map(row => row.attributes.get('aria-checked')), ['true', 'true'])
+    assert.equal(ranges()[1].attributes.get('aria-checked'), 'true')
+    harness.keyClick(rows()[0])
+    await harness.settle()
+    harness.keyDown(rows()[1], 'F10', { shiftKey: true })
+    await harness.settle()
+    harness.keyClick(q('[data-ops-item]'))
+    await harness.settle()
+    assert.match(textOf(q('.vcs-dialog')), /\/topic/u)
+    assert.equal(textOf(harness.document.activeElement), 'branch.cancel')
+    submit()
+    await harness.settle()
+    assert.equal(textOf(q('.vcs-dialog-error')), 'error.worktreeDirty')
+    assert.equal(created, true)
+    dirty = false
+    submit()
+    await harness.settle()
+    assert.deepEqual(writes.slice(1), Array(2).fill({
+      sessionId: 'lifecycle-session', repo, action: 'remove', worktree: sibling, expectedBranch: 'topic',
+    }))
+    await open()
+    assert.equal(rows().length, 1)
+    assert.equal(rows()[0].attributes.get('title').split('\n')[0], repo)
+    assert.equal(rows()[0].attributes.get('aria-checked'), 'true')
+    assert.equal(ranges()[1].attributes.get('aria-checked'), 'true')
+  } finally {
+    harness.unmount()
+    globalThis.fetch = savedFetch
+    fakeWin.restore()
+    restore()
+  }
+})
+
+test('worktree dialog sends only the chosen backend fields and distinguishes Jujutsu deletion from forget', async () => {
+  const harness = createHarness({ width: 1000 })
+  const restore = harness.installGlobals()
+  try {
+    const { WorktreeDialog } = await loadClientModule('src/client/WorktreeDialog.tsx', harness)
+    const body = harness.document.body
+    const q = selector => body.querySelector(selector)
+    const field = name => q(`[id="vcs-worktree-${name}"]`)
+    const change = (name, value) => field(name).props.onChange({ currentTarget: { value } })
+    const submit = () => q('.vcs-dialog').props.onSubmit({ preventDefault() {} })
+    const writes = []
+    const tree = { path: '/example/linked', name: 'custom-name', head: null, branch: null }
+    const mount = async (kind, commitBased) => {
+      harness.mount(harness.react.createElement(WorktreeDialog, {
+        key: `${kind}-${commitBased}`,
+        request: { domain: 'worktree', kind, repo: '/example/repo', commitBased, tree },
+        busy: false, blocked: false, error: null, branches: [], branchesStatus: 'idle',
+        branchesError: null, branchesTruncated: false, loadBranches() {}, onCancel() {},
+        onConfirm: request => { writes.push(JSON.parse(JSON.stringify(request ?? {}))) }, t,
+      }))
+      await harness.settle()
+    }
+    await mount('create', false)
+    assert.equal(field('revision').props.placeholder, 'HEAD')
+    submit()
+    assert.deepEqual(writes, [], 'empty destination cannot submit')
+    change('path', '../new')
+    await harness.settle()
+    submit()
+    change('mode', 'detach')
+    await harness.settle()
+    assert.equal(field('revision').props.placeholder, 'HEAD')
+    change('revision', 'main^')
+    await harness.settle()
+    submit()
+    await mount('create', true)
+    assert.equal(field('mode'), null)
+    assert.equal(field('name').props.placeholder, 'worktree.folderNameDefault')
+    assert.equal(field('revision').props.placeholder, 'worktree.defaultParent')
+    change('path', '../linked')
+    await harness.settle()
+    submit()
+    change('name', tree.name)
+    change('revision', '@-')
+    await harness.settle()
+    submit()
+    assert.deepEqual(writes, [
+      { action: 'create', path: '../new', mode: 'new' },
+      { action: 'create', path: '../new', mode: 'detach', revision: 'main^' },
+      { action: 'create', path: '../linked' },
+      { action: 'create', path: '../linked', name: tree.name, revision: '@-' },
+    ])
+    await mount('forget', true)
+    assert.match(textOf(q('.vcs-dialog')), /custom-name\/example\/linked.*worktree\.forgetText/u)
+    assert.equal(q('.vcs-button-danger'), null)
+    await mount('remove', true)
+    assert.match(textOf(q('.vcs-dialog')), /custom-name\/example\/linked.*worktree\.removeWorkspaceText/u)
+    assert.equal(textOf(q('.vcs-button-danger')), 'worktree.deleteDirectory')
+    assert.equal(textOf(harness.document.activeElement), 'branch.cancel')
+  } finally {
+    harness.unmount()
+    restore()
+  }
+})
+
 test('VcsView combines Git worktree and range choices and isolates diffs by worktree', async () => {
   const harness = createHarness({ width: 1000 })
   const restore = harness.installGlobals()
@@ -3544,7 +3751,7 @@ test('VcsView combines Git worktree and range choices and isolates diffs by work
     assert.match(textOf(body.querySelector('.vcs-timeline')), /topic-only commit/u)
     assert.equal(body.querySelector('.vcs-branch-button'), null)
     assert.equal(body.querySelector('.vcs-sync'), null)
-    assert.equal(body.querySelector('.vcs-readonly').attributes.get('title'), 'top.readonlyHintWorktrees')
+    assert.equal(body.querySelector('.vcs-readonly').attributes.get('title'), 'worktree.writesHint top.readonlyHintWorktrees')
     harness.keyDown(ranges()[1], 'Escape')
     await harness.settle()
     assert.equal(harness.document.activeElement, button)
@@ -3704,7 +3911,7 @@ test('VcsView reads checked Jujutsu workspaces as commits and follows a rewritte
     const ranges = () => menu().querySelectorAll('[role="menuitemradio"]')
     const timeline = () => textOf(body.querySelector('.vcs-timeline'))
     const copies = () => body.querySelectorAll('.vcs-working-copy-row')
-    assert.equal(textOf(trigger), t('top.worktreeSelection', { count: '1' }))
+    assert.equal(textOf(trigger), t('worktree.workspaceSelection', { count: '1' }))
     assert.deepEqual(statusReads, [null])
     assert.deepEqual(historyReads, [{ ref: 'all', paths: [] }])
     assert.equal(body.querySelector('.vcs-worktree-row'), null, 'commits, not synthetic working-tree rows')

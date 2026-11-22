@@ -33,6 +33,13 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
   The session worktree is selected by default.
   Git shows a changes row for each selected worktree; Jujutsu marks each selected working-copy commit with `name@`.
   Checking a worktree leaves the session directory and checkouts in place.
+- **Create and remove working copies.** Use **New** in the worktree menu to create a Git worktree or Jujutsu workspace.
+  A destination such as `../topic` creates a checkout beside the current repository.
+  Git can create a branch, check out an available local branch, or detach `HEAD`.
+  Jujutsu creates a working-copy commit on the chosen parent revision.
+  Use a row's **…** menu to remove an eligible Git worktree while keeping its branch.
+  Jujutsu can detach the workspace and any colocated Git worktree while keeping the working files,
+  or remove the directory on versions that support `jj workspace remove`.
 - **Inline change tree.** Browse changed files as a collapsible list, or expand any file to read its diff
   in place with sticky headers, unified or split view, and line wrapping (on by default).
 - **Git & Jujutsu native.** Shows staged and unstaged groups (untracked items marked `U`,
@@ -105,7 +112,7 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
   and Drop is further checked on the Host; Reset chooses Soft, Mixed, or Hard,
   and only Hard discards staged and unstaged changes.
   Timeline rows summarize more than three refs with `+N`, while the commit detail header keeps every ref clickable.
-- **Writes stay explicit.** Git writes start from a staging, sync, branch, remote-branch, tag, or commit action.
+- **Writes stay explicit.** Writes start from a worktree, staging, sync, branch, remote-branch, tag, or commit action.
   A conflicting merge, pull, pick, revert, drop, or rebase is aborted; pushes and remote deletions never force anything.
   Jujutsu snapshots the working copy on manual refresh or after an Agent turn with changes.
   Follows DSH themes and all 8 UI languages, and loads large histories and diffs on demand.
@@ -133,8 +140,8 @@ or diff stop without interrupting active inputs or dialogs.
 
 Requires **DSH 0.2.2-rc.3+** (Desktop or Web) with the right-Sidebar tab and navigation APIs,
 and `git` or `jj` on `PATH`.
-Discovering Jujutsu sibling workspaces requires **jj 0.47+** and recorded workspace paths.
-The current workspace remains available without them.
+Discovering and managing Jujutsu sibling workspaces requires **jj 0.47+** and recorded workspace paths.
+The current workspace remains available for browsing without them.
 
 - **In DSH:** Open **Plugins → Add plugin**, select this directory, and restart DSH.
 - **Via CLI:**

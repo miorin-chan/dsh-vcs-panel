@@ -43,7 +43,9 @@ import {
   parseJjRecords,
   parseJjStats,
 } from '../jujutsu.js'
-import { discoverJjWorkspaces, jjCommonDirAt } from '../jujutsu-worktrees.js'
+import { discoverJjWorkspaces, jjCommonDirAt, readWorkspaces, WORKSPACE_LIST } from '../jujutsu-worktrees.js'
+import { createJjWorkspace, deleteJjWorkspace, supportsJjWorkspaceRemove } from '../jujutsu-worktree-ops.js'
+import type { RecheckTarget, WorktreeChange, WorktreeCreate } from '../worktree-ops.js'
 import { COMMIT_FILE_MAX } from '../commit.js'
 import { LOG_PAGE_MAX, LOG_SKIP_MAX } from '../log.js'
 import { isFullSha, validateRelPath } from '../paths.js'
@@ -101,6 +103,7 @@ function validateRevision(value: unknown): string | undefined {
 /** The Jujutsu backend. */
 export class JujutsuBackend {
   #observed = new Map<string, ObservedSnapshot>()
+  #workspaceRemove: boolean | undefined
 
   /** The Host context. */
   declare readonly ctx: Context
@@ -134,6 +137,25 @@ export class JujutsuBackend {
     options?: WorktreeOptions,
   ): AsyncGenerator<Worktree> {
     return discoverJjWorkspaces(this.ctx, this.runner, root, signal, options)
+  }
+
+  async lifecycleInfo(root: string, signal: AbortSignal): Promise<{ capabilities: VcsCapabilities, forgotten: boolean }> {
+    const entries = await this.runner.resolve(signal) === null ? null : await readWorkspaces(this.runner, root, WORKSPACE_LIST, signal)
+    const verified = entries?.some(entry => entry.current && entry.path !== null) === true
+    if (verified) this.#workspaceRemove ??= await supportsJjWorkspaceRemove(this.runner, root, signal)
+    return {
+      capabilities: { ...this.capabilities, worktreeCreate: verified, worktreeForget: verified,
+        worktreeRemove: verified && this.#workspaceRemove === true },
+      forgotten: entries !== null && !entries.some(entry => entry.current),
+    }
+  }
+
+  createWorktree(root: string, common: string, request: WorktreeCreate, signal: AbortSignal, recheck: RecheckTarget, changed: WorktreeChange): Promise<void> {
+    return createJjWorkspace(this.ctx, this.runner, root, common, request, signal, recheck, changed)
+  }
+
+  deleteWorktree(root: string, common: string, tree: Worktree, action: 'remove' | 'forget', signal: AbortSignal, recheck: RecheckTarget, changed: WorktreeChange): Promise<void> {
+    return deleteJjWorkspace(this.ctx, this.runner, root, common, tree, action, signal, recheck, changed)
   }
 
   /**

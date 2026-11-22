@@ -52,6 +52,9 @@ export interface VcsCapabilities {
   tagOps: boolean
   /** Whether commit rows can act on commits. */
   commitOps: boolean
+  worktreeCreate: boolean
+  worktreeRemove: boolean
+  worktreeForget: boolean
   /** The history ranges offered. */
   ranges: readonly VcsRange[]
   /** The range the log route defaults to. */
@@ -88,6 +91,9 @@ export const GIT_CAPABILITIES: VcsCapabilities = Object.freeze({
   tagOps: true,
   /** Commit rows can tag, branch, check out, pick, revert, drop, merge, rebase, and reset. */
   commitOps: true,
+  worktreeCreate: true,
+  worktreeRemove: true,
+  worktreeForget: false,
   ranges: Object.freeze([
     { value: 'all', label: 'history.all', title: 'history.allTitle' },
     { value: 'HEAD', label: 'history.selectedWorktrees', title: 'history.selectedWorktreesTitle' },
@@ -104,6 +110,8 @@ export const GIT_WORKTREE_CAPABILITIES: VcsCapabilities = Object.freeze({
   branchOps: false,
   tagOps: false,
   commitOps: false,
+  worktreeCreate: false,
+  worktreeRemove: false,
 })
 
 /** Jujutsu: the working copy is a commit, and history is a revset. */
@@ -132,6 +140,9 @@ export const JUJUTSU_CAPABILITIES: VcsCapabilities = Object.freeze({
   tagOps: false,
   /** Commit actions rewrite Git history or the index; Jujutsu stays read-only. */
   commitOps: false,
+  worktreeCreate: true,
+  worktreeRemove: false,
+  worktreeForget: true,
   ranges: Object.freeze([
     { value: 'all', label: 'history.all', title: 'history.allTitle' },
     { value: '@', label: 'history.selectedWorktrees', title: 'history.selectedWorktreesTitle' },

@@ -463,7 +463,7 @@ if (fixture.jj !== null) sessions.set('s-jj', { header: { cwd: fixture.jj } })
 /** A host context the handlers accept. */
 function createHost(overrides = {}) {
   return {
-    sessions: { get: id => sessions.get(id) },
+    sessions: { get: id => sessions.get(id), list: () => [...sessions.values()] },
     fs: fakeFs,
     subprocess: fakeSubprocess,
     ...overrides,
@@ -1397,8 +1397,222 @@ function linkedWorktreeFixture(t) {
     ['source', { header: { cwd: source } }],
     ['linked', { header: { cwd: linked } }],
   ])
-  const host = createHost({ sessions: { get: id => worktreeSessions.get(id) } })
+  const host = createHost({ sessions: { get: id => worktreeSessions.get(id), list: () => [...worktreeSessions.values()] } })
   return { root, source, linked, repo: { sessionId: 'source', repo: source }, handlers: createHandlers(host) }
+}
+
+function lifecycleRequest(handlers, scope, body, headers = {}) {
+  return handlers.worktreeOp(new Request('http://127.0.0.1/api/vcs.worktree', {
+    method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ ...scope, ...body }),
+  })).then(async response => ({ status: response.status, ...await response.json() }))
+}
+
+function lifecycleFixture(t, kind) {
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'vcs-lifecycle-')))
+  t.after(() => rmSync(scratch, { recursive: true, force: true }))
+  const source = join(scratch, 'source')
+  const active = new Map([['source', { header: { cwd: source } }]])
+  let effective
+  const ctx = createHost({
+    sessions: { get: id => active.get(id), list: () => [...active.values()] },
+    workingDirectory: { get: session => session === active.get('source') ? effective : undefined },
+  })
+  if (kind === 'git') initRepo(source)
+  else jj(scratch, ['git', 'init', kind === 'colocated' ? '--colocate' : '--no-colocate', source])
+  return { scratch, source, active, setEffective: path => { effective = path }, ctx }
+}
+
+test('Git lifecycle uses explicit bases and only checks out free local branches', async t => {
+  const { scratch, source, ctx } = lifecycleFixture(t, 'git')
+  writeFileSync(join(source, '.gitignore'), '*.ignored\n')
+  writeFileSync(join(source, 'one'), 'initial\n')
+  git(source, ['add', '-A'])
+  git(source, ['commit', '-qm', 'first'])
+  const base = git(source, ['rev-parse', 'HEAD'])
+  git(source, ['branch', 'available'])
+  writeFileSync(join(source, 'two'), 'second\n')
+  git(source, ['add', '-A'])
+  git(source, ['commit', '-qm', 'second'])
+  const tip = git(source, ['rev-parse', 'HEAD'])
+  const handlers = createHandlers(ctx)
+  const scope = { sessionId: 'source', repo: source }
+  const run = (body, headers) => lifecycleRequest(handlers, scope, body, headers)
+  const left = join(scratch, 'with space')
+  assert.deepEqual(await run({ action: 'create', path: '../with space', name: 'topic/one', revision: base }), { status: 200, path: left })
+  assert.equal(git(left, ['symbolic-ref', 'HEAD']), 'refs/heads/topic/one')
+  assert.equal(git(left, ['rev-parse', 'HEAD']), base)
+  assert.equal(git(source, ['rev-parse', 'HEAD']), tip)
+  const detached = join(scratch, 'detached')
+  assert.deepEqual(await run({ action: 'create', path: detached, mode: 'detach' }), { status: 200, path: detached })
+  assert.equal(git(detached, ['rev-parse', 'HEAD']), tip)
+  const existing = join(source, 'existing')
+  assert.deepEqual(await run({ action: 'create', path: 'existing', mode: 'existing', name: 'available' }), { status: 200, path: existing })
+  assert.equal(git(existing, ['symbolic-ref', 'HEAD']), 'refs/heads/available')
+  assert.equal(git(existing, ['rev-parse', 'HEAD']), base)
+  const branches = await call(handlers.branches, route('/api/vcs.branches', scope))
+  assert.equal(branches.body.branches.find(branch => branch.name === 'available').occupied, true)
+  for (const [body, code] of [
+    [{ action: 'create', path: '../busy', mode: 'existing', name: 'available' }, 'branch-in-use'],
+    [{ action: 'create', path: '../missing-branch', mode: 'existing', name: 'missing' }, 'branch-invalid'],
+    [{ action: 'create', path: '../bad-base', revision: 'missing-revision' }, 'worktree-revision-invalid'],
+    [{ action: 'create', path: '../injected', revision: '--output' }, 'worktree-revision-invalid'],
+    [{ action: 'create', path: '../../outside' }, 'worktree-path-invalid'],
+    [{ action: 'create', path: '.git/checkout' }, 'worktree-path-invalid'],
+    [{ action: 'create', path: existing, name: 'untouched' }, 'worktree-exists'],
+  ]) assert.equal((await run(body)).error?.code, code)
+  symlinkSync(scratch, join(source, 'alias'))
+  assert.equal((await run({ action: 'create', path: 'alias/escape' })).error?.code, 'worktree-path-invalid')
+  assert.equal((await run({ action: 'create', path: '../denied' }, { 'sec-fetch-site': 'cross-site' })).error?.code, 'forbidden')
+  assert.deepEqual(await run({ action: 'remove', worktree: detached, expectedBranch: null, expectedHead: tip }), { status: 200, path: detached })
+  assert.deepEqual(await run({ action: 'remove', worktree: existing, expectedBranch: 'available' }), { status: 200, path: existing })
+  assert.equal(git(source, ['rev-parse', 'refs/heads/available']), base)
+})
+
+test('Git lifecycle serializes writes through different checkouts of the same store', async t => {
+  const { source, scratch, active, ctx } = lifecycleFixture(t, 'git')
+  git(source, ['commit', '-qm', 'base', '--allow-empty'])
+  const sibling = join(scratch, 'sibling')
+  git(source, ['worktree', 'add', '-qb', 'sibling', sibling])
+  active.set('sibling', { header: { cwd: sibling } })
+  const independent = join(scratch, 'independent')
+  initRepo(independent)
+  git(independent, ['commit', '-qm', 'base', '--allow-empty'])
+  active.set('independent', { header: { cwd: independent } })
+  const { createBackends } = await import('../lib/vcs/index.js')
+  const backends = createBackends(ctx)
+  const backend = backends.get('git')
+  const originalCreate = backend.createWorktree.bind(backend)
+  let reportStarted
+  let release
+  const started = new Promise(resolve => { reportStarted = resolve })
+  const hold = new Promise(resolve => { release = resolve })
+  backend.createWorktree = async (...args) => {
+    if (args[0] === source) {
+      reportStarted()
+      await hold
+    }
+    return originalCreate(...args)
+  }
+  const handlers = createHandlers(ctx, { backends })
+  const created = lifecycleRequest(handlers, { sessionId: 'source', repo: source }, { action: 'create', path: '../first' })
+  try {
+    await Promise.race([started, created.then(answer => assert.fail(JSON.stringify(answer)))])
+    const busy = await lifecycleRequest(handlers, { sessionId: 'sibling', repo: sibling }, { action: 'create', path: '../second' })
+    assert.equal(busy.error?.code, 'busy')
+    const other = { sessionId: 'independent', repo: independent }
+    const reserved = await lifecycleRequest(handlers, other, { action: 'create', path: '../first' })
+    assert.equal(reserved.error?.code, 'busy')
+    const unrelated = await lifecycleRequest(handlers, other, { action: 'create', path: '../third' })
+    assert.equal(unrelated.status, 200)
+  } finally {
+    release()
+  }
+  assert.equal((await created).status, 200)
+  assert.throws(() => accessSync(join(scratch, 'second')), { code: 'ENOENT' })
+})
+
+test('Git lifecycle reports a retained checkout after a post-checkout hook fails', async t => {
+  const { source, scratch, ctx } = lifecycleFixture(t, 'git')
+  git(source, ['commit', '-qm', 'base', '--allow-empty'])
+  writeFileSync(join(source, '.git', 'hooks', 'post-checkout'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+  const path = join(scratch, 'partial')
+  const handlers = createHandlers(ctx)
+  const scope = { sessionId: 'source', repo: source }
+  const failed = await lifecycleRequest(handlers, scope, { action: 'create', path, name: 'partial' })
+  assert.equal(failed.error?.code, 'worktree-partial')
+  const catalog = await call(handlers.repositories, route('/api/vcs.repositories', scope))
+  assert.ok(catalog.body.repositories[0].worktrees.some(tree => tree.path === path && tree.branch === 'partial'))
+})
+
+test('Git lifecycle protects the primary tree, sessions, and work that would be lost', async t => {
+  const { source, active, setEffective, scratch, ctx } = lifecycleFixture(t, 'git')
+  writeFileSync(join(source, '.gitignore'), '*.ignored\n')
+  writeFileSync(join(source, 'tracked'), 'original\n')
+  git(source, ['add', '-A'])
+  git(source, ['commit', '-qm', 'base'])
+  const checkout = join(scratch, 'target')
+  git(source, ['worktree', 'add', '-qb', 'target', checkout])
+  const handlers = createHandlers(ctx)
+  const scope = { sessionId: 'source', repo: source }
+  const remove = (worktree = checkout, extra = {}) => lifecycleRequest(handlers, scope, { action: 'remove', worktree, ...extra })
+  assert.equal((await remove(source)).error?.code, 'worktree-protected')
+  assert.equal((await remove(checkout, { expectedBranch: 'previous' })).error?.code, 'worktree-stale')
+  git(source, ['worktree', 'lock', checkout])
+  assert.equal((await remove()).error?.code, 'worktree-locked')
+  git(source, ['worktree', 'unlock', checkout])
+  mkdirSync(join(checkout, 'nested'))
+  active.set('other', { header: { cwd: join(checkout, 'nested') } })
+  assert.equal((await remove()).error?.code, 'worktree-in-use')
+  active.delete('other')
+  setEffective(join(checkout, 'nested'))
+  assert.equal((await remove()).error?.code, 'worktree-in-use')
+  setEffective(undefined)
+  mkdirSync(join(checkout, 'nested', '.jj'))
+  assert.equal((await remove()).error?.code, 'worktree-protected')
+  rmSync(join(checkout, 'nested'), { recursive: true })
+  writeFileSync(join(checkout, 'extra.ignored'), 'keep\n')
+  assert.equal((await remove()).error?.code, 'worktree-dirty')
+  assert.equal(await readFile(join(checkout, 'extra.ignored'), 'utf8'), 'keep\n')
+  rmSync(join(checkout, 'extra.ignored'))
+  git(checkout, ['update-index', '--assume-unchanged', 'tracked'])
+  writeFileSync(join(checkout, 'tracked'), 'hidden\n')
+  assert.equal((await remove()).error?.code, 'worktree-dirty')
+  git(checkout, ['update-index', '--no-assume-unchanged', 'tracked'])
+  git(checkout, ['restore', 'tracked'])
+  git(checkout, ['switch', '--detach'])
+  git(checkout, ['commit', '-qm', 'detached commit', '--allow-empty'])
+  const detached = git(checkout, ['rev-parse', 'HEAD'])
+  assert.equal((await remove()).error?.code, 'worktree-unreferenced')
+  git(source, ['tag', 'retained', detached])
+  assert.deepEqual(await remove(), { status: 200, path: checkout })
+  assert.equal(git(source, ['rev-parse', 'refs/tags/retained']), detached)
+})
+
+const HAS_JJ_WORKSPACE_REMOVE = HAS_JJ && (() => {
+  try { jj(tmpdir(), ['workspace', 'remove', '-h']); return true } catch { return false }
+})()
+
+for (const kind of ['jujutsu', 'colocated']) {
+  test(`Jujutsu ${kind} lifecycle creates, forgets, and safely removes workspaces`, { skip: !HAS_JJ_WORKSPACE_REMOVE }, async t => {
+    const { source, scratch, ctx } = lifecycleFixture(t, kind)
+    writeFileSync(join(source, '.gitignore'), '*.ignored\n')
+    writeFileSync(join(source, 'tracked'), 'base\n')
+    jj(source, ['commit', '-m', 'base'])
+    const head = jj(source, ['--ignore-working-copy', 'log', '--no-graph', '-r', '@-', '-T', 'commit_id'])
+    const handlers = createHandlers(ctx)
+    const scope = { sessionId: 'source', repo: source }
+    const run = body => lifecycleRequest(handlers, scope, body)
+    const forgotten = join(source, 'forgotten')
+    const removed = join(scratch, 'removed')
+    assert.deepEqual(await run({ action: 'create', path: 'forgotten', name: 'review', revision: head }), { status: 200, path: forgotten })
+    assert.equal(jj(forgotten, ['--ignore-working-copy', 'log', '--no-graph', '-r', '@-', '-T', 'commit_id']), head)
+    assert.deepEqual(await run({ action: 'create', path: '../removed' }), { status: 200, path: removed })
+    assert.equal(jj(removed, ['--ignore-working-copy', 'log', '--no-graph', '-r', '@-', '-T', 'commit_id']), head)
+    const listing = await call(handlers.repositories, route('/api/vcs.repositories', scope))
+    const repository = listing.body.repositories[0]
+    assert.equal(repository.capabilities.worktreeRemove, true)
+    assert.equal(repository.worktrees.find(tree => tree.path === forgotten).canForget, true)
+    assert.equal((await run({ action: 'forget', worktree: source })).error?.code, 'worktree-protected')
+    assert.equal((await run({ action: 'forget', worktree: forgotten, expectedName: 'old' })).error?.code, 'worktree-stale')
+    writeFileSync(join(forgotten, 'keep.ignored'), 'keep\n')
+    assert.deepEqual(await run({ action: 'forget', worktree: forgotten, expectedName: 'review' }), { status: 200, path: forgotten })
+    assert.equal(await readFile(join(forgotten, 'keep.ignored'), 'utf8'), 'keep\n')
+    assert.doesNotMatch(jj(source, ['--ignore-working-copy', 'workspace', 'list']), /review/u)
+    const refreshed = await call(handlers.repositories, route('/api/vcs.repositories', scope))
+    assert.ok(!refreshed.body.repositories.some(repo => repo.path === forgotten || repo.worktrees.some(tree => tree.path === forgotten)))
+    writeFileSync(join(removed, 'keep.ignored'), 'ignore\n')
+    writeFileSync(join(removed, 'unseen'), 'new\n')
+    const op = jj(source, ['--ignore-working-copy', 'op', 'log', '--no-graph', '-n1', '-T', 'id'])
+    assert.equal((await run({ action: 'remove', worktree: removed })).error?.code, 'worktree-dirty')
+    assert.equal(jj(source, ['--ignore-working-copy', 'op', 'log', '--no-graph', '-n1', '-T', 'id']), op)
+    rmSync(join(removed, 'keep.ignored'))
+    assert.equal((await run({ action: 'remove', worktree: removed })).error?.code, 'worktree-dirty')
+    rmSync(join(removed, 'unseen'))
+    writeFileSync(join(removed, 'tracked'), 'base\nkeep this edit\n')
+    assert.deepEqual(await run({ action: 'remove', worktree: removed, expectedName: 'removed' }), { status: 200, path: removed })
+    assert.throws(() => accessSync(removed), { code: 'ENOENT' })
+    assert.match(jj(source, ['--ignore-working-copy', 'log', '--no-graph', '-r', 'all()', '-T', 'description']), /SNAPSHOT OF REMOVED WORKSPACE/u)
+  })
 }
 
 test('Git worktree porcelain keeps spaces and newlines, with detached, locked, and skipped records', () => {
@@ -1415,9 +1629,10 @@ test('Git worktree porcelain keeps spaces and newlines, with detached, locked, a
   ]
   const stdout = `${records.map(record => record.join('\0')).join('\0\0')}\0\0`
   assert.deepEqual([...parseGitWorktrees(stdout)], [
-    { path: branchPath, branch: 'topic/slash', head },
-    { path: detachedPath, branch: null, head },
-    { path: join(tmpdir(), 'unborn'), branch: 'unborn', head: null },
+    { path: branchPath, branch: 'topic/slash', head, primary: true, locked: true, prunable: false },
+    { path: detachedPath, branch: null, head, primary: false, locked: false, prunable: false },
+    { path: join(tmpdir(), 'unborn'), branch: 'unborn', head: null, primary: false, locked: false, prunable: false },
+    { path: join(tmpdir(), 'gone'), branch: null, head: null, primary: false, locked: false, prunable: true },
   ])
 })
 
@@ -1454,7 +1669,8 @@ test('registered Git worktrees outside the session show their own read-only stat
   const offered = listing.body.repositories[0].worktrees
   assert.deepEqual(new Set(offered.map(tree => tree.path)), new Set([source, directlyDiscovered, linked, detached]))
   assert.equal(offered[0].path, source, 'the session checkout is first')
-  assert.deepEqual(offered.find(entry => entry.path === linked), { path: linked, name: 'branch checkout', branch: 'topic/preview', head: linkedHead })
+  assert.deepEqual(offered.find(entry => entry.path === linked), { path: linked, name: 'branch checkout', branch: 'topic/preview',
+    head: linkedHead, primary: false, locked: false, inUse: true, canRemove: false, canForget: false })
   assert.equal(offered.find(entry => entry.path === detached)?.branch, null)
 
   const reverse = await call(handlers.repositories, route('/api/vcs.repositories', { sessionId: 'linked' }))
@@ -2436,7 +2652,7 @@ function jjWorkspaceFixture(t) {
     ['source', { header: { cwd: source } }],
     ['linked', { header: { cwd: linked } }],
   ])
-  const host = createHost({ sessions: { get: id => worktreeSessions.get(id) } })
+  const host = createHost({ sessions: { get: id => worktreeSessions.get(id), list: () => [...worktreeSessions.values()] } })
   return { root, source, linked, add, repo: { sessionId: 'source', repo: source }, handlers: createHandlers(host) }
 }
 
@@ -2458,7 +2674,8 @@ test('registered Jujutsu workspaces share one history and keep their own snapsho
   assert.deepEqual(listing.body.repositories.map(entry => entry.path), [source], 'same store collapses the directly discovered workspace')
   const worktrees = listing.body.repositories[0].worktrees
   assert.equal(worktrees[0].path, source)
-  assert.deepEqual(worktrees.find(tree => tree.path === linked), { path: linked, name: 'review preview', head: oldLinked })
+  assert.deepEqual(worktrees.find(tree => tree.path === linked), { path: linked, name: 'review preview', head: oldLinked,
+    primary: false, inUse: true, canRemove: false, canForget: false })
   assert.ok(worktrees.some(tree => tree.path === direct && tree.head === nested))
   const reverse = await list('linked')
   assert.equal(reverse.body.repositories[0].path, linked)
@@ -2850,6 +3067,7 @@ test('apply registers every GET and POST route inside the fence and honors enabl
     '/api/vcs.branch',
     '/api/vcs.tag',
     '/api/vcs.commit-op',
+    '/api/vcs.worktree',
     '/api/vcs.stage',
     '/api/vcs.stage-history',
   ])
@@ -2858,7 +3076,7 @@ test('apply registers every GET and POST route inside the fence and honors enabl
       .flatMap(r => r.methods.map(method => `${method} ${r.path}`)).sort(),
     [`GET ${REPOSITORY_CONFIG_ROUTE}`, `GET ${REPOSITORY_PREVIEW_ROUTE}`, `POST ${REPOSITORY_CONFIG_ROUTE}`],
   )
-  const writePaths = new Set(['/api/vcs.sync', '/api/vcs.switch', '/api/vcs.branch', '/api/vcs.tag', '/api/vcs.commit-op', '/api/vcs.stage', '/api/vcs.stage-history'])
+  const writePaths = new Set(['/api/vcs.sync', '/api/vcs.switch', '/api/vcs.branch', '/api/vcs.tag', '/api/vcs.commit-op', '/api/vcs.worktree', '/api/vcs.stage', '/api/vcs.stage-history'])
   for (const registered of routes) {
     if (registered.path !== REPOSITORY_CONFIG_ROUTE && registered.path !== REPOSITORY_PREVIEW_ROUTE) {
       assert.deepEqual(registered.methods, writePaths.has(registered.path) ? ['POST'] : ['GET'])

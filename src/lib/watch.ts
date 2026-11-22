@@ -223,6 +223,9 @@ export function createWatchHub(
       for (const stream of streams) {
         if (domains !== undefined && (shared ? storeMatch(stream, write) : stream.roots.some(root => sameRepoPath(root, repo.root)))) {
           stream.completeWrite(domains, origin)
+        } else if (domains?.includes(REPOSITORIES)) {
+          // An unselected repository can still be in this panel's discovery list.
+          stream.invalidate([REPOSITORIES], origin)
         }
         stream.schedule()
       }

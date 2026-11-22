@@ -105,12 +105,13 @@ interface RangeHeaderProps<Value extends string> {
   onRefMode: (value: Value) => void
   label?: string
   groupLabel?: string
+  action?: ReactNode
   t: Translate
 }
 
 /** Compact segmented switch shared by the header pickers. */
 function RangeHeader<Value extends string>({
-  options, refMode, onRefMode, label = 'history.commitsLabel', groupLabel = 'history.refLabel', t,
+  options, refMode, onRefMode, label = 'history.commitsLabel', groupLabel = 'history.refLabel', action, t,
 }: RangeHeaderProps<Value>) {
   const moveSegment = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
@@ -146,6 +147,7 @@ function RangeHeader<Value extends string>({
           </button>
         ))}
       </div>
+      {action}
     </div>
   )
 }
@@ -399,6 +401,7 @@ interface HeaderPickerProps {
   filtered?: boolean
   itemSelector?: string
   initialFocusSelector?: string
+  onMenuKeyDown?: (event: KeyboardEvent<HTMLDivElement>, close: (restore: boolean) => void) => void
   children: (close: (restore: boolean) => void) => ReactNode
 }
 
@@ -406,7 +409,7 @@ interface HeaderPickerProps {
 function HeaderPicker({
   kind, label, summary, buttonLabel, title, disabled = false,
   dismissOnScroll, showTitle = true, indicator = null, filtered = false,
-  itemSelector = '[aria-checked]', initialFocusSelector = '[aria-checked="true"]', children,
+  itemSelector = '[aria-checked]', initialFocusSelector = '[aria-checked="true"]', onMenuKeyDown, children,
 }: HeaderPickerProps) {
   const [position, setPosition] = useState<MenuPosition | null>(null)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
@@ -477,7 +480,8 @@ function HeaderPicker({
               close(true)
               return
             }
-            onKeyDown(event)
+            onMenuKeyDown?.(event, close)
+            if (!event.defaultPrevented) onKeyDown(event)
           }}
         >
           {showTitle ? <p className="vcs-picker-menu-title">{label}</p> : null}
@@ -620,6 +624,10 @@ interface WorktreePickerProps {
   sessionPath: string | null | undefined
   commitBased: boolean
   onToggle: (path: string) => void
+  canCreate: boolean
+  busy: boolean
+  onCreate: (restore: () => void) => void
+  onActions: (tree: WorktreeInfo, sessionPath: string | null | undefined, point: MenuPoint, restore: () => void) => void
   ranges: readonly HistoryRange[]
   refMode: string
   filtered?: boolean
@@ -630,39 +638,126 @@ interface WorktreePickerProps {
 
 /** The choices affect what is displayed; keep the menu open for successive changes. */
 function WorktreePicker({
-  worktrees, checkedPaths, sessionPath, commitBased, onToggle, ranges, refMode, filtered = false, onRefMode, t, locale,
+  worktrees, checkedPaths, sessionPath, commitBased, onToggle, canCreate, busy, onCreate, onActions,
+  ranges, refMode, filtered = false, onRefMode, t, locale,
 }: WorktreePickerProps) {
   const currentRange = ranges.find(range => range.value === refMode)
-  const summary = t('top.worktreeSelection', { count: formatCount(checkedPaths.length, locale) })
-  function renderOptions() {
+  const label = t(commitBased ? 'worktree.workspaces' : 'top.worktrees')
+  const summary = t(commitBased ? 'worktree.workspaceSelection' : 'top.worktreeSelection', {
+    count: formatCount(checkedPaths.length, locale),
+  })
+  const createLabel = t(commitBased ? 'worktree.createWorkspace' : 'worktree.createWorktree')
+  const keepOne = t(commitBased ? 'worktree.keepWorkspace' : 'top.keepWorktree')
+  const disabledCreate = busy ? t('error.busy') : !canCreate ? t('error.worktreeUnsupported') : undefined
+  const createRef = useRef<HTMLButtonElement | null>(null)
+  function startCreate(close: (restore: boolean) => void) {
+    if (disabledCreate !== undefined) return
+    close(false)
+    onCreate(() => close(true))
+  }
+  function renderOptions(close: (restore: boolean) => void) {
+    const restore = () => close(true)
+    const create = (
+      <button
+        ref={createRef}
+        type="button"
+        role="menuitem"
+        className="vcs-menu-item vcs-worktree-icon-action vcs-worktree-create"
+        tabIndex={-1}
+        aria-label={createLabel}
+        aria-keyshortcuts="+"
+        aria-disabled={disabledCreate !== undefined || undefined}
+        aria-description={disabledCreate}
+        title={disabledCreate === undefined ? createLabel : `${createLabel} · ${disabledCreate}`}
+        onClick={() => { startCreate(close) }}
+      >
+        <span aria-hidden="true">+</span>
+        <span className="vcs-worktree-create-label" aria-hidden="true">{t('worktree.new')}</span>
+      </button>
+    )
     return (
       <>
         {ranges.length > 0 ? (
-          <RangeHeader options={ranges} refMode={refMode} onRefMode={onRefMode} t={t} />
-        ) : null}
+          <RangeHeader options={ranges} refMode={refMode} onRefMode={onRefMode} action={create} t={t} />
+        ) : (
+          <div className="vcs-picker-header">
+            <span className="vcs-picker-menu-title vcs-picker-range-label">{label}</span>
+            {create}
+          </div>
+        )}
         <div className="vcs-picker-choices">
           {worktrees.map(tree => {
             const { path, name } = tree
             const refLabel = worktreeRefLabel(tree, t, commitBased)
             const checked = checkedPaths.includes(path)
             const last = checked && checkedPaths.length === 1
+            const duplicate = worktrees.some(other => other.path !== path && other.name === name)
+            const detail = duplicate ? path : refLabel === name ? null : refLabel
+            const openActions = (anchor: HTMLElement) => {
+              const rect = anchor.getBoundingClientRect()
+              close(false)
+              onActions(tree, sessionPath, { clientX: rect.left, clientY: rect.bottom }, restore)
+            }
+            const identifyingName = duplicate ? path : name
+            const actionsLabel = t('worktree.actions', { name: identifyingName })
             return (
-              <PickerItem
-                key={path}
-                role="menuitemcheckbox"
-                checked={checked}
-                detail={refLabel === name ? null : refLabel}
-                badge={path === sessionPath ? t('top.sessionWorktree') : undefined}
-                aria-disabled={last || undefined}
-                title={refLabel === null || refLabel === name ? path : `${path}\n${refLabel}`}
-                onClick={() => { if (!last) onToggle(path) }}
-              >
-                {name}
-              </PickerItem>
+              <div key={path} className="vcs-worktree-choice" role="group" data-duplicate={duplicate || undefined}>
+                <PickerItem
+                  role="menuitemcheckbox"
+                  checked={checked}
+                  detail={detail}
+                  aria-label={duplicate ? `${name} · ${path}` : undefined}
+                  badge={path === sessionPath ? t('top.sessionWorktree') : undefined}
+                  aria-disabled={last || undefined}
+                  aria-description={last ? keepOne : undefined}
+                  title={refLabel === null || refLabel === name ? path : `${path}\n${refLabel}`}
+                  onClick={() => { if (!last) onToggle(path) }}
+                  onContextMenu={event => {
+                    event.preventDefault()
+                    openActions(event.currentTarget)
+                  }}
+                  onKeyDown={event => {
+                    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      const action = event.key === 'ArrowLeft' ? createRef.current
+                        : event.currentTarget.parentElement?.querySelector<HTMLElement>('.vcs-worktree-icon-action')
+                      action?.focus()
+                      return
+                    }
+                    if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+                    event.preventDefault()
+                    event.stopPropagation()
+                    openActions(event.currentTarget)
+                  }}
+                >
+                  {name}
+                </PickerItem>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="vcs-menu-item vcs-worktree-icon-action"
+                  tabIndex={-1}
+                  aria-haspopup="menu"
+                  aria-label={actionsLabel}
+                  aria-keyshortcuts="Shift+F10 ArrowRight"
+                  onKeyDown={event => {
+                    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+                    event.currentTarget.parentElement?.querySelector<HTMLElement>('[role="menuitemcheckbox"]')?.focus()
+                    if (event.key === 'ArrowLeft') event.preventDefault()
+                  }}
+                  title={actionsLabel}
+                  onClick={event => { openActions(event.currentTarget) }}
+                >
+                  <span aria-hidden="true">…</span>
+                </button>
+              </div>
             )
           })}
         </div>
-        {worktrees.length > 1 ? <p className="vcs-picker-menu-note">{t('top.keepWorktree')}</p> : null}
+        {worktrees.length > 1 ? (
+          <p className="vcs-picker-menu-note">{keepOne}</p>
+        ) : null}
       </>
     )
   }
@@ -670,12 +765,18 @@ function WorktreePicker({
   return (
     <HeaderPicker
       kind="worktree"
-      label={t('top.worktrees')}
+      label={label}
       summary={summary}
       buttonLabel={filtered && currentRange !== undefined ? `${summary} · ${t(currentRange.label)}` : undefined}
       title={currentRange === undefined ? undefined : t(currentRange.title)}
       dismissOnScroll={false}
-      showTitle={ranges.length === 0}
+      showTitle={false}
+      onMenuKeyDown={(event, close) => {
+        if (event.key !== '+') return
+        event.preventDefault()
+        event.stopPropagation()
+        startCreate(close)
+      }}
       filtered={filtered}
       indicator={filtered ? <FilterIcon /> : null}
     >
@@ -756,6 +857,10 @@ export interface TopBarProps {
   worktrees?: readonly WorktreeInfo[]
   checkedPaths?: readonly string[]
   onToggleWorktree: (path: string) => void
+  onCreateWorktree: WorktreePickerProps['onCreate']
+  onWorktreeActions: WorktreePickerProps['onActions']
+  repoBusy: boolean
+  worktreeBusy: boolean
   sessionPath?: string | null
   revalidating?: boolean
   onSync: () => void
@@ -785,7 +890,7 @@ export interface TopBarProps {
 export function TopBar({
   repositories, cwd, repo, repositoryScope = 'all', checkedRepositories = [], onRepositoryScope, onToggleRepository,
   onManageRepositories, status, capabilities, refMode, onRefMode, onRefresh, refreshing,
-  worktrees = [], checkedPaths = [], onToggleWorktree, sessionPath,
+  worktrees = [], checkedPaths = [], onToggleWorktree, onCreateWorktree, onWorktreeActions, repoBusy, worktreeBusy, sessionPath,
   revalidating = false, onSync, syncing, staging = false, branches = [], branchesStatus = 'idle', branchesError = null,
   branchesTruncated = false, onLoadBranches = () => {}, onSwitchBranch = () => {}, onBranchActions = () => {},
   onRestoreFocus = () => {}, switching = false, branchBusy = null, tagBusy = null, commitBusy = null, notice,
@@ -796,7 +901,7 @@ export function TopBar({
   // commit action) or the panel did (a refresh on becoming visible); the
   // content stays put.
   const busy = refreshing || syncing || switching || branchBusy !== null || tagBusy !== null
-    || commitBusy !== null || staging || revalidating
+    || commitBusy !== null || staging || revalidating || worktreeBusy
   const columnsAction = t(twoColumnsFit
     ? (twoColumns ? 'top.twoColumnsOff' : 'top.twoColumnsOn')
     : (twoColumns ? 'top.twoColumnsNarrowOff' : 'top.twoColumnsNarrowOn'))
@@ -861,6 +966,12 @@ export function TopBar({
     readonlyLabel = t('stage.writeLabel')
     readonlyHint = `${readonlyHint} ${t('stage.indexHint')}`
   }
+  if (capacity?.worktreeCreate === true || capacity?.worktreeRemove === true || capacity?.worktreeForget === true) {
+    readonlyLabel = t('worktree.writes')
+    readonlyHint = readonlyHint === t('top.readonlyHint')
+      ? t('worktree.writesHint')
+      : `${t('worktree.writesHint')} ${readonlyHint}`
+  }
   return (
     <div className="vcs-topbar">
       <RepositoryPicker
@@ -882,6 +993,10 @@ export function TopBar({
           sessionPath={sessionPath}
           commitBased={showsWorkingCopy}
           onToggle={onToggleWorktree}
+          canCreate={capacity?.worktreeCreate === true}
+          busy={repoBusy}
+          onCreate={onCreateWorktree}
+          onActions={onWorktreeActions}
           ranges={ranges}
           refMode={refMode}
           filtered={rangeFiltered && !branchOwnsFilterIndicator}
@@ -975,7 +1090,9 @@ export function TopBar({
       </IconButton>
       <ProgressLine
         busy={busy}
-        label={syncing
+        label={worktreeBusy
+          ? t('worktree.working')
+          : syncing
           ? t('top.syncing')
           : switching
             ? t('top.switching')

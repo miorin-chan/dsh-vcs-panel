@@ -18,6 +18,7 @@ import type { DiffComparison } from '../diff.js'
 import type { JjRef } from '../jujutsu.js'
 import type { StatusBranch, StatusGroups } from '../status.js'
 import type { Worktree, WorktreeOptions } from '../worktrees.js'
+import type { RecheckTarget, WorktreeChange, WorktreeCreate } from '../worktree-ops.js'
 import type { VcsCapabilities } from './capabilities.js'
 export type { VcsCapabilities, VcsRange } from './capabilities.js'
 import { GitBackend } from './git.js'
@@ -202,7 +203,7 @@ export interface SyncAnswer {
 /** One local-branch listing. */
 export interface BranchListing {
   /** Local branches, newest commit first. */
-  branches: { name: string, current: boolean }[]
+  branches: { name: string, current: boolean, occupied?: boolean }[]
   /** True when the listing was capped. */
   truncated: boolean
 }
@@ -237,6 +238,10 @@ export interface VcsBackend {
   commonDir(root: string, signal: AbortSignal): Promise<string | null>
   /** Live sibling trees, anchor first. */
   worktrees(root: string, signal: AbortSignal, options?: WorktreeOptions): AsyncIterable<Worktree>
+  /** Resolve available lifecycle commands for the installed backend. */
+  lifecycleInfo?(root: string, signal: AbortSignal): Promise<{ capabilities: VcsCapabilities, forgotten?: boolean }>
+  createWorktree?(root: string, common: string, request: WorktreeCreate, signal: AbortSignal, recheck: RecheckTarget, changed: WorktreeChange): Promise<void>
+  deleteWorktree?(root: string, common: string, tree: Worktree, action: 'remove' | 'forget', signal: AbortSignal, recheck: RecheckTarget, changed: WorktreeChange): Promise<void>
   /** The repository's backend metadata directory, when there is one. */
   gitDir?(root: string, signal: AbortSignal): Promise<string | null>
   /** Which of a batch of paths the backend ignores. */

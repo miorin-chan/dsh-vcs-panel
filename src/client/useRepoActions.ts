@@ -14,7 +14,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MutableRefObject, RefObject } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 
-import { failureOf, type Api, type CommitNode, type RepositoryCapabilities, type StageRequest, type StatusData } from './api.js'
+import {
+  failureOf, type Api, type CommitNode, type RepositoryCapabilities, type StageRequest, type StatusData,
+  type WorktreeCreateRequest, type WorktreeInfo, type WorktreeRemovalAction, type WorktreeRequest,
+} from './api.js'
+import { worktreeActionReason } from './worktrees.js'
 import { branchActions, remoteBranchActions, type BranchMenuAction, type BranchOpAction, type RemoteBranchAction } from './branch.js'
 import { COMMIT_ACTION_META, commitActions, type CommitAction, type CommitDialogKind } from './commit.js'
 import { tagActions, type TagAction } from './tag.js'
@@ -26,7 +30,7 @@ import { hasClass } from './keys.js'
 import type { PanelState } from './state.js'
 
 /** One write domain under the per-repository lock. */
-export type RepoWriteDomain = 'sync' | 'switch' | 'branch' | 'tag' | 'commit' | 'stage'
+export type RepoWriteDomain = 'sync' | 'switch' | 'branch' | 'tag' | 'commit' | 'stage' | 'worktree'
 
 /** One write in flight for one repository. */
 export interface RepoWrite {
@@ -41,6 +45,7 @@ type InFlightWrites = Record<string, RepoWrite>
 export interface Notice {
   tone: 'error' | 'info'
   text: string
+  domain?: 'worktree'
 }
 
 /** The outcome of one write that was under the lock. */
@@ -116,7 +121,15 @@ export interface CommitMenuTarget extends RefMenuTargetBase {
 }
 
 /** The open actions menu. */
-export type RefMenuTarget = BranchMenuTarget | TagMenuTarget | CommitMenuTarget
+export type RefMenuTarget = BranchMenuTarget | TagMenuTarget | CommitMenuTarget | WorktreeMenuTarget
+
+interface WorktreeMenuTarget extends RefMenuTargetBase {
+  domain: 'worktree'
+  kind: 'worktree'
+  tree: WorktreeInfo
+  commitBased: boolean
+  actions: WorktreeRemovalAction[]
+}
 
 /** One branch confirmation dialog. */
 export interface BranchDialogRequest {
@@ -146,7 +159,12 @@ export interface CommitDialogRequest {
 }
 
 /** The open confirmation dialog. */
-export type RepoDialogRequest = BranchDialogRequest | TagDialogRequest | CommitDialogRequest
+export type RepoDialogRequest = BranchDialogRequest | TagDialogRequest | CommitDialogRequest | WorktreeDialogRequest
+
+export type WorktreeDialogRequest = { domain: 'worktree'; repo: string; commitBased: boolean } & (
+  | { kind: 'create' }
+  | { kind: WorktreeRemovalAction; tree: WorktreeInfo }
+)
 
 /** The extra fields one branch action takes. */
 export interface BranchActionOptions {
@@ -180,7 +198,8 @@ export interface StageWriteMeta {
 /** Where focus returns after a menu closes. */
 interface MenuReturn {
   element: HTMLElement | null
-  domain: 'branch' | 'tag' | 'commit'
+  domain: 'branch' | 'tag' | 'commit' | 'worktree'
+  restore?: () => void
 }
 
 /** The commits' reachability from HEAD, as the action pruning reads it. */
@@ -221,6 +240,7 @@ export interface UseRepoActionsParams {
   locale?: string
   /** Ask the panel to re-read after a write. */
   refresh: (requester?: string) => void
+  onWorktreeChange: (repo: string, createdPath?: string) => void
   /** Reset the reading position after the checked-out commit moved. */
   resetReadingForNewHead: () => void
   /** State one notice, or clear it. */
@@ -245,6 +265,10 @@ export interface RepoActions {
   branchBusy: string | null
   tagBusy: string | null
   commitBusy: string | null
+  worktreeBusy: boolean
+  openWorktreeCreate: (restore: () => void) => void
+  openWorktreeActions: (tree: WorktreeInfo, sessionPath: string | null | undefined, point: MenuPoint, restore: () => void) => void
+  confirmWorktree: (request?: WorktreeCreateRequest) => void
   resetActionsUi: () => void
   sync: () => Promise<void>
   stage: (target: StageRequest) => Promise<boolean>
@@ -281,7 +305,7 @@ function checkedOutBranch(statusData: StatusData | null): string | null {
 export function useRepoActions({
   api, sessionId, repo, stateRef, sessionRef, statusData, capabilities,
   commits, commitIndex, head, rootRef, onRestoreFocus, t, locale,
-  refresh, resetReadingForNewHead, setNotice, clearBranches, abortBranches,
+  refresh, onWorktreeChange, resetReadingForNewHead, setNotice, clearBranches, abortBranches,
 }: UseRepoActionsParams): RepoActions {
   const [inFlight, setInFlight] = useState<InFlightWrites>({})
   const inFlightRef = useRef<Map<string, RepoWrite>>(new Map())
@@ -301,7 +325,8 @@ export function useRepoActions({
 
   const reachability = useMemo<CommitReachability>(() => reachableCommits(commits, head), [commits, head])
 
-  const activeWrite = repo === null ? null : (inFlight[repo] ?? null)
+  const selectedRepo = stateRef.current.repo
+  const activeWrite = selectedRepo === null ? null : (inFlight[selectedRepo] ?? null)
   const repoBusy = activeWrite !== null
   const dialogWriting = activeWrite !== null && dialog !== null
     && activeWrite.domain === dialog.domain && activeWrite.action === dialog.kind
@@ -323,6 +348,10 @@ export function useRepoActions({
     menuReturnRef.current = null
     const domain = entry?.domain
     requestAnimationFrame(() => {
+      if (entry?.restore !== undefined) {
+        entry.restore()
+        return
+      }
       if (
         cancelled === true
         && entry?.element !== null
@@ -515,6 +544,31 @@ export function useRepoActions({
     })
   }, [capabilities, commitIndex, commits, head, reachability, statusData])
 
+  const openWorktreeCreate = useCallback((restore: () => void): void => {
+    const repo = stateRef.current.repo
+    if (repo === null || capabilities?.worktreeCreate !== true || inFlightRef.current.has(repo)) return
+    menuReturnRef.current = { element: null, domain: 'worktree', restore }
+    setDialogError(null)
+    setDialog({ domain: 'worktree', kind: 'create', repo, commitBased: capabilities.workingCopy === 'commit' })
+  }, [capabilities, stateRef])
+
+  const openWorktreeActions = useCallback((
+    tree: WorktreeInfo, sessionPath: string | null | undefined, point: MenuPoint, restore: () => void,
+  ): void => {
+    if (capabilities === null) return
+    const commitBased = capabilities.workingCopy === 'commit'
+    const actions: WorktreeRemovalAction[] = commitBased ? ['forget', 'remove'] : ['remove']
+    const disabledActions = Object.fromEntries(actions.flatMap(action => {
+      const reason = worktreeActionReason(action, tree, sessionPath, capabilities)
+      return reason === undefined ? [] : [[action, t(reason)]]
+    }))
+    menuReturnRef.current = { element: null, domain: 'worktree', restore }
+    setMenu({
+      domain: 'worktree', kind: 'worktree', name: tree.name, detail: tree.path,
+      tree, commitBased, actions, disabledActions, x: point.clientX, y: point.clientY,
+    })
+  }, [capabilities, t])
+
   /** Dispatch a right-click or activated branch/remote/tag badge. */
   const onRefActions = useCallback((reference: RefEntry, event: RefActionEvent, returnElement?: HTMLElement | null): void => {
     if (reference.kind === 'branch' && capabilities?.branchOps === true) {
@@ -640,8 +694,15 @@ export function useRepoActions({
   /** Handle selecting an item from the shared actions menu. */
   const chooseMenuAction = useCallback((action: string): void => {
     const target = menu
-    if (target === null) return
+    if (target === null || target.disabledActions?.[action] !== undefined) return
     setMenu(null)
+    if (target.domain === 'worktree') {
+      const repo = stateRef.current.repo
+      if (repo === null || (action !== 'forget' && action !== 'remove')) return
+      setDialogError(null)
+      setDialog({ domain: 'worktree', kind: action, repo, tree: target.tree, commitBased: target.commitBased })
+      return
+    }
     // The menu hands back one of its own action ids; the per-domain dialog
     // narrows it to the action type that dialog accepts.
     if (target.domain === 'branch') {
@@ -691,7 +752,7 @@ export function useRepoActions({
       subject: target.subject ?? '',
     })
     setDialogError(null)
-  }, [loadTagRemotes, menu, restoreFocus, runBranchAction, statusData, switchBranch])
+  }, [loadTagRemotes, menu, restoreFocus, runBranchAction, stateRef, statusData, switchBranch])
 
   /** Submit the open confirmation dialog. */
   const confirmDialog = useCallback((values: DialogConfirmValues): void => {
@@ -700,10 +761,46 @@ export function useRepoActions({
       void runBranchAction(dialog.kind, dialog.branch, values)
     } else if (dialog.domain === 'tag') {
       void runTagAction(dialog.kind, dialog.tag, values)
-    } else {
+    } else if (dialog.domain === 'commit') {
       void runCommitAction(dialog.kind, dialog, values)
     }
   }, [dialog, runBranchAction, runCommitAction, runTagAction])
+
+  const confirmWorktree = useCallback((create?: WorktreeCreateRequest): void => {
+    if (dialog?.domain !== 'worktree' || stateRef.current.repo !== dialog.repo) return
+    const request: WorktreeRequest | undefined = dialog.kind === 'create'
+      ? create
+      : {
+        action: dialog.kind,
+        worktree: dialog.tree.path,
+        ...(dialog.commitBased ? { expectedName: dialog.tree.name } : {
+          expectedBranch: dialog.tree.branch,
+          expectedHead: dialog.tree.branch === null ? dialog.tree.head ?? undefined : undefined,
+        }),
+      }
+    const repo = dialog.repo
+    if (request === undefined || inFlightRef.current.has(repo)) return
+    setDialogError(null)
+    setNotice(null)
+    void runRepoWrite(repo, 'worktree', request.action, () => api.worktree(repo, request), run => {
+      if (sessionRef.current !== sessionId) return
+      if (run.ok || ['worktree-partial', 'worktree-stale'].includes(run.error.code ?? '')) {
+        onWorktreeChange(repo, run.ok && request.action === 'create' ? run.value.path : undefined)
+      }
+      if (stateRef.current.repo !== repo) return
+      if (!run.ok) {
+        setDialogError(run.error)
+        return
+      }
+      abortBranches()
+      clearBranches()
+      setDialog(null)
+      const key = request.action === 'create' ? 'worktree.created'
+        : request.action === 'forget' ? 'worktree.forgotten' : 'worktree.removed'
+      setNotice({ tone: 'info', text: t(key, { path: run.value.path }), domain: 'worktree' })
+      restoreFocus()
+    })
+  }, [abortBranches, api, clearBranches, dialog, onWorktreeChange, restoreFocus, runRepoWrite, sessionId, sessionRef, setNotice, stateRef, t])
 
   /** Close the open confirmation dialog unless its own write is running. */
   const cancelDialog = useCallback((): void => {
@@ -731,6 +828,10 @@ export function useRepoActions({
     branchBusy: activeWrite?.domain === 'branch' ? activeWrite.action : null,
     tagBusy: activeWrite?.domain === 'tag' ? activeWrite.action : null,
     commitBusy: activeWrite?.domain === 'commit' ? activeWrite.action : null,
+    worktreeBusy: activeWrite?.domain === 'worktree',
+    openWorktreeCreate,
+    openWorktreeActions,
+    confirmWorktree,
     resetActionsUi,
     sync,
     stage,
