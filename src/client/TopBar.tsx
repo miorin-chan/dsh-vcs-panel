@@ -927,7 +927,7 @@ export interface TopBarProps {
 
 /** Render the panel header. */
 export function TopBar({
-  repositories, cwd, repo, repositoryScope = 'all', checkedRepositories = [], onRepositoryScope, onToggleRepository,
+  repositories, cwd, repo, repositoryScope = 'selected', checkedRepositories = [], onRepositoryScope, onToggleRepository,
   onManageRepositories, status, capabilities, refMode, onRefMode, onRefresh, refreshing,
   worktrees = [], checkedPaths = [], onToggleWorktree, onCreateWorktree, onWorktreeActions, repoBusy, worktreeBusy, sessionPath,
   revalidating = false, onSync, syncing, staging = false, branches = [], branchesStatus = 'idle', branchesError = null,

@@ -18,7 +18,8 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
   so a wide Sidebar gives the diff its full width.
 - **Timeline & lane graph.** Browse working changes and topological commit history together,
   with branches, bookmarks, and tags.
-  Use the repository menu header to show **All** repositories or only the **Selected** ones.
+  The repository menu defaults to **Selected**.
+  Use its header to switch to **All** repositories.
   Click a repository row to include or exclude it in the selected view.
   Expand or collapse each repository group independently.
   Select a row in an expanded timeline to make its repository current for details and actions.

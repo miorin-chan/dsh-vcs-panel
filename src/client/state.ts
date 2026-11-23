@@ -111,7 +111,7 @@ export interface PreferredNodeStatus {
 export function defaultState(): PanelState {
   return {
     repo: null,
-    repositoryScope: 'all',
+    repositoryScope: 'selected',
     checkedRepositories: [],
     expandedRepositories: null,
     worktrees: [],
@@ -202,7 +202,9 @@ export function sanitizeState(raw: unknown): PanelState {
   if (!isRecord(raw) || Array.isArray(raw)) return state
   const stored = raw
   state.repo = textOrNull(stored.repo)
-  if (stored.repositoryScope === 'selected') state.repositoryScope = 'selected'
+  if (stored.repositoryScope === 'all' || stored.repositoryScope === 'selected') {
+    state.repositoryScope = stored.repositoryScope
+  }
   for (const field of ['checkedRepositories', 'expandedRepositories', 'worktrees'] as const) {
     const paths = stored[field]
     if (Array.isArray(paths)) {

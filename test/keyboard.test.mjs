@@ -2513,7 +2513,7 @@ test('TopBar repository rows filter in place and return keyboard focus to the tr
     render(repositories)
     const trigger = body.querySelector('.vcs-repo-button')
     assert.equal(textOf(trigger), 'shared')
-    assert.equal(trigger.attributes.get('title'), '/project/backend/shared')
+    assert.equal(trigger.attributes.get('title'), '/project/backend/shared\nrepositories.selectedTitle')
     assert.equal(trigger.attributes.get('aria-haspopup'), 'menu')
     assert.equal(trigger.attributes.get('aria-expanded'), 'false')
 
@@ -2746,13 +2746,19 @@ test('VcsView scopes in-flight writes per repository without locking another rep
     const groups = () => body.querySelectorAll('.vcs-repository-group-header')
     const syncBtn = body.querySelector('.vcs-sync')
 
-    assert.equal(groups().length, 2, 'all discovered repositories get a group')
+    assert.equal(picker.attributes.has('data-filtered'), true)
+    assert.equal(groups().length, 1, 'a fresh session shows only the default repository')
     assert.equal(groups()[0].attributes.get('aria-expanded'), 'true')
     picker.focus()
     harness.keyDown(picker, 'ArrowDown')
     await harness.settle()
     harness.keyDown(harness.document.activeElement, 'Home')
     assert.equal(harness.document.activeElement, ranges()[0])
+    assert.deepEqual(checks().map(item => item.attributes.get('aria-checked')), ['true', 'false'])
+    harness.keyClick(ranges()[0])
+    await harness.settle()
+    assert.equal(picker.attributes.has('data-filtered'), false)
+    assert.equal(groups().length, 2, 'All shows every discovered repository')
     harness.keyDown(ranges()[0], 'ArrowRight')
     assert.equal(harness.document.activeElement, ranges()[1])
     harness.keyClick(ranges()[1])
@@ -2870,8 +2876,10 @@ test('VcsView scopes in-flight writes per repository without locking another rep
     // An unavailable Jujutsu history still offers a working-copy row for activation.
     harness.unmount()
     failJujutsuHistory = true
+    stored.set('vcs:session-multirepo-unavailable', JSON.stringify({ repositoryScope: 'all' }))
     harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-multirepo-unavailable', t, locale: 'en-US' }))
     await harness.settle()
+    assert.equal(groups().length, 2, 'a saved All scope is restored')
     harness.keyClick(groups()[1])
     await harness.settle()
     const unavailable = groupList()[1]
