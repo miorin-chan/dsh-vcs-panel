@@ -99,6 +99,14 @@ export const HALF_LANE_UNIT = 6
 /** Reserved content offset after the rightmost lane, in pixels. */
 export const LANE_PADDING = 8
 
+/**
+ * Left edge of the first lane slot, in pixels, so the first lane runs at
+ * `LANE_INSET + HALF_LANE_UNIT`. Upstream uses 4; the timeline row's pill
+ * starts 4 px in, so the panel moves the lanes in far enough that the selected
+ * ring keeps a gap from the pill's edge instead of touching it.
+ */
+export const LANE_INSET = 10
+
 /** Rows per lane coordinate unit: y is measured in rows. */
 export const ROW_UNIT = 1
 
@@ -277,7 +285,7 @@ export function buildGraph(commits: readonly GraphCommit[]): GraphLayout {
     let major: PathHelper | null = null
 
     offsetY += ROW_UNIT
-    let offsetX = 4 - HALF_LANE_UNIT
+    let offsetX = LANE_INSET - HALF_LANE_UNIT
     const maxOffsetOld = unsolved.length > 0 ? unsolved[unsolved.length - 1].lastX : offsetX + LANE_UNIT
 
     // Pass / Goto / End every active lane for this row.

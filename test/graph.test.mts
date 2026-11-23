@@ -113,7 +113,7 @@ test('linear history keeps one stable lane', () => {
     assert.ok(Number.isFinite(margin))
     assert.ok(margin > 0)
   }
-  assert.equal(layout.commitLeftMargin[0], 18)
+  assert.equal(layout.commitLeftMargin[0], 24)
   assert.ok(layout.paths[0].points.length >= 2)
   assert.equal(layout.paths[0].points[0].x, xs[0])
 
@@ -157,7 +157,7 @@ test('merge commit links to an already tracked parent', () => {
 
   assertAllFinite(layout)
   assertPathsDrawable(layout)
-  assert.equal(graphWidth(layout), 30)
+  assert.equal(graphWidth(layout), 36)
 })
 
 test('octopus merge starts a lane for every additional parent', () => {
@@ -194,10 +194,10 @@ test('root commit and parents missing from the page do not throw', () => {
   const rootOnly = buildGraph([node('R')])
   assert.equal(rootOnly.dots.length, 1)
   assert.equal(rootOnly.dots[0].type, 'default')
-  assert.equal(rootOnly.dots[0].center.x, 10)
+  assert.equal(rootOnly.dots[0].center.x, 16, 'the first lane keeps the selected ring clear of the row pill')
   assert.equal(rootOnly.paths.length, 0, 'no parent means no path')
   assert.equal(rootOnly.links.length, 0)
-  assert.deepEqual(rootOnly.commitLeftMargin, [18])
+  assert.deepEqual(rootOnly.commitLeftMargin, [24])
   assertAllFinite(rootOnly)
 
   // A parent that is not part of the loaded page: the lane ends at the bottom.
@@ -205,8 +205,8 @@ test('root commit and parents missing from the page do not throw', () => {
   assert.equal(missingParent.dots.length, 2)
   assert.equal(missingParent.paths.length, 1)
   const points = missingParent.paths[0].points
-  assert.deepEqual(points[0], { x: 10, y: 0.5 })
-  assert.deepEqual(points[points.length - 1], { x: 10, y: 2 })
+  assert.deepEqual(points[0], { x: 16, y: 0.5 })
+  assert.deepEqual(points[points.length - 1], { x: 16, y: 2 })
   assertAllFinite(missingParent)
   assertPathsDrawable(missingParent)
 })
