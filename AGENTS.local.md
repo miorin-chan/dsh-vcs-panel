@@ -17,8 +17,10 @@
   逐模块产出 `lib/**/*.js`。
 - [src/client/index.tsx](src/client/index.tsx) 是浏览器半入口；`src/client/**/*.ts(x)` 是面板、
   对话框、变更树、diff 与历史视图。
-  纯模块另产出 `lib/client/**/*.js` 镜像供 `node --test` 直接 import；`.tsx` 组件由 `client.js` 承载。
-- `index.js`、`client.js`、`lib/**/*.js` 是入库的构建产物，不手改；`scripts/build.mjs --check` 防止落后。
+  纯模块编译到 `lib/client/` 供 `node --test` 导入，Git 忽略这一目录。
+  `.tsx` 组件由 `client.js` 承载。
+- Git 跟踪 `index.js`、`client.js` 和 `src/lib/` 对应的宿主产物。
+  修改源码后用 `npm run build` 更新产物，用 `scripts/build.mjs --check` 核对当前产物。
 - `tsconfig.json`、`scripts/build.mjs`、`scripts/sync-types.mjs` 来自工作区 `tools/dsh-plugin-ts/` 模板，
   本插件在模板之上增加客户端镜像与递归 `src/lib` 产物。
 - 类型只以 `import type` 使用，DSH 服务声明集中在 [src/dsh.d.ts](src/dsh.d.ts)；
@@ -140,7 +142,7 @@
 ## 骨架与 Markdown
 
 - 保持插件可以独立安装、启用与停用，并保持 npm 公开发布所需的包结构。
-  保留 `src/`、`scripts/`、`tsconfig.json` 与现有的 `test/`，产物随源码入库。
+  保留 `src/`、`scripts/`、`tsconfig.json` 与现有的 `test/`。
 - `npm run check` 一次运行测试、类型检查、产物新鲜度与类型包版本钉住。
 - 在工作区根目录运行 `node tools/new-dsh-plugin/cli.mjs --check plugins/dsh-vcs-panel` 检查骨架。
 - 重排修改过的英文 Markdown 时，在项目根目录运行 `docs/scripts/reflow md <path>`。

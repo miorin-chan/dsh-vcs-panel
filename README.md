@@ -155,17 +155,17 @@ Restart DSH after adding. Disable or uninstall in **Plugins** at any time (resto
 ## Development
 
 ```sh
-npm install          # install the build and type dependencies
-npm run build        # build index.js, client.js, and lib/ from src/
-npm run typecheck    # tsc -p tsconfig.json
-npm run check        # tests, typecheck, artifact freshness, pinned type packages
-npm pack --dry-run   # verify package contents
+pnpm install --frozen-lockfile # install dependencies and build the artifacts
+npm test                     # rebuild and run tests
+npm run check                # tests, typecheck, artifact freshness, pinned type packages
+npm pack --dry-run            # preview package contents
 ```
 
-Sources are TypeScript under `src/`: `src/host/` for the Host half, `src/lib/`
-for private Host modules, and `src/client/` for the browser half.
-`index.js`, `client.js`, and `lib/**/*.js` are generated artifacts built from them
-and committed; run `npm run build` after changing sources.
+The TypeScript sources live in `src/host/`, `src/lib/` and `src/client/`.
+Git tracks the built Host and Client entries and the private Host modules.
+The build also generates modules under `lib/client/` for Node tests, and Git ignores that directory.
+Install dependencies before running `npm run check` on a fresh checkout.
+Use `npm run build` to refresh the artifacts after editing the sources.
 Types are used only with `import type`, so no artifact imports `@deepseek-ai/*` at runtime.
 Run `dsh plugin` lifecycle checks against a temporary `DSH_HOME` to keep your real profile untouched.
 To check the panel in a running DSH Web, create the Git fixture with `node scripts/fixture.mjs <dir>`

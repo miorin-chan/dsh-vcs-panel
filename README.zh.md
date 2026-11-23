@@ -118,15 +118,16 @@ DeepSeek Harness 右侧栏里的版本管理插件。
 ## 开发
 
 ```sh
-npm install          # 安装构建与类型依赖
-npm run build        # 从 src/ 构建 index.js、client.js 与 lib/
-npm run typecheck    # 运行 tsc -p tsconfig.json
-npm run check        # 测试、类型、产物新鲜度与类型包版本
-npm pack --dry-run   # 检查打包内容
+pnpm install --frozen-lockfile # 安装依赖并构建
+npm test                     # 重建后运行测试
+npm run check                # 测试、类型、产物新鲜度与类型包版本
+npm pack --dry-run            # 预览打包内容
 ```
 
-源码是 `src/` 下的 TypeScript：`src/host/` 为宿主半，`src/lib/` 为私有宿主模块，`src/client/` 为浏览器半。
-`index.js`、`client.js` 与 `lib/**/*.js` 是由这些源码构建的入库产物，修改源码后运行 `npm run build` 更新。
+TypeScript 源码位于 `src/host/`、`src/lib/` 和 `src/client/`。
+Git 跟踪构建后的宿主入口、客户端入口及私有宿主模块。
+构建还会在 `lib/client/` 下生成供 Node 测试导入的模块，Git 忽略该目录。
+全新检出时先安装依赖，再运行 `npm run check`。修改源码后可运行 `npm run build` 更新产物。
 类型只以 `import type` 使用，产物里没有 `@deepseek-ai/*` 的运行时 import。
 验证 `dsh plugin` 安装、升级与卸载时请使用临时 `DSH_HOME`，保持真实 profile 独立。
 在运行中的 DSH Web 里检查面板时，用 `node scripts/fixture.mjs <dir>` 生成 Git 夹具，

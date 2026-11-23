@@ -471,7 +471,7 @@ type TurnSummary = {
 ### 构建与类型
 
 源码是 TypeScript：宿主半在 `src/host/`，私有宿主模块在 `src/lib/`，客户端半在 `src/client/`。
-`scripts/build.mjs` 用 esbuild 从这些源码产出四组入库产物：
+`scripts/build.mjs` 用 esbuild 从这些源码生成四组产物。
 
 | 源码 | 产物 | 形态 |
 | --- | --- | --- |
@@ -480,11 +480,11 @@ type TurnSummary = {
 | `src/lib/**/*.ts` | `lib/**/*.js` | 每个模块单独产出，相对说明符保留 |
 | `src/client/**/*.ts` | `lib/client/**/*.js` | 客户端纯模块镜像，供 `node --test` 直接 import |
 
-`--check` 比对全部产物与源码，产物落后即失败；产物不手改。
-`client.js` 只把宿主模块表提供的 `react`、`react/jsx-runtime` 与 `@deepseek-ai/*` 设为 external，
-其余内联；CSS 以文本打入 bundle，挂载时注入单个 `<style>`，类名统一使用 `vcs-` 前缀。
-客户端镜像不含 `.tsx` 组件：测试从 `lib/client/` 取纯模块行为，
-组件级测试用 esbuild 在内存里编译 `.tsx`（`test/keyboard.test.mjs`）。
+`--check` 比对磁盘上的全部产物与源码，文件缺失或落后均会失败。
+`client.js` 只把宿主模块表提供的 `react`、`react/jsx-runtime` 与 `@deepseek-ai/*` 设为 external，其余内联。
+CSS 以文本打入 bundle，挂载时注入单个 `<style>`，类名统一使用 `vcs-` 前缀。
+Git 忽略 `lib/client/`。安装依赖和 `npm test` 都会生成这个目录，打包时它随 `lib/` 收录。
+测试从客户端镜像导入纯模块，组件级测试用 esbuild 在内存里编译 `.tsx`（`test/keyboard.test.mjs`）。
 
 `tsc -p tsconfig.json` 以 `strict` 检查 `src/`。DSH 类型包只以 `import type` 使用：服务声明集中在 `src/dsh.d.ts`，
 `Context` 来自 `@deepseek-ai/cordis`，产物里没有 `@deepseek-ai/*` 的运行时 import。
