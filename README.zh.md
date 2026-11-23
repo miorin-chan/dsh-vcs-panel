@@ -108,7 +108,9 @@ DeepSeek Harness 右侧栏里的版本管理插件。
 需要 **DSH 0.2.2-rc.3+**（Desktop 或 Web，包含右侧栏页签与导航 API），且 `PATH` 中包含 `git` 或 `jj`。
 发现和管理同仓库的其他 Jujutsu 工作区需要 **jj 0.47+**，且工作区路径已登记；否则仍能查看当前工作区。
 
-- **界面安装：** 打开 **Plugins → Add plugin**，选择本目录后重启 DSH。
+在新检出的目录中运行 `pnpm install --frozen-lockfile` 安装依赖并构建插件，再用以下任一方式添加目录。
+
+- **界面安装：** 打开 **Plugins → Add plugin** 并选择该目录。
 - **命令行安装：**
   ```sh
   dsh plugin --profile desktop add link:/path/to/dsh-vcs-panel
@@ -125,8 +127,8 @@ npm pack --dry-run            # 预览打包内容
 ```
 
 TypeScript 源码位于 `src/host/`、`src/lib/` 和 `src/client/`。
-Git 跟踪构建后的宿主入口、客户端入口及私有宿主模块。
-构建还会在 `lib/client/` 下生成供 Node 测试导入的模块，Git 忽略该目录。
+Git 忽略生成的 `index.js`、`client.js` 和 `lib/`。
+npm 包收录这两个入口及整个 `lib/`，其中 `lib/client/` 下的模块供 Node 测试使用。
 全新检出时先安装依赖，再运行 `npm run check`。修改源码后可运行 `npm run build` 更新产物。
 类型只以 `import type` 使用，产物里没有 `@deepseek-ai/*` 的运行时 import。
 验证 `dsh plugin` 安装、升级与卸载时请使用临时 `DSH_HOME`，保持真实 profile 独立。

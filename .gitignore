@@ -3,7 +3,9 @@ node_modules/
 .pnpm-store/
 
 # build / test artifacts
-/lib/client/
+/index.js
+/client.js
+/lib/
 coverage/
 .nyc_output/
 *.tgz

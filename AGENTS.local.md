@@ -17,10 +17,10 @@
   逐模块产出 `lib/**/*.js`。
 - [src/client/index.tsx](src/client/index.tsx) 是浏览器半入口；`src/client/**/*.ts(x)` 是面板、
   对话框、变更树、diff 与历史视图。
-  纯模块编译到 `lib/client/` 供 `node --test` 导入，Git 忽略这一目录。
+  纯模块编译到 `lib/client/` 供 `node --test` 导入。
   `.tsx` 组件由 `client.js` 承载。
-- Git 跟踪 `index.js`、`client.js` 和 `src/lib/` 对应的宿主产物。
-  修改源码后用 `npm run build` 更新产物，用 `scripts/build.mjs --check` 核对当前产物。
+- Git 忽略生成的 `index.js`、`client.js` 和 `lib/`。
+  修改源码后用 `npm run build` 更新产物，用 `node scripts/build.mjs --check` 核对当前产物。
 - `tsconfig.json`、`scripts/build.mjs`、`scripts/sync-types.mjs` 来自工作区 `tools/dsh-plugin-ts/` 模板，
   本插件在模板之上增加客户端镜像与递归 `src/lib` 产物。
 - 类型只以 `import type` 使用，DSH 服务声明集中在 [src/dsh.d.ts](src/dsh.d.ts)；

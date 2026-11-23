@@ -483,7 +483,7 @@ type TurnSummary = {
 `--check` 比对磁盘上的全部产物与源码，文件缺失或落后均会失败。
 `client.js` 只把宿主模块表提供的 `react`、`react/jsx-runtime` 与 `@deepseek-ai/*` 设为 external，其余内联。
 CSS 以文本打入 bundle，挂载时注入单个 `<style>`，类名统一使用 `vcs-` 前缀。
-Git 忽略 `lib/client/`。安装依赖和 `npm test` 都会生成这个目录，打包时它随 `lib/` 收录。
+Git 忽略这四组产物。安装依赖和 `npm test` 都会生成它们，打包时 `lib/client/` 随 `lib/` 一并收录。
 测试从客户端镜像导入纯模块，组件级测试用 esbuild 在内存里编译 `.tsx`（`test/keyboard.test.mjs`）。
 
 `tsc -p tsconfig.json` 以 `strict` 检查 `src/`。DSH 类型包只以 `import type` 使用：服务声明集中在 `src/dsh.d.ts`，

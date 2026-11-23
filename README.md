@@ -145,7 +145,10 @@ and `git` or `jj` on `PATH`.
 Discovering and managing Jujutsu sibling workspaces requires **jj 0.47+** and recorded workspace paths.
 The current workspace remains available for browsing without them.
 
-- **In DSH:** Open **Plugins → Add plugin**, select this directory, and restart DSH.
+Run `pnpm install --frozen-lockfile` in a fresh checkout to install dependencies and build the plugin.
+Then add the directory using either of these methods.
+
+- **In DSH:** Open **Plugins → Add plugin** and select the directory.
 - **Via CLI:**
   ```sh
   dsh plugin --profile desktop add link:/path/to/dsh-vcs-panel
@@ -162,8 +165,8 @@ npm pack --dry-run            # preview package contents
 ```
 
 The TypeScript sources live in `src/host/`, `src/lib/` and `src/client/`.
-Git tracks the built Host and Client entries and the private Host modules.
-The build also generates modules under `lib/client/` for Node tests, and Git ignores that directory.
+Git ignores the generated `index.js`, `client.js`, and `lib/` directory.
+The npm package includes both entries and `lib/`, including the `lib/client/` modules used by Node tests.
 Install dependencies before running `npm run check` on a fresh checkout.
 Use `npm run build` to refresh the artifacts after editing the sources.
 Types are used only with `import type`, so no artifact imports `@deepseek-ai/*` at runtime.

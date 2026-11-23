@@ -1,5 +1,5 @@
 /**
- * Build this plugin's committed artifacts from TypeScript sources.
+ * Build this plugin's Host and Client artifacts from TypeScript sources.
  *
  *   src/host/index.ts       → index.js              ESM for the Host process
  *   src/client/index.tsx    → client.js             classic script for the Web module loader
@@ -11,8 +11,8 @@
  * shell's frozen table. Everything else is inlined, so the Client artifact is
  * self-contained apart from those externals.
  *
- * The private `lib/` modules are committed artifacts rather than bundle input:
- * `index.js` imports them by path and `test/` loads several of them directly.
+ * The build emits the private Host modules under `lib/` so `index.js` and
+ * `test/` can import them directly.
  * The same reason applies to the Client's pure modules: `test/` imports their
  * behavior directly, and the bundled `client.js` cannot expose module internals,
  * so each one is emitted as an ES module under `lib/client/`.
@@ -24,8 +24,8 @@
  *   node scripts/build.mjs           write every artifact
  *   node scripts/build.mjs --check   fail when an artifact is stale
  *
- * esbuild is a development dependency; every artifact is committed. The
- * `--check` mode keeps a stale commit from reaching a release.
+ * The `prepare` script builds the local artifacts during dependency installation
+ * and packaging. Use `--check` to compare existing artifacts with the sources.
  */
 
 import { createRequire } from 'node:module'
@@ -52,16 +52,16 @@ const CLIENT_EXTERNAL = [
 
 const HOST_EXTERNAL = ['node:*']
 
-/** Source directory of the private Host modules and the committed directory they are emitted to. */
+/** Source and output directories for private Host modules. */
 const MODULES = { source: 'src/lib', output: 'lib' }
 
-/** Source directory of the Client and the committed directory its Node-loadable mirror is emitted to. */
+/** Client source and output directories for the Node-loadable test mirror. */
 const CLIENT_MODULES = { source: 'src/client', output: 'lib/client' }
 
-/** `src/host` imports `../lib/<name>.js`, while the committed `index.js` imports `./lib/<name>.js`. */
+/** Rewrite `../lib/<name>.js` from `src/host` to `./lib/<name>.js` in the generated `index.js`. */
 const HOST_MODULE_IMPORT = /^\.\.\/lib\/(.+\.js)$/
 
-/** Keep `src/host`'s private-module imports pointing at the committed `lib/` artifacts. */
+/** Keep `src/host`'s private-module imports pointing at the generated `lib/` artifacts. */
 const hostModules = {
   name: 'host-modules',
   setup(context) {
