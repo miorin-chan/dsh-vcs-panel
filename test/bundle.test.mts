@@ -597,15 +597,18 @@ test('expanded file card keeps opaque sticky wrapper, solid/dashed merged bars, 
   const tree = read('detail/ChangeTree.tsx')
 
   // Card sticky wrapper stays opaque over base background; non-sticky body clips bottom corners.
-  assert.match(shellCss, /\.vcs-tree-file-head-wrap\[data-open\] \{[\s\S]*?background: var\(--dsw-alias-bg-base\);/u)
-  assert.match(shellCss, /\.vcs-tree-file-head-wrap\[data-open\] > \.vcs-card-head \{[\s\S]*?border-radius:/u)
+  assert.match(shellCss, /\.vcs-tree-file-head-wrap \{[^}]*background: var\(--dsw-alias-bg-base\);/u)
+  assert.match(shellCss, /\.vcs-tree-file-head-wrap\[data-open\] > \.vcs-card-head::before \{[^}]*border-radius:/u)
   assert.match(shellCss, /\.vcs-card-body \{[\s\S]*?overflow: hidden;/u)
-  // Head and body start at the file row's indent, past the gutter when there is one.
-  assert.match(tree, /style=\{\{ '--vcs-indent': indent \} as CSSProperties\}/u)
-  assert.match(shellCss, /\.vcs-tree-file-head-wrap\[data-open\] > \.vcs-card-head \{\s*margin-inline-start: var\(--vcs-indent\);/u)
-  assert.match(shellCss, /\.vcs-card-body \{[^}]*margin-left: var\(--vcs-indent\);/u)
-  assert.match(shellCss, /\.vcs-tree\[data-gutter\] \.vcs-card-body \{\s*margin-left: calc\(22px \+ var\(--vcs-indent\)\);/u)
-  assert.doesNotMatch(shellCss, /\.vcs-tree:not\(\[data-gutter\]\) \.vcs-tree-file-head-wrap\[data-open\]/u)
+  // The cursor pill and the open card share one rectangle, so opening a file keeps the pill in place.
+  const pillRect = 'inset-inline: var\\(--vcs-pill-left\\) var\\(--vcs-pill-end\\);'
+  assert.match(shellCss, new RegExp(`\\.vcs-tree-row::before \\{\\s*${pillRect}`, 'u'))
+  assert.match(shellCss, new RegExp(`\\.vcs-tree-file-head-wrap\\[data-open\\] > \\.vcs-card-head::before \\{[^}]*${pillRect}`, 'u'))
+  assert.match(shellCss, /\.vcs-card-body \{\s*margin-right: var\(--vcs-pill-end\);\s*margin-left: calc\(var\(--vcs-gutter\) \+ var\(--vcs-pill-left\)\);/u)
+  // Rows declare only their level; no open-only geometry moves the head or its pill.
+  assert.match(tree, /'--vcs-level': row\.depth \+ \(grouped \? 1 : 0\)/u)
+  assert.doesNotMatch(tree, /paddingLeft/u)
+  assert.doesNotMatch(shellCss, /\[data-open\][^{]*\.vcs-tree-file-head(?:::before)? \{/u)
 
   // Merged view unstaged lines use a dashed 3px left bar without shifting line numbers.
   assert.match(diffCss, /\[data-stage-state='unstaged'\] > \.vcs-diff-number:first-of-type[\s\S]*?repeating-linear-gradient/u)

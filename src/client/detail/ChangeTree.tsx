@@ -59,12 +59,6 @@ const CACHE_LIMIT = 300
 /** Height of one tree row and of one expanded file header, in CSS pixels. */
 const ROW_HEIGHT = 28
 
-/** Indentation per tree level, in CSS pixels. */
-const INDENT = 14
-
-/** Width of the staging gutter at the left edge of a working-tree tree, in CSS pixels. */
-const GUTTER_WIDTH = 22
-
 /** A ready comparison. Line-staging metadata only rides a text comparison. */
 export type ReadyDiff = VcsFileDiff & Partial<Pick<VcsTextDiff, 'lineStaging' | 'fingerprint'>>
 
@@ -1635,8 +1629,12 @@ export function ChangeTree({
     return <span className="vcs-stage-gutter">{control}</span>
   }
 
-  /** Left inset of a row at `depth`, measured from the staging gutter; an open file card starts here too. */
-  const indentOf = (depth: number) => `${(gutter ? 6 : 8) + (depth + (grouped ? 1 : 0)) * INDENT}px`
+  /**
+   * The tree level of a directory, file, or loading row, for the stylesheet:
+   * the row's content, cursor pill, and open file card all start at its indent.
+   * Group rows stay at the tree's root level.
+   */
+  const levelStyle = (row: DirRow | FileRow | LoadingRow) => ({ '--vcs-level': row.depth + (grouped ? 1 : 0) }) as CSSProperties
   const fileStat = (entry: FileEntry) => {
     if (entry.untracked === true) return null
     if (entry.binary === true) return <span className="vcs-tree-stat vcs-dim">{t('changes.binary')}</span>
@@ -1659,7 +1657,7 @@ export function ChangeTree({
       className="vcs-tree-row vcs-tree-loading vcs-skeleton"
       role="status"
       aria-busy="true"
-      style={{ paddingLeft: gutter ? `calc(${GUTTER_WIDTH}px + ${indentOf(row.depth)})` : indentOf(row.depth) }}
+      style={levelStyle(row)}
     >
       <span className="vcs-sr-only">{t('changes.loadingDirectory')}</span>
       <span className="vcs-skeleton-shape vcs-skeleton-glyph" />
@@ -1680,7 +1678,6 @@ export function ChangeTree({
             aria-controls={bodyId}
             aria-current={readingKey === row.key ? 'location' : undefined}
             aria-keyshortcuts={stageKeys(staging)}
-            style={{ paddingLeft: gutter ? '6px' : '8px' }}
             {...rowProps(row)}
             onClick={() => { activateRow(row, row.expanded) }}
           >
@@ -1703,7 +1700,7 @@ export function ChangeTree({
     const bodyId = rowBodyId(row.key)
     const staging = rowStaging(row)
     return (
-      <div key={row.key} className="vcs-tree-dir">
+      <div key={row.key} className="vcs-tree-dir" style={levelStyle(row)}>
         <div className="vcs-tree-head vcs-tree-dir-head-wrap">
           {renderGutter(row, staging)}
           <button
@@ -1714,7 +1711,6 @@ export function ChangeTree({
             aria-current={readingKey === row.key ? 'location' : undefined}
             aria-keyshortcuts={stageKeys(staging)}
             title={row.path}
-            style={{ paddingLeft: indentOf(row.depth) }}
             {...rowProps(row)}
             onClick={() => { activateRow(row, row.expanded) }}
           >
@@ -1740,7 +1736,6 @@ export function ChangeTree({
     const parts = splitPath(row.entry.path)
     const bodyId = rowBodyId(row.key)
     const statusClass = row.entry.untracked === true ? 'vcs-status-untracked' : `vcs-status-${row.entry.status}`
-    const indent = indentOf(row.depth)
     const staging = rowStaging(row)
     // A line or hunk write belongs to the displayed comparison. The Host
     // validates its fingerprint even if newer status now reports a conflict.
@@ -1752,7 +1747,7 @@ export function ChangeTree({
         className="vcs-tree-file"
         data-file-key={row.key}
         data-open={expanded ? 'true' : undefined}
-        style={{ '--vcs-indent': indent } as CSSProperties}
+        style={levelStyle(row)}
         ref={bindSection(row.key)}
       >
         <div className="vcs-tree-head vcs-tree-file-head-wrap" data-open={expanded ? 'true' : undefined}>
@@ -1766,7 +1761,6 @@ export function ChangeTree({
               aria-current={readingKey === row.key ? 'location' : undefined}
               aria-keyshortcuts={stageKeys(staging)}
               title={row.entry.origPath === undefined ? row.path : `${row.entry.origPath} → ${row.path}`}
-              style={{ paddingLeft: expanded ? '8px' : indent }}
               {...rowProps(row)}
               onClick={() => { activateRow(row, expanded) }}
             >

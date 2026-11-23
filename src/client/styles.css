@@ -1565,9 +1565,20 @@ select.vcs-repository-kind {
 /* Change tree ------------------------------------------------------------- */
 
 /* Every row has one height, so the two sticky layers and the scroll
-   alignment agree on where a row starts. */
+   alignment agree on where a row starts.
+
+   Every row also shares one horizontal geometry, read from the left edge: the
+   staging gutter (when the tree has one), the row's indent, the cursor pill,
+   and a little further in, the content. Rows declare only their level; an open
+   file card is drawn on its row's pill rectangle, so opening a file keeps the
+   pill and the content where they were and only grows the card around them. */
 .vcs-tree {
   --vcs-row-height: 28px;
+  --vcs-gutter: 0px;
+  --vcs-indent-step: 14px;
+  --vcs-pill-start: 4px;
+  --vcs-pill-end: 4px;
+  --vcs-content-start: 8px;
   container-type: inline-size;
   container-name: vcs-change-tree;
   position: relative;
@@ -1580,8 +1591,25 @@ select.vcs-repository-kind {
   padding-bottom: 24px;
 }
 
+/* Beside a gutter the pill meets the gutter column at the root level. */
+.vcs-tree[data-gutter] {
+  --vcs-gutter: 22px;
+  --vcs-pill-start: 0px;
+  --vcs-content-start: 6px;
+}
+
+/* `--vcs-level` comes from the row; group rows sit at the root level. */
+.vcs-tree,
+.vcs-tree-dir,
+.vcs-tree-file,
+.vcs-tree-loading {
+  --vcs-indent: calc(var(--vcs-level, 0) * var(--vcs-indent-step));
+  --vcs-pill-left: calc(var(--vcs-indent) + var(--vcs-pill-start));
+}
+
 /* Group, directory, and file rows share one control; its pill is drawn under
-   Focus at the top of this sheet. */
+   Focus at the top of this sheet and starts at the row's indent. The whole
+   width still takes the click. */
 .vcs-tree-row {
   position: relative;
   display: flex;
@@ -1591,6 +1619,7 @@ select.vcs-repository-kind {
   width: 100%;
   height: var(--vcs-row-height);
   padding-right: 8px;
+  padding-left: calc(var(--vcs-indent) + var(--vcs-content-start));
   border: none;
   color: var(--dsw-alias-label-primary);
   background: transparent;
@@ -1598,6 +1627,10 @@ select.vcs-repository-kind {
   text-align: left;
   cursor: pointer;
   white-space: nowrap;
+}
+
+.vcs-tree-row::before {
+  inset-inline: var(--vcs-pill-left) var(--vcs-pill-end);
 }
 
 /* A row and its staging gutter share one head; the group head sticks above
@@ -1658,13 +1691,8 @@ select.vcs-repository-kind {
   display: grid;
   flex: none;
   place-items: center;
-  width: 22px;
+  width: var(--vcs-gutter);
   height: var(--vcs-row-height);
-}
-
-.vcs-stage-gutter + .vcs-tree-row::before,
-.vcs-stage-gutter + .vcs-card-head > .vcs-tree-row::before {
-  inset-inline-start: 0;
 }
 
 /* The whole gutter cell takes the click; the hover square stays small. */
@@ -1818,7 +1846,7 @@ select.vcs-repository-kind {
 .vcs-file-stage-menu {
   position: relative;
   flex: none;
-  margin-inline-end: 4px;
+  margin-inline-end: calc(var(--vcs-pill-end) + 4px);
 }
 
 .vcs-tree-file-head-wrap:has(.vcs-file-stage-popup) {
@@ -1855,17 +1883,20 @@ select.vcs-repository-kind {
   font: var(--dsw-font-xs-13);
 }
 
-/* Expanded files become bordered cards that keep the tree's indentation: the
-   card's left edge sits at the row's indent (`--vcs-indent`, set per file and
-   measured from the staging gutter), where folded siblings start their status
-   letters. The sticky wrapper keeps an opaque base backdrop so scrolled diff
-   lines never bleed behind the gutter, the indent, the right margin, or the
-   rounded corners; the non-sticky body clips bottom corners. */
+/* Expanded files become bordered cards drawn on the row's pill rectangle
+   (`--vcs-pill-left` to `--vcs-pill-end`), so the pill, the status letter, and
+   the name stay put and the card reads as the opened row. The frame paints
+   under the row without layout, so the row inside keeps its folded geometry.
+   The sticky wrapper keeps its opaque base backdrop so scrolled diff lines
+   never bleed behind the gutter, the indent, the right margin, or the rounded
+   corners; the non-sticky body clips bottom corners. The card opens in place,
+   so only its end keeps a gap from the next row. */
 .vcs-tree-file[data-open] {
-  margin-block: 6px;
+  margin-block-end: 6px;
 }
 
 .vcs-card-head {
+  position: relative;
   display: flex;
   flex: 1 1 auto;
   align-items: center;
@@ -1879,24 +1910,15 @@ select.vcs-repository-kind {
   min-width: 0;
 }
 
-.vcs-tree-file-head-wrap[data-open] {
-  padding-right: 8px;
-  background: var(--dsw-alias-bg-base);
-}
-
-.vcs-tree-file-head-wrap[data-open] > .vcs-card-head {
-  margin-inline-start: var(--vcs-indent);
+.vcs-tree-file-head-wrap[data-open] > .vcs-card-head::before {
+  position: absolute;
+  inset-block: 0;
+  inset-inline: var(--vcs-pill-left) var(--vcs-pill-end);
+  box-sizing: border-box;
   border: 0.5px solid var(--dsw-alias-border-l2);
   border-radius: var(--dsw-radius-sm, 6px) var(--dsw-radius-sm, 6px) 0 0;
   background: var(--dsw-alias-bg-layer-1);
-}
-
-.vcs-tree-file-head-wrap[data-open] .vcs-tree-file-head {
-  height: 100%;
-}
-
-.vcs-tree-file-head-wrap[data-open] .vcs-tree-file-head::before {
-  inset: 2px 3px;
+  content: '';
 }
 
 .vcs-tree[data-grouped] .vcs-tree-file-head-wrap {
@@ -2013,7 +2035,9 @@ select.vcs-repository-kind {
   font-variant-numeric: tabular-nums;
 }
 
+/* A loading row has no gutter cell, so it steps over the gutter itself. */
 .vcs-tree-loading {
+  padding-left: calc(var(--vcs-gutter) + var(--vcs-indent) + var(--vcs-content-start));
   color: var(--dsw-alias-label-secondary);
   cursor: default;
 }
@@ -2027,17 +2051,13 @@ select.vcs-repository-kind {
 }
 
 .vcs-card-body {
-  margin-right: 8px;
-  margin-left: var(--vcs-indent);
+  margin-right: var(--vcs-pill-end);
+  margin-left: calc(var(--vcs-gutter) + var(--vcs-pill-left));
   border: 0.5px solid var(--dsw-alias-border-l2);
   border-top: none;
   border-radius: 0 0 var(--dsw-radius-sm, 6px) var(--dsw-radius-sm, 6px);
   background: var(--dsw-alias-bg-base);
   overflow: hidden;
-}
-
-.vcs-tree[data-gutter] .vcs-card-body {
-  margin-left: calc(22px + var(--vcs-indent));
 }
 
 .vcs-tree-folded {

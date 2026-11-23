@@ -606,9 +606,13 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
   生成单一扁平行列表供渲染、roving tabindex 键盘导航与滚动锚点共用；文件默认收起，只有展开的行才请求 `vcs.diff`。
   发起请求时仍按条目自身的 `untracked` 标记还原 `scope`（未跟踪项走 `untracked`，重命名带 `oldPath`）。
   展开文件以 `<section class="vcs-tree-file" data-open>` 渲染为卡片（吸顶头部外框 `.vcs-tree-file-head-wrap`
-  保留不透明底与 22px 暂存列，卡片头 `.vcs-card-head` 与非吸顶 `.vcs-card-body` 分别承接上/下圆角与边框，
-  两者的左侧偏移都取 `<section>` 上的 `--vcs-indent`，
-  即收起行的 `indentOf(depth)`；`flowTop` 按语义容器查找静态位置避免吸顶偏移干扰）；
+  保留不透明底与暂存列，`flowTop` 按语义容器查找静态位置避免吸顶偏移干扰）。
+  变更树的横向几何只在样式表里：目录、文件与加载行只写 `--vcs-level`（分组视图下为 `depth + 1`），
+  样式表据此算出 `--vcs-indent` 与光标底左缘 `--vcs-pill-left`，
+  暂存列宽 `--vcs-gutter` 由 `.vcs-tree[data-gutter]` 给出。
+  行内容的左内边距、光标底 `::before` 的 `inset-inline`、
+  卡片头框 `.vcs-card-head::before` 与 `.vcs-card-body` 的左右边距都取这组变量，
+  因此展开不改动行本身的几何，卡片头框只在行下方绘制，不参与布局；
   变更树窄于 640 px（`SPLIT_MIN_WIDTH`）时将 `FileDiff` 的 `split` 置为 `false` 单栏渲染。
   展开文件由 `IntersectionObserver` 入队请求，离开视口时经 `AbortController` 取消。
   `.vcs-diff-surface` 启用 `container-type: inline-size`，
