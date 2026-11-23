@@ -594,12 +594,18 @@ test('expanded file card keeps opaque sticky wrapper, solid/dashed merged bars, 
   const read = path => readFileSync(new URL(`../src/client/${path}`, import.meta.url), 'utf8')
   const shellCss = read('styles.css')
   const diffCss = read('diff/FileDiff.css')
+  const tree = read('detail/ChangeTree.tsx')
 
-  // Card sticky wrapper stays opaque over base background; non-sticky body clips bottom corners and aligns past the gutter.
+  // Card sticky wrapper stays opaque over base background; non-sticky body clips bottom corners.
   assert.match(shellCss, /\.vcs-tree-file-head-wrap\[data-open\] \{[\s\S]*?background: var\(--dsw-alias-bg-base\);/u)
   assert.match(shellCss, /\.vcs-tree-file-head-wrap\[data-open\] > \.vcs-card-head \{[\s\S]*?border-radius:/u)
   assert.match(shellCss, /\.vcs-card-body \{[\s\S]*?overflow: hidden;/u)
-  assert.match(shellCss, /\.vcs-tree\[data-gutter\] \.vcs-card-body \{\s*margin-left: 22px;/u)
+  // Head and body start at the file row's indent, past the gutter when there is one.
+  assert.match(tree, /style=\{\{ '--vcs-indent': indent \} as CSSProperties\}/u)
+  assert.match(shellCss, /\.vcs-tree-file-head-wrap\[data-open\] > \.vcs-card-head \{\s*margin-inline-start: var\(--vcs-indent\);/u)
+  assert.match(shellCss, /\.vcs-card-body \{[^}]*margin-left: var\(--vcs-indent\);/u)
+  assert.match(shellCss, /\.vcs-tree\[data-gutter\] \.vcs-card-body \{\s*margin-left: calc\(22px \+ var\(--vcs-indent\)\);/u)
+  assert.doesNotMatch(shellCss, /\.vcs-tree:not\(\[data-gutter\]\) \.vcs-tree-file-head-wrap\[data-open\]/u)
 
   // Merged view unstaged lines use a dashed 3px left bar without shifting line numbers.
   assert.match(diffCss, /\[data-stage-state='unstaged'\] > \.vcs-diff-number:first-of-type[\s\S]*?repeating-linear-gradient/u)

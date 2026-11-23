@@ -607,7 +607,8 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
   发起请求时仍按条目自身的 `untracked` 标记还原 `scope`（未跟踪项走 `untracked`，重命名带 `oldPath`）。
   展开文件以 `<section class="vcs-tree-file" data-open>` 渲染为卡片（吸顶头部外框 `.vcs-tree-file-head-wrap`
   保留不透明底与 22px 暂存列，卡片头 `.vcs-card-head` 与非吸顶 `.vcs-card-body` 分别承接上/下圆角与边框，
-  `flowTop` 按语义容器查找静态位置避免吸顶偏移干扰）；
+  两者的左侧偏移都取 `<section>` 上的 `--vcs-indent`，
+  即收起行的 `indentOf(depth)`；`flowTop` 按语义容器查找静态位置避免吸顶偏移干扰）；
   变更树窄于 640 px（`SPLIT_MIN_WIDTH`）时将 `FileDiff` 的 `split` 置为 `false` 单栏渲染。
   展开文件由 `IntersectionObserver` 入队请求，离开视口时经 `AbortController` 取消。
   `.vcs-diff-surface` 启用 `container-type: inline-size`，

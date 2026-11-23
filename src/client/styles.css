@@ -1855,10 +1855,12 @@ select.vcs-repository-kind {
   font: var(--dsw-font-xs-13);
 }
 
-/* Expanded files become bordered cards starting to the right of the staging
-   gutter (or symmetrically inset when read-only). The sticky wrapper keeps an
-   opaque base backdrop so scrolled diff lines never bleed behind the gutter,
-   right margin, or rounded corners; the non-sticky body clips bottom corners. */
+/* Expanded files become bordered cards that keep the tree's indentation: the
+   card's left edge sits at the row's indent (`--vcs-indent`, set per file and
+   measured from the staging gutter), where folded siblings start their status
+   letters. The sticky wrapper keeps an opaque base backdrop so scrolled diff
+   lines never bleed behind the gutter, the indent, the right margin, or the
+   rounded corners; the non-sticky body clips bottom corners. */
 .vcs-tree-file[data-open] {
   margin-block: 6px;
 }
@@ -1882,11 +1884,8 @@ select.vcs-repository-kind {
   background: var(--dsw-alias-bg-base);
 }
 
-.vcs-tree:not([data-gutter]) .vcs-tree-file-head-wrap[data-open] {
-  padding-left: 8px;
-}
-
 .vcs-tree-file-head-wrap[data-open] > .vcs-card-head {
+  margin-inline-start: var(--vcs-indent);
   border: 0.5px solid var(--dsw-alias-border-l2);
   border-radius: var(--dsw-radius-sm, 6px) var(--dsw-radius-sm, 6px) 0 0;
   background: var(--dsw-alias-bg-layer-1);
@@ -2029,7 +2028,7 @@ select.vcs-repository-kind {
 
 .vcs-card-body {
   margin-right: 8px;
-  margin-left: 8px;
+  margin-left: var(--vcs-indent);
   border: 0.5px solid var(--dsw-alias-border-l2);
   border-top: none;
   border-radius: 0 0 var(--dsw-radius-sm, 6px) var(--dsw-radius-sm, 6px);
@@ -2038,7 +2037,7 @@ select.vcs-repository-kind {
 }
 
 .vcs-tree[data-gutter] .vcs-card-body {
-  margin-left: 22px;
+  margin-left: calc(22px + var(--vcs-indent));
 }
 
 .vcs-tree-folded {

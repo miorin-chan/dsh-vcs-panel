@@ -16,7 +16,7 @@
  */
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, MutableRefObject, ReactNode } from 'react'
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, MutableRefObject, ReactNode } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import type { Api, DiffTarget, StageRequest } from '../api.js'
 import { FileDiff, isValidDiff, MAX_RENDERED_LINES } from '../diff/FileDiff.js'
@@ -1635,6 +1635,7 @@ export function ChangeTree({
     return <span className="vcs-stage-gutter">{control}</span>
   }
 
+  /** Left inset of a row at `depth`, measured from the staging gutter; an open file card starts here too. */
   const indentOf = (depth: number) => `${(gutter ? 6 : 8) + (depth + (grouped ? 1 : 0)) * INDENT}px`
   const fileStat = (entry: FileEntry) => {
     if (entry.untracked === true) return null
@@ -1739,6 +1740,7 @@ export function ChangeTree({
     const parts = splitPath(row.entry.path)
     const bodyId = rowBodyId(row.key)
     const statusClass = row.entry.untracked === true ? 'vcs-status-untracked' : `vcs-status-${row.entry.status}`
+    const indent = indentOf(row.depth)
     const staging = rowStaging(row)
     // A line or hunk write belongs to the displayed comparison. The Host
     // validates its fingerprint even if newer status now reports a conflict.
@@ -1750,6 +1752,7 @@ export function ChangeTree({
         className="vcs-tree-file"
         data-file-key={row.key}
         data-open={expanded ? 'true' : undefined}
+        style={{ '--vcs-indent': indent } as CSSProperties}
         ref={bindSection(row.key)}
       >
         <div className="vcs-tree-head vcs-tree-file-head-wrap" data-open={expanded ? 'true' : undefined}>
@@ -1763,7 +1766,7 @@ export function ChangeTree({
               aria-current={readingKey === row.key ? 'location' : undefined}
               aria-keyshortcuts={stageKeys(staging)}
               title={row.entry.origPath === undefined ? row.path : `${row.entry.origPath} → ${row.path}`}
-              style={{ paddingLeft: expanded ? '8px' : indentOf(row.depth) }}
+              style={{ paddingLeft: expanded ? '8px' : indent }}
               {...rowProps(row)}
               onClick={() => { activateRow(row, expanded) }}
             >
