@@ -10,11 +10,12 @@
  * module, never from a shell.
  */
 
-import { isAbsolute } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { FsTarget } from '@deepseek-ai/dsh-fs'
 
+import { TIMEOUT_MS } from '../command.js'
 import type { RunOptions } from '../command.js'
 import {
   badRequest,
@@ -93,6 +94,9 @@ import type {
 
 /** Most entries one expanded untracked directory lists. */
 const UNTRACKED_MAX = 500
+
+/** Concurrent content reads for one worktree's untracked line total. */
+const UNTRACKED_READS = 4
 
 /** Most local branches the switch menu lists. */
 const BRANCH_MAX = 500
@@ -352,7 +356,8 @@ export class GitBackend {
     }
     const parsed = parsePorcelainV2(statusResult.stdout)
 
-    const [staged, unstaged] = await Promise.all([
+    const untracked = parsed.entries.filter(entry => entry.untracked).map(entry => entry.path)
+    const [staged, unstaged, untrackedAdded] = await Promise.all([
       this.git.run(['--no-pager', 'diff', '--numstat', '-z', '--cached'], {
         cwd: root,
         signal,
@@ -361,6 +366,7 @@ export class GitBackend {
         cwd: root,
         signal,
       }),
+      this.#untrackedLineTotal(root, untracked, signal),
     ])
     if (staged.lossy || unstaged.lossy) throw outputTooLarge()
 
@@ -378,7 +384,74 @@ export class GitBackend {
       truncated: grouped.truncated,
       total: grouped.total,
       untrackedTotal: grouped.untrackedTotal,
+      untrackedAdded,
       defaultNode,
+    }
+  }
+
+  /** Count regular UTF-8 files before the status groups are capped. */
+  async #untrackedLineTotal(root: string, paths: string[], signal: AbortSignal): Promise<number | null> {
+    if (paths.length === 0) return 0
+    const countSignal = AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)])
+    try {
+      if (paths.some(path => path.endsWith('/'))) {
+        const listed = await this.git.run(['ls-files', '--others', '--exclude-standard', '-z'], {
+          cwd: root,
+          signal: countSignal,
+        })
+        if (listed.exitCode !== 0 || listed.lossy) return null
+        // A trailing slash identifies a nested repository, which Git stages as a gitlink.
+        paths = listed.stdout.split('\0').filter(path => path !== '' && !path.endsWith('/'))
+      }
+      const repository = await this.ctx.fs.resolve(root, { signal: countSignal })
+      let added = 0
+      for (let start = 0; start < paths.length; start += UNTRACKED_READS) {
+        countSignal.throwIfAborted()
+        const batch = await Promise.allSettled(paths.slice(start, start + UNTRACKED_READS).map(path =>
+          this.#untrackedFileLines(repository, join(root, path), countSignal)))
+        countSignal.throwIfAborted()
+        for (const result of batch) {
+          if (result.status === 'rejected') return null
+          added += result.value
+        }
+      }
+      return added
+    } catch {
+      signal.throwIfAborted()
+      return null
+    }
+  }
+
+  /** Use the new-file diff's LF and UTF-8 rules, including an unterminated last line. */
+  async #untrackedFileLines(repository: FsTarget, path: string, signal: AbortSignal): Promise<number> {
+    const fs = this.ctx.fs
+    const info = await fs.lstat(path, undefined, signal)
+    if (info?.type !== 'file') return 0
+    const target = await fs.resolve(path, { signal })
+    if (!fs.contains(repository, target)) throw badRequest('The path is outside the repository.')
+
+    try {
+      let chunks: Iterable<string> | AsyncIterable<string>
+      if (info.size !== undefined && info.size <= DIFF_MAX_BYTES) {
+        const content = decodeFileContent(await fs.readBytes(target, signal, DIFF_MAX_BYTES))
+        if (content.binary) return 0
+        chunks = [content.text]
+      } else {
+        chunks = await fs.streamText(target, signal)
+      }
+
+      let lines = 0
+      let finalLine = 0
+      for await (const text of chunks) {
+        if (text === '') continue
+        if (text.includes('\0')) return 0
+        for (let at = text.indexOf('\n'); at !== -1; at = text.indexOf('\n', at + 1)) lines += 1
+        finalLine = text.endsWith('\n') ? 0 : 1
+      }
+      return lines + finalLine
+    } catch (error) {
+      if (caughtCode(error) === 'FS_NOT_TEXT') return 0
+      throw error
     }
   }
 

@@ -91,6 +91,7 @@ export interface GroupRow extends EntrySummary {
   depth: number
   expanded: boolean
   entries: readonly FileEntry[]
+  untrackedAdded?: number | null
 }
 
 /** One visible row of the change tree. */
@@ -105,6 +106,7 @@ export interface RowGroup {
   entries: readonly FileEntry[]
   header?: boolean
   untrackedTotal?: number
+  untrackedAdded?: number | null
 }
 
 /** One directory node of the built tree. */
@@ -373,7 +375,12 @@ function flatten(node: DirNode, depth: number, group: string, state: TreeState, 
 }
 
 /** The group row above one working-tree group's tree. */
-function groupRow(group: string, entries: readonly FileEntry[], state: TreeState, untrackedTotal?: number): GroupRow {
+function groupRow(
+  group: string,
+  entries: readonly FileEntry[],
+  state: TreeState,
+  { untrackedTotal, untrackedAdded }: Pick<RowGroup, 'untrackedTotal' | 'untrackedAdded'>,
+): GroupRow {
   const key = dirKey(group, '')
   const summary = summarizeEntries(entries)
   const untracked = untrackedTotal ?? summary.untracked
@@ -387,6 +394,7 @@ function groupRow(group: string, entries: readonly FileEntry[], state: TreeState
     ...summary,
     count: summary.count + (untracked - summary.untracked),
     untracked,
+    untrackedAdded,
   }
 }
 
@@ -402,10 +410,10 @@ export function buildRows(
   group: string,
   entries: readonly FileEntry[],
   state: TreeState = {},
-  { header = false, untrackedTotal }: Pick<RowGroup, 'header' | 'untrackedTotal'> = {},
+  options: Pick<RowGroup, 'header' | 'untrackedTotal' | 'untrackedAdded'> = {},
 ): TreeRow[] {
   const rows: TreeRow[] = []
-  const headerRow = header ? groupRow(group, entries, state, untrackedTotal) : null
+  const headerRow = options.header ? groupRow(group, entries, state, options) : null
   if (headerRow !== null) rows.push(headerRow)
   if (headerRow === null || headerRow.expanded) flatten(buildTree(group, entries, state), 0, group, state, rows)
   return rows

@@ -18,7 +18,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `GET /api/vcs.repository-config` | `sessionId` | `revision`、`scanDirectories[]`、`repositories[]`（条目含 `path`、`available`）、`backends[]`（条目含 `path`、`vcs`、`available`）、`error?` |
 | `GET /api/vcs.repository-preview` | `sessionId`、`path`、`kind`（`directory` 或 `repository`） | `repositories[]`（相对 `path`、`name`、`vcs`、`availableVcs`）、`truncated` |
 | `POST /api/vcs.repository-config` | JSON `{ sessionId, revision, scanDirectories, repositories, backends? }`（两个路径数组，以及 `{ path, vcs }` 偏好数组） | 同配置 GET |
-| `GET /api/vcs.status` | `sessionId`、`repo`、`worktree?`、`readOnly?`（`1` 跳过 Jujutsu 快照） | `repo`、`vcs`、`capabilities`、`defaultNode`、`branch`、`workingCopy?`、`groups`、`total`、`untrackedTotal`、`truncated`、`stageHistory` |
+| `GET /api/vcs.status` | `sessionId`、`repo`、`worktree?`、`readOnly?`（`1` 跳过 Jujutsu 快照） | `repo`、`vcs`、`capabilities`、`defaultNode`、`branch`、`workingCopy?`、`groups`、`total`、`untrackedTotal`、`untrackedAdded`、`truncated`、`stageHistory` |
 | `GET /api/vcs.watch` | `sessionId`、`repo?`、`worktree?`（可重复）、`client?` | SSE `ready` 与 `invalidate`（`domains[]`、`origin?`） |
 | `GET /api/vcs.branches` | `sessionId`、`repo` | `branches[]`（`name`、`current`、`occupied`）、`truncated`（仅 `capabilities.branchSwitch` 为真时可用） |
 | `GET /api/vcs.remotes` | `sessionId`、`repo` | `remotes[]`、`truncated`（`capabilities.tagOps` 或 `capabilities.branchOps` 为真时可用） |
@@ -205,6 +205,10 @@ Git 工作树预览保留 Git 的读取能力。
 - **Git**：`head` 仅读取 `symbolic-ref -q --short HEAD` 与 `rev-parse -q --verify HEAD^{commit}`，不扫描索引与工作区；
   `status` 组合 `status --porcelain=v2 -z --branch --untracked-files=normal` 与两次 `diff --numstat -z`
   （index 与工作区），按 `XY` 拆成 `staged`、`unstaged`、`untracked`（两侧均改时各出现一次，冲突标 `U`）。
+  `untrackedAdded` 在行数统计中纳入列表上限之外的文件。
+  遇到折叠目录时用 `ls-files --others --exclude-standard -z` 枚举，统计普通 UTF-8 文本，末行没有换行符时也算一行。
+  二进制、符号链接与嵌套 Git 仓库不参与统计。
+  Host 每棵工作树最多并发读取 4 个文件，大于单文件 diff 字节上限时流式计数，30 秒内无法取得完整总数时返回 `null`。
   `diff` 按 `staged`（对 `HEAD`）、`unstaged`（对 index）、`untracked`（按新文件合成）、
   `commit`（对第一父，root 对空树）取值；空仓库读取 `HEAD` 日志视为空历史而非错误。
   `GitBackend.commit` 并行读取详情（`show`）、`HEAD` 符号/分支指向（`for-each-ref %(refname)%00%(HEAD)`、
@@ -598,10 +602,11 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
   对话框 `<select>` 采用 `appearance: none` 单行截断并配 `.vcs-dialog-select-caret` 居中箭头与右缘渐隐遮罩。
   `DetailPane` 用 `${repo}|${node}|${revision}` 键缓存已读提交详情（`commitCache`，
   上限 `COMMIT_CACHE_LIMIT = 200`），避免反复切换提交重复请求，并在刷新或切仓时清空。
-  时间线工作区行、详情工具栏与「未暂存」分组在增删行数前显示灰色 `+N`（`.vcs-untracked-stat`）：
-  `N` 取 `untrackedTotal`，未跟踪目录按 Git 返回的条目算一项，
-  展开前后不变；`0` 时隐藏，提示与读屏文本沿用 `status.untracked`；
-  单栏窄详情在工具栏统计被隐藏时另起一行 `.vcs-detail-stat-narrow` 显示同一组数字。
+  时间线工作区行、详情工具栏与「未暂存」分组用灰色 `+N` 显示 `untrackedAdded`（`.vcs-untracked-stat`）。
+  `0` 时隐藏灰标，无法取得完整行数时显示 `+…` 并在详情说明。
+  灰标的悬停提示与读屏文本均说明行数口径。
+  `untrackedTotal` 仍用于条目数，未跟踪目录按 Git 返回的条目算一项。
+  窄栏可在工具栏下方显示同一组统计。
   变更树客户端将 Git 的 `untracked` 条目并入 `unstaged` 分组（可按需展开的未跟踪目录不参与单子目录链压缩），
   生成单一扁平行列表供渲染、roving tabindex 键盘导航与滚动锚点共用；文件默认收起，只有展开的行才请求 `vcs.diff`。
   发起请求时仍按条目自身的 `untracked` 标记还原 `scope`（未跟踪项走 `untracked`，重命名带 `oldPath`）。

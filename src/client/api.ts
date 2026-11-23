@@ -289,6 +289,7 @@ export interface StatusData {
   groups: StatusGroups
   total: number
   untrackedTotal?: number
+  untrackedAdded?: number | null
   truncated: boolean
   defaultNode: string
   stageHistory: StageHistoryAnswer

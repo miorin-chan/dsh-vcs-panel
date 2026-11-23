@@ -8,22 +8,26 @@
 
 import { useEffect, useRef } from 'react'
 import type { ButtonHTMLAttributes, MouseEventHandler, ReactNode } from 'react'
+import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 
 import { formatCount } from './format.js'
 import { motionAt, PERIOD, REDUCED_PERIOD, segmentEasing, startTurning, stopTurning } from './turning.js'
+import type { Motion } from './turning.js'
 
-/** A separate, muted count for the untracked entries in a diff summary. */
-export function UntrackedStat({ count, label, locale }: { count: number; label: string; locale?: string }) {
-  if (count <= 0) return null
-  const formatted = formatCount(count, locale)
+/** The added lines in untracked text, shown muted beside the tracked diff totals. */
+export function UntrackedStat({ added = 0, t, locale }: { added?: number | null; t: Translate; locale?: string }) {
+  if (added === 0) return null
+  const formatted = added === null ? '…' : formatCount(added, locale)
+  const label = added === null
+    ? t('changes.untrackedLinesUnavailable')
+    : t('changes.untrackedLines', { count: formatted })
   return (
     <span className="vcs-dim vcs-untracked-stat" title={label}>
       <span aria-hidden="true">+{formatted}</span>
-      <span className="vcs-sr-only">{label} {formatted}</span>
+      <span className="vcs-sr-only">{label}</span>
     </span>
   )
 }
-import type { Motion } from './turning.js'
 
 /** A text button; the remaining attributes reach the underlying element. */
 export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement>

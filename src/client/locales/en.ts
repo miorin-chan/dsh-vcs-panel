@@ -141,6 +141,8 @@ const dictionary: LocaleDict = Object.freeze({
   "changes.untrackedTruncated.one": "Only {count} entry in this folder is shown.",
   "changes.untrackedTruncated.other": "Only the first {count} entries in this folder are shown.",
   "changes.truncatedMany": "Some entries are not shown.",
+  "changes.untrackedLines": "Lines added in untracked files · {count}",
+  "changes.untrackedLinesUnavailable": "Could not count lines in untracked files",
   "changes.loadingDirectory": "Loading folder…",
   "changes.binary": "binary",
   "changes.clean": "Nothing changed",

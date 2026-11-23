@@ -10,7 +10,7 @@
 
 import type { DiffTarget } from '../api.js'
 import { buildNodeRows, summarizeEntries } from './tree.js'
-import type { FileEntry, TreeRow, UntrackedChild } from './tree.js'
+import type { FileEntry, RowGroup, TreeRow, UntrackedChild } from './tree.js'
 
 /** Changed lines above which a file stays folded when every file is expanded. */
 export const FOLD_LINES = 1000
@@ -35,16 +35,14 @@ const MAX_LINES = 5000
 const WORKTREE_GROUPS = ['staged', 'unstaged']
 
 /** One file group of the change tree: a working-tree group or one commit. */
-export interface FileGroup {
-  id: string
-  entries: readonly FileEntry[]
+export interface FileGroup extends RowGroup {
   header: boolean
-  untrackedTotal?: number
 }
 
 /** The status groups one working-tree answer may carry. */
 export interface WorktreeStatus {
   untrackedTotal?: number
+  untrackedAdded?: number | null
   groups?: {
     staged?: readonly FileEntry[]
     unstaged?: readonly FileEntry[]
@@ -88,6 +86,7 @@ export function worktreeGroups(status: WorktreeStatus | null): FileGroup[] {
       entries: [...(status?.groups?.unstaged ?? []), ...untracked],
       header: true,
       untrackedTotal: status?.untrackedTotal ?? untracked.length,
+      untrackedAdded: status?.untrackedAdded,
     },
   ].filter(group => group.entries.length > 0)
 }

@@ -137,6 +137,8 @@ const dictionary: LocaleDict = Object.freeze({
   "repositories.worktreesTruncated": "部分工作树未显示。",
   "changes.untrackedTruncated.other": "这个文件夹只显示前 {count} 项。",
   "changes.truncatedMany": "部分条目未显示。",
+  "changes.untrackedLines": "未跟踪文件新增 {count} 行",
+  "changes.untrackedLinesUnavailable": "无法统计未跟踪文件的行数",
   "changes.loadingDirectory": "正在读取文件夹…",
   "changes.binary": "二进制",
   "changes.clean": "没有改动",

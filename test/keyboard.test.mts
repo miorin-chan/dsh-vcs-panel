@@ -1147,6 +1147,7 @@ test('added and untracked rows carry distinct letters and labels', async () => {
       {
         id: 'unstaged',
         header: true,
+        untrackedAdded: 27,
         entries: [
           { path: 'new.txt', status: 'U', untracked: true, added: 0, deleted: 0 },
           { path: 'notes/', status: 'U', untracked: true, directory: true, added: 0, deleted: 0 },
@@ -1187,10 +1188,12 @@ test('added and untracked rows carry distinct letters and labels', async () => {
     const treeEl = harness.document.body.querySelector('.vcs-tree')
     const [addedHead, newHead] = treeEl.querySelectorAll('.vcs-tree-file-head')
     const [stagedHead, unstagedHead] = treeEl.querySelectorAll('.vcs-tree-group-head')
-    assert.equal(stagedHead.querySelector('[title="status.untracked"]'), null)
-    const untrackedStat = unstagedHead.querySelector('[title="status.untracked"]')
-    assert.equal(textOf(untrackedStat.querySelector('[aria-hidden="true"]')), '+2')
-    assert.equal(textOf(untrackedStat.querySelector('.vcs-sr-only')), 'status.untracked 2')
+    assert.equal(stagedHead.querySelector('.vcs-untracked-stat'), null)
+    const untrackedStat = unstagedHead.querySelector('.vcs-untracked-stat')
+    const untrackedLabel = t('changes.untrackedLines', { count: '27' })
+    assert.equal(untrackedStat.props.title, untrackedLabel)
+    assert.equal(textOf(untrackedStat.querySelector('[aria-hidden="true"]')), '+27')
+    assert.equal(textOf(untrackedStat.querySelector('.vcs-sr-only')), untrackedLabel)
     assert.deepEqual(
       [...untrackedStat.parentElement.children],
       [untrackedStat, unstagedHead.querySelector('.vcs-add'), unstagedHead.querySelector('.vcs-del')],
@@ -5092,6 +5095,7 @@ test('VcsView merges visible invalidations, keeps domains separate, and catches 
   const repo = { path: '/repo', name: 'repo', enclosing: true, vcs: 'git', capabilities: GIT_CAPABILITIES }
   let file = 'before.js'
   let nestedFile = 'old.txt'
+  let untrackedAdded = 27
   let pendingStatus = null
   globalThis.fetch = async url => {
     const { pathname: route, searchParams } = new URL(url, 'http://127.0.0.1')
@@ -5102,11 +5106,12 @@ test('VcsView merges visible invalidations, keeps domains separate, and catches 
     } else if (route === '/api/vcs.status') {
       if (pendingStatus !== null) await pendingStatus.promise
       data = {
-        repo, vcs: 'git', capabilities: GIT_CAPABILITIES, total: 1,
+        repo, vcs: 'git', capabilities: GIT_CAPABILITIES, total: 2, untrackedTotal: 1, untrackedAdded,
         branch: { name: 'main', oid: null, unborn: true },
+        stageHistory: { undo: null, redo: null },
         groups: {
           staged: [], unstaged: [{ path: file, status: 'M', added: 1, deleted: 0 }],
-          untracked: [{ path: 'outer/', directory: true }],
+          untracked: [{ path: 'outer/', status: 'U', directory: true, untracked: true }],
         },
       }
     } else if (route === '/api/vcs.untracked') {
@@ -5138,11 +5143,20 @@ test('VcsView merges visible invalidations, keeps domains separate, and catches 
     const all = ['/api/vcs.log', '/api/vcs.repositories', '/api/vcs.status']
     const row = path => document.body.querySelector(`[data-row-key="merged|${path}"]`)
     const emit = (source, ...domains) => source.dispatchEvent(new MessageEvent('invalidate', { data: JSON.stringify({ domains }) }))
+    const narrowStat = () => document.body.querySelector('.vcs-detail-stat-narrow')
+    const grayStat = container => container?.querySelector('.vcs-untracked-stat') ?? null
+    const grayText = container => textOf(grayStat(container)?.querySelector('[aria-hidden="true"]'))
+    const assertUntrackedLines = expected => {
+      assert.equal(grayText(document.body.querySelector('.vcs-timeline')), expected)
+      assert.equal(grayText(document.body.querySelector('.vcs-detail-toolbar')), expected)
+      assert.equal(grayText(narrowStat()), expected)
+    }
 
     mount(true, 1)
     await harness.settle()
     assert.deepEqual(takeReads(), all)
     assert.ok(row(file))
+    assertUntrackedLines('+27')
     const watch = sources.at(-1)
     assert.match(watch.url, /repo=%2Frepo/u)
     document.body.querySelector('.composer').focus()
@@ -5205,11 +5219,14 @@ test('VcsView merges visible invalidations, keeps domains separate, and catches 
     harness.mouseClick(directory('outer/inner'))
     await harness.settle()
     assert.ok(row('outer/inner/old.txt'))
+    assertUntrackedLines('+27')
     takeReads()
     nestedFile = 'new.txt'
+    untrackedAdded = 36
     emit(currentWatch, 'working')
     await settleWatch()
     assert.deepEqual(takeReads(), ['/api/vcs.status', '/api/vcs.untracked', '/api/vcs.untracked'])
+    assertUntrackedLines('+36')
     assert.ok(row('outer/inner/new.txt'))
     assert.equal(row('outer/inner/old.txt'), null)
     harness.mouseClick(directory('outer/inner'))
@@ -5221,6 +5238,19 @@ test('VcsView merges visible invalidations, keeps domains separate, and catches 
     harness.mouseClick(directory('outer/inner'))
     await harness.settle()
     assert.ok(row('outer/inner/while-closed.txt'))
+
+    untrackedAdded = null
+    emit(currentWatch, 'working')
+    await settleWatch()
+    assertUntrackedLines('+…')
+    assert.match(textOf(document.body.querySelector('.vcs-detail')), /changes\.untrackedLinesUnavailable/u)
+
+    untrackedAdded = 0
+    emit(currentWatch, 'working')
+    await settleWatch()
+    assert.equal(document.body.querySelector('.vcs-untracked-stat'), null)
+    assert.notEqual(narrowStat(), null)
+    assert.equal(textOf(narrowStat().querySelector('.vcs-add')), '+1')
   } finally {
     pendingStatus?.resolve()
     harness.unmount()

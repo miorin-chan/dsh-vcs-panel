@@ -522,6 +522,7 @@ export function DetailPane({
       )}
       {header}
       {isWorktree && status?.truncated === true ? <p className="vcs-note">{t('changes.truncatedMany')}</p> : null}
+      {isWorktree && status?.untrackedAdded === null ? <p className="vcs-note">{t('changes.untrackedLinesUnavailable')}</p> : null}
       {/* The commit's files arrive with its facts; the facts' shape already speaks for both. */}
       {!isWorktree && commitState.commit === null && commitState.status !== 'error' ? <TreeSkeleton /> : null}
     </>
@@ -534,15 +535,15 @@ export function DetailPane({
   const summaryCounts = mergedCounts === null || worktreeCounts === null
     ? worktreeCounts
     : {
+        ...worktreeCounts,
         added: mergedCounts.added,
         deleted: mergedCounts.deleted,
-        untracked: worktreeCounts.untracked,
         changed: mergedCounts.count + (worktreeCounts.untracked - mergedCounts.untracked),
       }
   const worktreeStat = summaryCounts !== null && summaryCounts.changed > 0 ? (
     <>
       <span className="vcs-dim">{formatPlural(t, 'detail.fileCount', summaryCounts.changed, locale)}</span>
-      <UntrackedStat count={summaryCounts.untracked} label={t('status.untracked')} locale={locale} />
+      <UntrackedStat added={summaryCounts.untrackedAdded} t={t} locale={locale} />
       {summaryCounts.added > 0 ? <span className="vcs-add">+{formatCount(summaryCounts.added, locale)}</span> : null}
       {summaryCounts.deleted > 0 ? <span className="vcs-del">−{formatCount(summaryCounts.deleted, locale)}</span> : null}
     </>

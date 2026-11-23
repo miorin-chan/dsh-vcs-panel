@@ -4,6 +4,7 @@ import { execFileSync, spawn as spawnProcess } from 'node:child_process'
 import {
   accessSync,
   constants,
+  createReadStream,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -268,7 +269,7 @@ async function canonicalize(path) {
 
 /**
  * A filesystem adapter matching the `ctx.fs` contract the handlers use:
- * resolve/processPath/contains/stat/lstat/readBytes/listDir.
+ * resolve/processPath/contains/stat/lstat/readBytes/streamText/listDir.
  * @returns {object} the adapter.
  */
 function createFakeFs() {
@@ -323,6 +324,17 @@ function createFakeFs() {
         throw error
       }
       return new Uint8Array(bytes)
+    },
+    async *streamText(resolved, signal) {
+      const decoder = new TextDecoder('utf8', { fatal: true })
+      const stream = createReadStream(resolved.targetKey, { signal })
+      try {
+        for await (const chunk of stream) yield decoder.decode(chunk, { stream: true })
+        yield decoder.decode()
+      } catch (error) {
+        if (error instanceof TypeError) throw Object.assign(error, { code: 'FS_NOT_TEXT' })
+        throw error
+      }
     },
     listDir: async resolved => {
       const dirents = await readdir(resolved.targetKey, { withFileTypes: true })
@@ -1848,6 +1860,56 @@ test('status reports branch facts and all three groups with counts', async () =>
   ])
   assert.equal(body.truncated, false)
   assert.equal(body.total, 7)
+  assert.equal(body.untrackedTotal, 2)
+  // Two small text files, 5,001 lines beyond the diff line cap, and one streamed line.
+  assert.equal(body.untrackedAdded, 5004)
+})
+
+test('untracked additions come from new-file diffs before staging, including a folded folder', async t => {
+  const { linked, repo, handlers } = linkedWorktreeFixture(t)
+  const target = { ...repo, worktree: linked }
+  const readStatus = () => call(handlers.status, route('/api/vcs.status', target))
+  const paths = ['draft.txt', 'notes/a.txt', 'notes/b.txt']
+  writeFileSync(join(linked, 'tracked.txt'), 'base\ntracked addition\n')
+  mkdirSync(join(linked, 'notes'))
+  writeFileSync(join(linked, paths[0]), 'one\r\ntwo\r\nthree')
+  writeFileSync(join(linked, paths[1]), 'one\ntwo\n')
+  writeFileSync(join(linked, paths[2]), '\nlast')
+  writeFileSync(join(linked, 'notes/empty.txt'), '')
+  const before = gitRaw(linked, ['ls-files', '--stage', '-z'])
+
+  const initial = await readStatus()
+  assert.equal(initial.status, 200)
+  assert.deepEqual(initial.body.groups.untracked.map(entry => entry.path), ['draft.txt', 'notes/'])
+  assert.equal(initial.body.untrackedAdded, 7)
+  assert.equal(initial.body.groups.unstaged[0].added, 1)
+
+  const lines = await Promise.all(paths.map(async path => {
+    const diff = await call(handlers.diff, route('/api/vcs.diff', { ...target, scope: 'untracked', path }))
+    assert.equal(diff.body.kind, 'text')
+    return diff.body.hunks[0].newLines
+  }))
+  assert.deepEqual(lines, [3, 2, 2])
+  assert.equal(gitRaw(linked, ['ls-files', '--stage', '-z']), before)
+
+  git(linked, ['add', '--', paths[0]])
+  const after = await readStatus()
+  assert.equal(after.body.untrackedTotal, 1)
+  assert.equal(after.body.untrackedAdded, 4)
+  assert.deepEqual(after.body.groups.staged.map(entry => [entry.path, entry.added]), [['draft.txt', 3]])
+  assert.equal(after.body.groups.unstaged[0].added, 1)
+})
+
+test('status reports an unavailable untracked line count without losing file entries', async () => {
+  const denied = createHandlers(createHost({ fs: {
+    ...fakeFs,
+    readBytes: async () => { throw Object.assign(new Error('Unreadable file'), { code: 'FS_PERMISSION_DENIED' }) },
+  } }))
+  const { status, body } = await call(denied.status, route('/api/vcs.status', { sessionId: 's-unborn', repo: unbornPath }))
+  assert.equal(status, 200)
+  assert.equal(body.untrackedAdded, null)
+  assert.equal(body.untrackedTotal, 1)
+  assert.deepEqual(body.groups.untracked.map(entry => entry.path), ['first.txt'])
 })
 
 test('status reports an unborn branch and stays an empty history', async () => {

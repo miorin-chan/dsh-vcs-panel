@@ -1211,20 +1211,22 @@ test('the checklist restores valid choices, defaults to the anchor, and refuses 
   assert.deepEqual(sharedRefs([{ kind: 'head', name: 'HEAD' }, { kind: 'branch', name: 'main', current: true }]), [{ kind: 'branch', name: 'main' }])
 })
 
-test('worktreeSummary counts tracked lines and untracked entries separately', () => {
+test('worktreeSummary keeps the untracked lines, tracked lines, and entry counts distinct', () => {
   const status = {
     total: 4,
+    untrackedAdded: 27,
     groups: {
       staged: [{ path: 'a', status: 'A', added: 2, deleted: 0 }],
       unstaged: [{ path: 'b', added: 5, deleted: 1 }],
       untracked: [{ path: 'c', added: 0, deleted: 0 }, { path: 'dir/', directory: true }],
     },
   }
-  assert.deepEqual(worktreeSummary(status), { changed: 4, added: 7, deleted: 1, untracked: 2 })
+  assert.deepEqual(worktreeSummary(status), { changed: 4, added: 7, deleted: 1, untracked: 2, untrackedAdded: 27 })
   assert.deepEqual(worktreeSummary({ ...status, total: 503, untrackedTotal: 501 }), {
-    changed: 503, added: 7, deleted: 1, untracked: 501,
+    changed: 503, added: 7, deleted: 1, untracked: 501, untrackedAdded: 27,
   })
-  assert.deepEqual(worktreeSummary(null), { changed: 0, added: 0, deleted: 0, untracked: 0 })
+  assert.equal(worktreeSummary({ ...status, untrackedAdded: null }).untrackedAdded, null)
+  assert.deepEqual(worktreeSummary(null), { changed: 0, added: 0, deleted: 0, untracked: 0, untrackedAdded: 0 })
 })
 
 test('the working tree has staged and unstaged groups, with untracked files merged', () => {
@@ -1239,10 +1241,12 @@ test('the working tree has staged and unstaged groups, with untracked files merg
   assert.deepEqual(groups.map(group => group.id), ['staged', 'unstaged'])
   assert.deepEqual(groups.map(group => group.header), [true, true])
   assert.deepEqual(groups[1].entries.map(entry => entry.path), ['u.js', 'n.txt'])
-  const cappedGroup = worktreeGroups({ ...status, untrackedTotal: 501 })[1]
+  const cappedGroup = worktreeGroups({ ...status, untrackedTotal: 501, untrackedAdded: 730 })[1]
   const [cappedRow] = buildNodeRows([cappedGroup])
   assert.equal(cappedRow.count, 502)
   assert.equal(cappedRow.untracked, 501)
+  assert.equal(cappedRow.untrackedAdded, 730)
+  assert.equal(cappedRow.added, 2)
   assert.deepEqual(worktreeGroups(null), [])
   assert.deepEqual(worktreeGroups({ groups: {} }), [])
 

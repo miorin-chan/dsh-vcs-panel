@@ -31,6 +31,7 @@ export interface WorktreeStatusEntry {
 export interface WorktreeStatus {
   total?: number
   untrackedTotal?: number
+  untrackedAdded?: number | null
   groups?: Readonly<Partial<Record<'staged' | 'unstaged' | 'untracked', readonly WorktreeStatusEntry[]>>>
 }
 
@@ -40,6 +41,7 @@ export interface WorktreeSummary {
   added: number
   deleted: number
   untracked: number
+  untrackedAdded: number | null
 }
 
 /** One discovered repository entry; `pickRepository` preserves the caller's shape. */
@@ -121,7 +123,7 @@ export function pickRepository<T extends RepositoryEntry>(
 
 /**
  * What the working-tree row and header say about the uncommitted changes.
- * Count untracked status entries, including collapsed directories, separately from lines.
+ * Use the Host's untracked line total, which also covers files in collapsed directories.
  * @param status - the working-tree answer.
  * @returns the summary.
  */
@@ -134,6 +136,7 @@ export function worktreeSummary(status: WorktreeStatus | null | undefined): Work
       if (typeof entry.deleted === 'number') deleted += entry.deleted
     }
   }
+  const { total = 0, untrackedAdded = 0 } = status ?? {}
   const untracked = status?.untrackedTotal ?? status?.groups?.untracked?.length ?? 0
-  return { changed: status?.total ?? 0, added, deleted, untracked }
+  return { changed: total, added, deleted, untracked, untrackedAdded }
 }

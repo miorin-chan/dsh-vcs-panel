@@ -137,6 +137,8 @@ const dictionary: LocaleDict = Object.freeze({
   "repositories.worktreesTruncated": "一部の作業ツリーは表示されていません。",
   "changes.untrackedTruncated.other": "このフォルダーは先頭 {count} 件のみ表示しています。",
   "changes.truncatedMany": "一部の項目は表示されていません。",
+  "changes.untrackedLines": "未追跡ファイルの追加行数は {count} 行です",
+  "changes.untrackedLinesUnavailable": "未追跡ファイルの行数を集計できませんでした",
   "changes.loadingDirectory": "フォルダーを読み込み中…",
   "changes.binary": "バイナリ",
   "changes.clean": "変更なし",

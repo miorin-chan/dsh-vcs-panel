@@ -149,6 +149,8 @@ const dictionary: LocaleDict = Object.freeze({
   "changes.untrackedTruncated.many": "В этой папке показано только {count} записей, остальные скрыты.",
   "changes.untrackedTruncated.other": "В этой папке показано только {count} записи, остальные скрыты.",
   "changes.truncatedMany": "Некоторые записи не показаны.",
+  "changes.untrackedLines": "Добавленные строки в неотслеживаемых файлах · {count}",
+  "changes.untrackedLinesUnavailable": "Не удалось подсчитать строки в неотслеживаемых файлах",
   "changes.loadingDirectory": "Загрузка папки…",
   "changes.binary": "двоичный",
   "changes.clean": "Изменений нет",

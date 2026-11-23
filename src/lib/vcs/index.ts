@@ -67,6 +67,8 @@ export interface VcsStatus {
   total: number
   /** Number of Git untracked entries before the display cap. */
   untrackedTotal?: number
+  /** Added lines in Git untracked text files, or null when the total could not be read. */
+  untrackedAdded?: number | null
   /** True when a group was capped. */
   truncated: boolean
   /** The node the view selects first. */
