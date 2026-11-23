@@ -86,7 +86,7 @@
 界面变更通过运行中的 DSH Web 界面验证；可用时优先查看实际页面，检查常用操作、键盘焦点、窗口尺寸和状态恢复。
 报告中明确区分夹具测试与实机观察，并说明实际执行的检查。
 实机环境用 [scripts/fixture.mts](scripts/fixture.mts) 生成夹具仓库，
-用工作区的 `tools/dsh-web-dev.mjs` 在一次性 profile 中启动 DSH Web，步骤见 `TODO.md`“新会话从这里开始”；
+用工作区的 `tools/dsh-web-dev.mts` 在一次性 profile 中启动 DSH Web，步骤见 `TODO.md`“新会话从这里开始”；
 写操作前确认面板打开的是夹具仓库。
 
 验证操作保持范围明确；交互检查结束后恢复临时状态和测试视口。
@@ -145,7 +145,7 @@
 - 保持插件可以独立安装、启用与停用，并保持 npm 公开发布所需的包结构。
   保留 `src/`、`scripts/`、`tsconfig.json` 与现有的 `test/`。
 - `npm run check` 一次运行测试、类型检查、产物新鲜度与类型包版本钉住。
-- 在工作区根目录运行 `node tools/new-dsh-plugin/cli.mjs --check plugins/dsh-vcs-panel` 检查骨架。
+- 在工作区根目录运行 `node tools/new-dsh-plugin/cli.mts --check plugins/dsh-vcs-panel` 检查骨架。
 - 重排修改过的英文 Markdown 时，在项目根目录运行 `docs/scripts/reflow md <path>`。
   命令需要 Python 3.11 或更新版本。
 - 在项目根运行 `prek install`，之后提交时会自动重排暂存的 Markdown。

@@ -12,8 +12,8 @@
 
    ```sh
    node scripts/fixture.mts "$TMPDIR/dsh-web-dev/fixture"
-   node ../../tools/dsh-web-dev.mjs prepare --workspace "$TMPDIR/dsh-web-dev/fixture" --plugin .
-   node ../../tools/dsh-web-dev.mjs serve
+   node ../../tools/dsh-web-dev.mts prepare --workspace "$TMPDIR/dsh-web-dev/fixture" --plugin .
+   node ../../tools/dsh-web-dev.mts serve
    ```
 
 `serve` 需要绑定本地端口，在受限沙箱里可改在沙箱外或用预览启动器运行。
