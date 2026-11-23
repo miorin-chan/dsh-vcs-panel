@@ -163,8 +163,8 @@
     与 `GET /api/vcs.log` 一致；`GET /api/vcs.remotes` 放开供 `branchOps` 与 `tagOps` 共用。
 - 测试与文案完整性：
   - 修复历史重构遗留的重复/覆盖文案键与无用占位键（拆出 `top.readonlySyncBranchTag`），
-    全部动态重置键改用静态查找表；`test/i18n.test.mjs` 新增重复键与全量反向死键校验；新增 `reachableCommits`
-    / `commitBranchRelation` / `checkout` 与浮动菜单/交互徽标/多仓库并发/对话框交互等单元与组件测试。
+    全部动态重置键改用静态查找表；i18n 测试新增重复键与全量反向死键校验；新增 `reachableCommits` /
+    `commitBranchRelation` / `checkout` 与浮动菜单/交互徽标/多仓库并发/对话框交互等单元与组件测试。
 
 ### 布局
 

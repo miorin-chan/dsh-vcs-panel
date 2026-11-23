@@ -36,15 +36,15 @@ const env = {
   GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
   GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
 }
-function git(...args) {
+function git(...args: string[]): void {
   const result = spawnSync('git', args, { cwd: root, env, encoding: 'utf8' })
   if (result.status !== 0) throw new Error(`git ${args.join(' ')}: ${result.stderr}`)
 }
-function write(path, text) {
+function write(path: string, text: string): void {
   mkdirSync(dirname(join(root, path)), { recursive: true })
   writeFileSync(join(root, path), text)
 }
-function edit(path, pairs) {
+function edit(path: string, pairs: readonly (readonly [from: string, to: string])[]): void {
   let text = readFileSync(join(root, path), 'utf8')
   for (const [from, to] of pairs) {
     if (!text.includes(from)) throw new Error(`${path} lacks ${JSON.stringify(from)}`)

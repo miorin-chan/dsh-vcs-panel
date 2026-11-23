@@ -14,10 +14,20 @@
  */
 
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+interface InstalledVersions {
+  dsh: string
+  cordis: string
+}
+
+interface PackageVersion {
+  version: string
+}
 
 const require = createRequire(import.meta.url)
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -30,10 +40,10 @@ if (installDir === undefined || installDir === '') {
 }
 
 /** The CLI version and the Cordis version the installation carries. */
-function installedVersions() {
+function installedVersions(installDir: string): InstalledVersions {
   try {
-    const dsh = JSON.parse(require('node:fs').readFileSync(resolve(installDir, 'package.json'), 'utf8'))
-    const cordis = JSON.parse(require('node:fs').readFileSync(
+    const dsh: PackageVersion = JSON.parse(readFileSync(resolve(installDir, 'package.json'), 'utf8'))
+    const cordis: PackageVersion = JSON.parse(readFileSync(
       resolve(dirname(require.resolve('@deepseek-ai/cordis/package.json', { paths: [installDir] })), 'package.json'),
       'utf8',
     ))
@@ -58,13 +68,11 @@ function installedVersions() {
   }
 }
 
-const versions = installedVersions()
-const dshVersion = versions.dsh
-const cordisVersion = versions.cordis
+const { dsh: dshVersion, cordis: cordisVersion } = installedVersions(installDir)
 
-const expected = (name) => (name === '@deepseek-ai/cordis' ? cordisVersion : dshVersion)
+const expected = (name: string): string => (name === '@deepseek-ai/cordis' ? cordisVersion : dshVersion)
 
-const pkg = JSON.parse(await readFile(resolve(ROOT, 'package.json'), 'utf8'))
+const pkg: { devDependencies?: Record<string, string> } = JSON.parse(await readFile(resolve(ROOT, 'package.json'), 'utf8'))
 const devDependencies = pkg.devDependencies ?? {}
 const pinned = Object.keys(devDependencies).filter((name) => name.startsWith('@deepseek-ai/'))
 

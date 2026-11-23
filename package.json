@@ -49,7 +49,8 @@
     "IMPLEMENTATION.md",
     "src",
     "scripts",
-    "tsconfig.json"
+    "tsconfig.json",
+    "tsconfig.tools.json"
   ],
   "dsh": {
     "bundle": {
@@ -67,12 +68,13 @@
     }
   },
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build:tools": "tsc -p tsconfig.tools.json",
+    "build": "npm run build:tools && node scripts/build.mjs",
     "prepare": "npm run build 1>&2",
     "typecheck": "tsc -p tsconfig.json",
     "test": "npm run build && npm run test:unit --",
     "test:unit": "node --test",
-    "check": "npm run test:unit && npm run typecheck && node scripts/build.mjs --check && node scripts/sync-types.mjs --check"
+    "check": "npm run build:tools && npm run test:unit && npm run typecheck && node scripts/build.mjs --check && node scripts/sync-types.mjs --check"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.1.0",

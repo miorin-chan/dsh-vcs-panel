@@ -19,10 +19,10 @@
   对话框、变更树、diff 与历史视图。
   纯模块编译到 `lib/client/` 供 `node --test` 导入。
   `.tsx` 组件由 `client.js` 承载。
-- Git 忽略生成的 `index.js`、`client.js` 和 `lib/`。
-  修改源码后用 `npm run build` 更新产物，用 `node scripts/build.mjs --check` 核对当前产物。
-- `tsconfig.json`、`scripts/build.mjs`、`scripts/sync-types.mjs` 来自工作区 `tools/dsh-plugin-ts/` 模板，
-  本插件在模板之上增加客户端镜像与递归 `src/lib` 产物。
+- Git 忽略生成的 `index.js`、`client.js`、`lib/` 和 `scripts/*.mjs`。
+  修改源码后用 `npm run build` 更新产物，用 `node scripts/build.mjs --check` 核对运行产物。
+- `tsconfig.json`、[scripts/build.mts](scripts/build.mts) 和 [scripts/sync-types.mts](scripts/sync-types.mts)
+  源自工作区 `tools/dsh-plugin-ts/` 模板，构建关系见[实现契约](IMPLEMENTATION.md#构建与类型)。
 - 类型只以 `import type` 使用，DSH 服务声明集中在 [src/dsh.d.ts](src/dsh.d.ts)；
   产物里没有 `@deepseek-ai/*` 的运行时 import。
 
@@ -75,9 +75,9 @@
 ## 验证
 
 迭代时先运行受影响的测试。运行时代码变更完成后执行项目的完整测试与检查；发行时按项目说明打包。
-具体命令与验证重点见 `README.md`。本项目的完整检查为 `npm run check`：`node --test`、
-`tsc -p tsconfig.json`、`scripts/build.mjs --check`、`scripts/sync-types.mjs --check`；`index.js`、
-`client.js` 与 `lib/**/*.js` 由 `npm run build` 从 `src/` 生成，不手改；打包检查用 `npm pack --dry-run`。
+具体命令与验证重点见 `README.md`。`npm run check` 先用 `npm run build:tools` 编译工具，再运行 `node --test`、
+`tsc -p tsconfig.json`、`node scripts/build.mjs --check` 和 `node scripts/sync-types.mjs --check`。
+`npm run build` 从 `src/` 生成 `index.js`、`client.js` 与 `lib/**/*.js`，打包检查用 `npm pack --dry-run`。
 安装、升级与卸载验证使用假 `DSH_HOME` 的 `dsh plugin` 命令，不操作真实 profile。
 
 行为或校验变更同时覆盖有效输入与对应的拒绝、缺失或冲突情形。
@@ -85,8 +85,9 @@
 
 界面变更通过运行中的 DSH Web 界面验证；可用时优先查看实际页面，检查常用操作、键盘焦点、窗口尺寸和状态恢复。
 报告中明确区分夹具测试与实机观察，并说明实际执行的检查。
-实机环境用 `scripts/fixture.mjs` 生成夹具仓库，用工作区的 `tools/dsh-web-dev.mjs` 在一次性 profile 中启动 DSH Web，
-步骤见 `TODO.md`“新会话从这里开始”；写操作前确认面板打开的是夹具仓库。
+实机环境用 [scripts/fixture.mts](scripts/fixture.mts) 生成夹具仓库，
+用工作区的 `tools/dsh-web-dev.mjs` 在一次性 profile 中启动 DSH Web，步骤见 `TODO.md`“新会话从这里开始”；
+写操作前确认面板打开的是夹具仓库。
 
 验证操作保持范围明确；交互检查结束后恢复临时状态和测试视口。
 开发源码、profile 的 `link:` 安装副本与运行中的应用分开管理，具体职责以 `README.md` 为准。

@@ -6,6 +6,7 @@ node_modules/
 /index.js
 /client.js
 /lib/
+/scripts/*.mjs
 coverage/
 .nyc_output/
 *.tgz

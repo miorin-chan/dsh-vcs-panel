@@ -3,7 +3,7 @@
  * are still loading or are cancelled mid-response.
  *
  * Compiles `VcsView` and `ChangeTree` with esbuild in memory (matching
- * `scripts/build.mjs`) and drives them through a minimal stateful React + DOM
+ * `scripts/build.mts`) and drives them through a minimal stateful React + DOM
  * harness so hook lifecycles, refs, observers, focus transitions, and keyboard
  * handlers run together without a browser.
  */

@@ -11,7 +11,7 @@
 3. 实机验证使用 Git 夹具与一次性 DSH Web，不碰真实 profile 与工作区仓库：
 
    ```sh
-   node scripts/fixture.mjs "$TMPDIR/dsh-web-dev/fixture"
+   node scripts/fixture.mts "$TMPDIR/dsh-web-dev/fixture"
    node ../../tools/dsh-web-dev.mjs prepare --workspace "$TMPDIR/dsh-web-dev/fixture" --plugin .
    node ../../tools/dsh-web-dev.mjs serve
    ```

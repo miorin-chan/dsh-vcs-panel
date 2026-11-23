@@ -157,6 +157,8 @@ Restart DSH after adding. Disable or uninstall in **Plugins** at any time (resto
 
 ## Development
 
+Use Node.js 22.18 or a later release with native TypeScript stripping to run `test/*.test.mts`.
+
 ```sh
 pnpm install --frozen-lockfile # install dependencies and build the artifacts
 npm test                     # rebuild and run tests
@@ -164,14 +166,15 @@ npm run check                # tests, typecheck, artifact freshness, pinned type
 npm pack --dry-run            # preview package contents
 ```
 
-The TypeScript sources live in `src/host/`, `src/lib/` and `src/client/`.
-Git ignores the generated `index.js`, `client.js`, and `lib/` directory.
+The plugin sources live in `src/host/`, `src/lib/`, and `src/client/`.
+Build tools live in `scripts/*.mts`.
+Git ignores the generated `index.js`, `client.js`, `lib/`, and `scripts/*.mjs`.
 The npm package includes both entries and `lib/`, including the `lib/client/` modules used by Node tests.
 Install dependencies before running `npm run check` on a fresh checkout.
 Use `npm run build` to refresh the artifacts after editing the sources.
 Types are used only with `import type`, so no artifact imports `@deepseek-ai/*` at runtime.
 Run `dsh plugin` lifecycle checks against a temporary `DSH_HOME` to keep your real profile untouched.
-To check the panel in a running DSH Web, create the Git fixture with `node scripts/fixture.mjs <dir>`
+To check the panel in a running DSH Web, create the Git fixture with `node scripts/fixture.mts <dir>`
 and follow the steps in [`TODO.md`](TODO.md).
 
 Design: [`DESIGN.md`](DESIGN.md) · Implementation & limits: [`IMPLEMENTATION.md`](IMPLEMENTATION.md) · Changelog:

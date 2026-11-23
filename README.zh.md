@@ -119,6 +119,8 @@ DeepSeek Harness 右侧栏里的版本管理插件。
 
 ## 开发
 
+使用 Node.js 22.18 或支持原生 TypeScript 类型擦除的更高版本运行 `test/*.test.mts`。
+
 ```sh
 pnpm install --frozen-lockfile # 安装依赖并构建
 npm test                     # 重建后运行测试
@@ -126,13 +128,13 @@ npm run check                # 测试、类型、产物新鲜度与类型包版�
 npm pack --dry-run            # 预览打包内容
 ```
 
-TypeScript 源码位于 `src/host/`、`src/lib/` 和 `src/client/`。
-Git 忽略生成的 `index.js`、`client.js` 和 `lib/`。
+插件源码位于 `src/host/`、`src/lib/` 和 `src/client/`，构建工具源码位于 `scripts/*.mts`。
+Git 忽略生成的 `index.js`、`client.js`、`lib/` 和 `scripts/*.mjs`。
 npm 包收录这两个入口及整个 `lib/`，其中 `lib/client/` 下的模块供 Node 测试使用。
 全新检出时先安装依赖，再运行 `npm run check`。修改源码后可运行 `npm run build` 更新产物。
 类型只以 `import type` 使用，产物里没有 `@deepseek-ai/*` 的运行时 import。
 验证 `dsh plugin` 安装、升级与卸载时请使用临时 `DSH_HOME`，保持真实 profile 独立。
-在运行中的 DSH Web 里检查面板时，用 `node scripts/fixture.mjs <dir>` 生成 Git 夹具，
+在运行中的 DSH Web 里检查面板时，用 `node scripts/fixture.mts <dir>` 生成 Git 夹具，
 再按 [`TODO.md`](TODO.md) 的步骤启动。
 
 产品设计：[`DESIGN.md`](DESIGN.md) · 实现与上限：[`IMPLEMENTATION.md`](IMPLEMENTATION.md) · 变更日志：

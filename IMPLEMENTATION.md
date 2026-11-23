@@ -471,7 +471,7 @@ type TurnSummary = {
 ### 构建与类型
 
 源码是 TypeScript：宿主半在 `src/host/`，私有宿主模块在 `src/lib/`，客户端半在 `src/client/`。
-`scripts/build.mjs` 用 esbuild 从这些源码生成四组产物。
+[构建工具](scripts/build.mts)用 esbuild 从这些源码生成四组产物。
 
 | 源码 | 产物 | 形态 |
 | --- | --- | --- |
@@ -484,11 +484,15 @@ type TurnSummary = {
 `client.js` 只把宿主模块表提供的 `react`、`react/jsx-runtime` 与 `@deepseek-ai/*` 设为 external，其余内联。
 CSS 以文本打入 bundle，挂载时注入单个 `<style>`，类名统一使用 `vcs-` 前缀。
 Git 忽略这四组产物。安装依赖和 `npm test` 都会生成它们，打包时 `lib/client/` 随 `lib/` 一并收录。
-测试从客户端镜像导入纯模块，组件级测试用 esbuild 在内存里编译 `.tsx`（`test/keyboard.test.mjs`）。
+Node 原生擦除 `test/*.test.mts` 的类型，测试从客户端镜像导入纯模块。
+[键盘测试](test/keyboard.test.mts)用 esbuild 在内存里编译 `.tsx` 组件。
 
+`npm run build:tools` 按 [tsconfig.tools.json](tsconfig.tools.json) 严格检查 `scripts/*.mts` 并在同目录生成 `.mjs`。
+`npm run build` 和 `npm run check` 都先编译工具。
+npm 包收录工具的 `.mjs` 入口、`.mts` 源码及编译配置，供源码重建。
 `tsc -p tsconfig.json` 以 `strict` 检查 `src/`。DSH 类型包只以 `import type` 使用：服务声明集中在 `src/dsh.d.ts`，
 `Context` 来自 `@deepseek-ai/cordis`，产物里没有 `@deepseek-ai/*` 的运行时 import。
-类型包版本由 `scripts/sync-types.mjs` 钉到运行中的 DSH 与 cordis。
+类型包版本由[版本同步工具](scripts/sync-types.mts)钉到运行中的 DSH 与 cordis。
 
 八种界面语言各自保存在 `src/client/locales/{zh,en,ja,es,fr,de,ru,pt}.ts` 并由 `src/client/locales.ts` 导出，
 注册到 `vcs` 命名空间；宿主 locale 服务只做扁平 `{name}` 插值，
