@@ -52,7 +52,7 @@ function localeStub(active = 'zh', calls = []) {
 
 test('client.js registers the expected module id and exports apply/inject', () => {
   const { plugin, registered } = loadBundle()
-  assert.equal(registered.id, 'dsh-vcs-panel')
+  assert.equal(registered.id, '@miorin/dsh-vcs-panel')
   assert.deepEqual(plugin.inject, ['slots', 'locale', 'uiConversation', 'sidebarRight', 'sidebarRightTabs'])
   assert.equal(typeof plugin.apply, 'function')
 })

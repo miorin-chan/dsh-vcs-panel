@@ -1,7 +1,10 @@
 {
-  "name": "dsh-vcs-panel",
+  "name": "@miorin/dsh-vcs-panel",
   "version": "0.1.3",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "Version control panel for DeepSeek Harness, in the right sidebar: working changes, their diffs, and history with a lane graph, for Git and Jujutsu repositories, plus Git branch, remote-branch, tag, and commit actions and one-click upstream sync.",
   "icon": "./icon.svg",
   "type": "module",

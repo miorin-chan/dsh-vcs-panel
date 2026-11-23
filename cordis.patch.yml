@@ -3,6 +3,6 @@
 # `enabled: false` makes the Host apply return early and register no routes.
 - insert:
     - id: dsh-vcs-panel
-      name: 'dsh-vcs-panel'
+      name: '@miorin/dsh-vcs-panel'
       config:
         enabled: true
