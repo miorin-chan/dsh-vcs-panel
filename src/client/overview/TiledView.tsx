@@ -14,7 +14,7 @@ import { formatPlural } from '../format.js'
 import { resolveColor } from '../history/layout.js'
 import type { RepositoryRow } from '../TopBar.jsx'
 import type { FilterId, LaneStep, PointerView, RepositoryView, Skeleton } from './model.js'
-import { FILTERS, LOUD_STATES, matchesFilter, STATE_RANK } from './model.js'
+import { elementWithData, FILTERS, LOUD_STATES, matchesFilter, STATE_RANK } from './model.js'
 import { STATE_KEYS, FILTER_KEYS } from './labels.js'
 import { arrows, fetchNote, headlineText, KindGlyph, pointerFacts } from './OverviewPane.jsx'
 
@@ -39,6 +39,8 @@ export interface TiledControl {
   reveal(pointerId: string): void
   /** Each column's box, for the motion that leaves the layout. */
   columnRects(): Map<string, DOMRect>
+  /** Take keyboard focus: the focused chip, else the row of columns. */
+  focus(): void
 }
 
 export interface TiledViewProps {
@@ -356,10 +358,14 @@ export function TiledView({
       scroller.scrollBy({ left: direction * ((column?.offsetWidth ?? 360) + 12), behavior: reduced() ? 'auto' : 'smooth' })
     },
     reveal(pointerId) {
-      const element = scrollerRef.current?.querySelector<HTMLElement>(`[data-pointer-id="${CSS.escape(pointerId)}"]`)
-      if (element === null || element === undefined) return
+      const element = elementWithData(scrollerRef.current, 'data-pointer-id', pointerId)
+      if (element === null) return
       element.scrollIntoView({ block: 'center', inline: 'center', behavior: reduced() ? 'auto' : 'smooth' })
       element.focus({ preventScroll: true })
+    },
+    focus() {
+      const chip = focus === null ? null : elementWithData(scrollerRef.current, 'data-pointer-id', focus)
+      ;(chip ?? scrollerRef.current)?.focus({ preventScroll: true })
     },
     columnRects() {
       const rects = new Map<string, DOMRect>()
@@ -387,7 +393,7 @@ export function TiledView({
 
   return (
     <div className="vcs-tiled" data-filtering={filter !== null || undefined} data-narrow={narrow || undefined} onMouseDown={stop} onClick={stop}>
-      <div className="vcs-tile-columns" ref={scrollerRef} onScroll={measure} onWheel={onWheel} aria-label={t('tile.columns')} role="group">
+      <div className="vcs-tile-columns" ref={scrollerRef} tabIndex={0} onScroll={measure} onWheel={onWheel} aria-label={t('tile.columns')} role="group">
         {columns.map(column => {
           const quiet = column.view?.quiet === true
           const path = column.entry.path

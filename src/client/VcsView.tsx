@@ -923,6 +923,7 @@ export function VcsView({
   const [menuRequest, setMenuRequest] = useState(0)
   const pendingMenuRef = useRef<{ pointer: PointerView, point: { clientX: number, clientY: number }, element: HTMLElement | null } | null>(null)
   const pendingRevealRef = useRef<string | null>(null)
+  const revealGroupRef = useRef<string | null>(null)
   const fullscreenRequestedRef = useRef(false)
   const motionRef = useRef<{ on: boolean, before: Map<string, DOMRect> } | null>(null)
   const presentationRef = useRef(presentation)
@@ -1056,19 +1057,27 @@ export function VcsView({
     if (motion === null || motion.on !== state.tiled) return
     motionRef.current = null
     const root = rootRef.current
-    if (motion.on) playGroups(root, '.vcs-tile-column[data-repository]', motion.before)
-    else {
+    if (motion.on) {
+      playGroups(root, '.vcs-tile-column[data-repository]', motion.before)
+      // The stacked rows that held focus are gone; the columns take it.
+      if (panelOwnsFocusRef.current) tiledControl.current?.focus()
+    } else {
       playGroups(root, '.vcs-repository-group[data-repository]', motion.before)
       slideIn(root?.querySelector<HTMLElement>('.vcs-content') ?? null)
+      if (panelOwnsFocusRef.current) {
+        navZoneRef.current = 'timeline'
+        pendingReadyFocusRef.current = true
+        if (!restoreNavFocus()) rootRef.current?.focus({ preventScroll: true })
+      }
     }
-  }, [state.tiled])
+  })
 
   const toggleOverview = useCallback(() => {
     const current = stateRef.current
     if (current.tiled) {
-      // Leave the tiled layout with the overview flipped from how tiling found it.
+      // The overview is closed while tiled, so its button opens it and leaves the tiled layout.
       setTiled(false)
-      update({ overview: !current.overviewBeforeTile })
+      update({ overview: true })
       return
     }
     update({ overview: !current.overview })
@@ -1089,9 +1098,8 @@ export function VcsView({
     if (current.repositoryScope === 'selected' && !current.checkedRepositories.includes(entry.path)) {
       patch.checkedRepositories = [...current.checkedRepositories, entry.path]
     }
-    if (current.expandedRepositories !== null && !current.expandedRepositories.includes(entry.path)) {
-      patch.expandedRepositories = [...current.expandedRepositories, entry.path]
-    }
+    const expanded = current.expandedRepositories ?? (current.repo === null ? [] : [current.repo])
+    if (!expanded.includes(entry.path)) patch.expandedRepositories = [...expanded, entry.path]
     if ('commit' in target && current.ref !== 'all') patch.ref = 'all'
     if (current.repo !== entry.path) switchRepo(entry, node)
     else selectNode(node, true)
@@ -1106,13 +1114,16 @@ export function VcsView({
       })
     }
     pendingRevealRef.current = 'commit' in target ? target.commit : null
+    revealGroupRef.current = entry.path
     if (pointer.kind === 'stash' && 'commit' in target) {
       setNotice({ tone: 'info', text: t('overview.stashBase', { sha: target.commit.slice(0, 7) }) })
     }
     navZoneRef.current = 'timeline'
     if (singleColumn) setSingleView('timeline')
     if (keyboard) {
+      // Hand focus to the timeline now, and to the selected row once it is read.
       panelOwnsFocusRef.current = true
+      pendingRestoreFocusRef.current = true
       pendingReadyFocusRef.current = true
       setFocusTick(value => value + 1)
     }
@@ -1127,13 +1138,14 @@ export function VcsView({
     if (current.repositoryScope === 'selected' && !current.checkedRepositories.includes(path)) {
       patch.checkedRepositories = [...current.checkedRepositories, path]
     }
-    if (current.expandedRepositories !== null && !current.expandedRepositories.includes(path)) {
-      patch.expandedRepositories = [...current.expandedRepositories, path]
-    }
+    const expanded = current.expandedRepositories ?? (current.repo === null ? [] : [current.repo])
+    if (!expanded.includes(path)) patch.expandedRepositories = [...expanded, path]
     if (current.repo !== path) switchRepo(entry)
     if (Object.keys(patch).length > 0) update(patch)
+    revealGroupRef.current = path
     if (keyboard) {
       panelOwnsFocusRef.current = true
+      pendingRestoreFocusRef.current = true
       pendingReadyFocusRef.current = true
       setFocusTick(value => value + 1)
     }
@@ -1144,9 +1156,9 @@ export function VcsView({
     const entry = repositories.list.find(item => item.path === pointer.repo)
     if (entry === undefined || pointer.kind === 'stash') return
     pendingMenuRef.current = { pointer, point: { clientX: point.clientX, clientY: point.clientY }, element }
-    if (stateRef.current.repo !== entry.path) switchRepo(entry)
+    if (stateRef.current.repo !== entry.path) selectOverviewRepository(entry.path, false)
     setMenuRequest(value => value + 1)
-  }, [repositories.list, switchRepo])
+  }, [repositories.list, selectOverviewRepository])
 
   /** Step to the next or previous pointer of one state; a spine holding it opens. */
   const stepTraversal = useCallback((filter: FilterId, direction: 1 | -1) => {
@@ -1176,6 +1188,16 @@ export function VcsView({
     if (pointer !== null) revealPointer(pointer, true)
     else selectOverviewRepository(path, true)
   }, [revealPointer, selectOverviewRepository, setTiled])
+
+  // A repository chosen in the overview brings its timeline group into view.
+  useLayoutEffect(() => {
+    const path = revealGroupRef.current
+    if (path === null || state.repo !== path || state.tiled) return
+    const group = rootRef.current?.querySelector<HTMLElement>(`.vcs-repository-group[data-repository="${CSS.escape(path)}"]`)
+    if (group === null || group === undefined) return
+    revealGroupRef.current = null
+    group.scrollIntoView?.({ block: 'nearest' })
+  })
 
   // A traversal step brings its chip into view once the columns rendered it.
   useEffect(() => {

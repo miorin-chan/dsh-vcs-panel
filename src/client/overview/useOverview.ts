@@ -64,12 +64,16 @@ function isAbort(error: unknown): boolean {
  */
 export function useOverview(api: Api, { active, reloadKey, repo, repoKey }: UseOverviewOptions): OverviewData {
   const [data, setData] = useState<OverviewData>(EMPTY)
-  const loadedKey = useRef<string | null>(null)
+  // The full read that finished last, and the current repository's key when it started.
+  const [loaded, setLoaded] = useState<{ reloadKey: string, repoKey: string } | null>(null)
   const repoKeyRef = useRef(repoKey)
+  repoKeyRef.current = repoKey
 
   useEffect(() => {
-    if (!active || loadedKey.current === reloadKey) return undefined
+    if (!active || loaded?.reloadKey === reloadKey) return undefined
     const controller = new AbortController()
+    // A change that lands while this read runs is read again afterwards.
+    const startedWith = repoKeyRef.current
     const seen = new Set<string>()
     setData(previous => ({ ...previous, status: 'loading', error: null }))
     const apply = (line: OverviewLine) => {
@@ -99,20 +103,19 @@ export function useOverview(api: Api, { active, reloadKey, repo, repoKey }: UseO
     }
     api.overview(apply, { signal: controller.signal }).then(() => {
       if (controller.signal.aborted) return
-      loadedKey.current = reloadKey
-      repoKeyRef.current = repoKey
+      setLoaded({ reloadKey, repoKey: startedWith })
       setData(previous => previous.status === 'loading' ? { ...previous, status: 'ready', pending: 0 } : previous)
     }, error => {
       if (controller.signal.aborted || isAbort(error)) return
       setData(previous => ({ ...previous, status: 'error', error: failureOf(error), pending: 0 }))
     })
     return () => { controller.abort() }
-    // repoKey is recorded with the full read, not a reason to start one.
+    // `loaded` only gates the start; a finished read does not start another.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, api, reloadKey])
 
   useEffect(() => {
-    if (!active || repo === null || loadedKey.current !== reloadKey || repoKeyRef.current === repoKey) return undefined
+    if (!active || repo === null || loaded === null || loaded.reloadKey !== reloadKey || loaded.repoKey === repoKey) return undefined
     const controller = new AbortController()
     // Wait for a burst of changes to settle before rereading.
     const timer = setTimeout(() => {
@@ -125,14 +128,14 @@ export function useOverview(api: Api, { active, reloadKey, repo, repoKey }: UseO
           return { ...previous, repositories }
         })
       }, { repo, signal: controller.signal }).then(() => {
-        if (!controller.signal.aborted) repoKeyRef.current = repoKey
+        if (!controller.signal.aborted) setLoaded(previous => previous === null ? previous : { ...previous, repoKey })
       }, () => {})
     }, 400)
     return () => {
       clearTimeout(timer)
       controller.abort()
     }
-  }, [active, api, reloadKey, repo, repoKey])
+  }, [active, api, loaded, reloadKey, repo, repoKey])
 
   return data
 }

@@ -180,6 +180,21 @@ export function byAttention(first: RepositoryView, second: RepositoryView): numb
     || first.relativePath.localeCompare(second.relativePath)
 }
 
+/**
+ * The element under `root` whose `data-*` attribute equals `value`. Pointer ids
+ * hold control characters a CSS selector cannot carry, so this compares values.
+ * @param root - where to look.
+ * @param attribute - the full attribute name.
+ * @param value - the value to match.
+ * @returns the element, or null.
+ */
+export function elementWithData(root: ParentNode | null | undefined, attribute: string, value: string): HTMLElement | null {
+  for (const element of root?.querySelectorAll<HTMLElement>(`[${attribute}]`) ?? []) {
+    if (element.getAttribute(attribute) === value) return element
+  }
+  return null
+}
+
 /** The stable id of one pointer. */
 export function pointerId(repo: string, kind: PointerKind, name: string): string {
   return `${repo}\u0000${kind}\u0000${name}`

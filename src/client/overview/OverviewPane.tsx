@@ -14,7 +14,7 @@ import { Chevron } from '../ui.jsx'
 import type { OverviewData } from './useOverview.js'
 import type { FilterId, PointerView, RepositoryView } from './model.js'
 import {
-  byAttention, checkoutLabel, FILTERS, filterCounts, gauge, headline, matchesFilter, matchesSearch, relativeTo,
+  byAttention, checkoutLabel, elementWithData, FILTERS, filterCounts, gauge, headline, matchesFilter, matchesSearch, relativeTo,
 } from './model.js'
 import { FILTER_KEYS, STATE_KEYS } from './labels.js'
 
@@ -153,10 +153,10 @@ export function OverviewPane({
   const focusRow = (key: string | null) => {
     if (key === null) return false
     setCursor(key)
-    const element = listRef.current?.querySelector<HTMLElement>(`[data-overview-key="${CSS.escape(key)}"]`)
+    const element = elementWithData(listRef.current, 'data-overview-key', key)
     element?.focus({ preventScroll: true })
     element?.scrollIntoView?.({ block: 'nearest' })
-    return element !== null && element !== undefined
+    return element !== null
   }
 
   useImperativeHandle(control, () => ({
@@ -167,8 +167,7 @@ export function OverviewPane({
   // Follow the timeline: the selected pointer's row comes into view.
   useEffect(() => {
     if (selected === null) return
-    const element = listRef.current?.querySelector<HTMLElement>(`[data-pointer-id="${CSS.escape(selected)}"]`)
-    element?.scrollIntoView?.({ block: 'nearest' })
+    elementWithData(listRef.current, 'data-pointer-id', selected)?.scrollIntoView?.({ block: 'nearest' })
   }, [selected])
 
   const toggleRepository = (path: string) => {
