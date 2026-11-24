@@ -542,6 +542,7 @@ const dictionary: LocaleDict = Object.freeze({
   "tile.orderAttention": "按关注",
   "tile.collapse": "收成窄条",
   "tile.expandSpine": "{name} 与上游一致，展开成列",
+  "tile.expandSpineLocal": "{name} 无远程且没有需要处理的指针，展开成列",
   "tile.openTimeline": "在时间线中打开",
   "tile.forkPoint": "分叉点 {sha}",
   "tile.earlier": "⋮ 更早的历史",

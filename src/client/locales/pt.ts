@@ -557,6 +557,7 @@ const dictionary: LocaleDict = Object.freeze({
   "tile.orderAttention": "Por atenção",
   "tile.collapse": "Recolher em faixa",
   "tile.expandSpine": "{name} corresponde ao upstream; abrir como coluna",
+  "tile.expandSpineLocal": "{name} não tem remoto nem ponteiros a verificar; abrir como coluna",
   "tile.openTimeline": "Abrir na linha do tempo",
   "tile.forkPoint": "bifurcação {sha}",
   "tile.earlier": "⋮ histórico anterior",

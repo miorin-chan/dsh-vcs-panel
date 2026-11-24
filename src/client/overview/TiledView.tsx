@@ -406,7 +406,9 @@ export function TiledView({
                 data-spine=""
                 data-repository={path}
                 data-remote={column.view?.remotes.length === 0 ? undefined : ''}
-                title={t('tile.expandSpine', { name: column.entry.name })}
+                title={column.view?.remotes.length === 0
+                  ? t('tile.expandSpineLocal', { name: column.entry.name })
+                  : t('tile.expandSpine', { name: column.entry.name })}
                 onClick={() => { onExpand(path) }}
               >
                 <span className="vcs-tile-spine-mark" aria-hidden="true" />

@@ -557,6 +557,7 @@ const dictionary: LocaleDict = Object.freeze({
   "tile.orderAttention": "Nach Dringlichkeit",
   "tile.collapse": "Zu schmaler Leiste einklappen",
   "tile.expandSpine": "{name} entspricht seinem Upstream; als Spalte öffnen",
+  "tile.expandSpineLocal": "{name} hat kein Remote und keine Zeiger zum Ansehen; als Spalte öffnen",
   "tile.openTimeline": "In der Zeitleiste öffnen",
   "tile.forkPoint": "Abzweigung {sha}",
   "tile.earlier": "⋮ älterer Verlauf",

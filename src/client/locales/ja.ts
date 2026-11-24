@@ -542,6 +542,7 @@ const dictionary: LocaleDict = Object.freeze({
   "tile.orderAttention": "要対応順",
   "tile.collapse": "細い列にたたむ",
   "tile.expandSpine": "{name} は上流と一致しています。列として開く",
+  "tile.expandSpineLocal": "{name} はリモートがなく、確認すべきポインタもありません。列として開く",
   "tile.openTimeline": "タイムラインで開く",
   "tile.forkPoint": "分岐点 {sha}",
   "tile.earlier": "⋮ それ以前の履歴",
