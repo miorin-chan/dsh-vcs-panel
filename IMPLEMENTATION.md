@@ -500,6 +500,7 @@ type TurnSummary = {
 | --- | --- | --- |
 | 单会话初始仓库根 / 附加工作树数 | 各 50 | Host `discoverRepositories` / `groupRepositories` |
 | 全景：每仓库检出 / 指针 / 贮藏；未登记仓库的列举深度 / 列举次数 / 仓库数 | 51 / 2,000 / 200；6 层 / 20,000 / 50 | Host `overview.js` |
+| 全景栏宽度 / 抽屉阈值；平铺每列历史 / 并发读取 | 320–600px（默认 400）/ 余宽 360px；300 个提交 / 4 | Client `state.ts`、`VcsView`、`useTileHistories` |
 | 仓库发现标记检查 / 配置文件 / 每组配置路径与后端偏好 | 1,000 项 / 64 KiB / 50 项 | Host `repositories.js` / `repository-config.js` |
 | 工作树状态读取并发 / 一次历史请求的工作树数 | Git 4、Jujutsu 1 / 51 | Client `VcsView` / Host `log` |
 | Jujutsu `.jj/repo` 路径链接 | 16 KiB | Host `jjCommonDirAt` |
@@ -584,6 +585,12 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
   `.vcs-root` 通过 `onMouseDown`/`onClick`/`onKeyDown` 与 `isDiscreteActionButton` 让离散按钮点击与分支/Ref
   操作完成后无缝回归导航流（`Tab` 聚焦按钮按移动键也可回归，取消由键盘/详情徽标打开的菜单或弹窗仍归还给原控件），
   保留非空文本选区，并通过渲染期间焦点快照与 `useLayoutEffect` 同步恢复因渲染卸载停靠点而丢失的焦点。
+- **全景与平铺的全屏与命令**：`SidebarVcsView` 从 `useTabInfo()` 读取 `sidebar.fullscreen` 与 `panel.isFloating`，
+  需要宽度时用 `ctx.sidebarRight.commandTarget(.vcs-root)` 取得本页签所在窗格，再调用 `toggleFullscreen(target)`，
+  与右侧栏自己的全屏按钮走同一个动作，不需要 `ctx.shortcuts.invoke()`。
+  全景栏要求面板宽于“全景栏宽度 + 760px”，平铺要求 900px；浮动窗格、已全屏或足够宽时不请求，面板只归还自己请求过的全屏。
+  「切换全景」`vcs.view.overview` 与「切换平铺」`vcs.view.tile` 在同一可选作用域注册，`defaults: {}`；
+  命令解析出屏幕上的会话后，必要时先打开页签，再经 `commands.ts` 按会话投递，面板尚未挂载时命令等它订阅。
 - **隐藏宿主改动卡片**：`workspace-changes` 拒绝 `maxFiles: 0`，因此 `cordis.patch.yml` 不改动宿主配置，
   改由样式规则 `[data-turn-tail] [data-changed-files] { display: none !important; }` 仅隐藏文件卡片，
   保留改动记录器与 `present` 交付卡片。
@@ -594,7 +601,9 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 会话状态保存在 `sessionStorage` 的 `vcs:<sessionId>`，包含 `repo`、`worktrees`、`node`、
 `nodeChosen`、`ref`（默认 `all`）、`dirs`、`collapsed`、`folds`、`anchor`（`{ key, offset }`）、`split`、`wrap`、
 `mergeStaging`、`twoColumns`（`wrap`、`mergeStaging`、`twoColumns` 均默认 `true`，只有显式 `false` 才关闭）、
-`sidebarWidth` 与 `timelineScroll`；内存另外按仓库记住切换前的勾选、选中节点、目录折叠与历史范围。
+`sidebarWidth`、`timelineScroll`，以及全景与平铺的 `overview`、`overviewWidth`（320–600，默认 400）、
+`tiled`、`overviewBeforeTile`、`tileOrder`（`directory` / `attention`）与展开的窄条 `tileExpanded`；
+内存另外按仓库记住切换前的勾选、选中节点、目录折叠与历史范围。
 页签身份与右侧栏布局由宿主的 `sidebarRight` 存储按会话保存，应用重启后恢复；面板自己的阅读状态（含时间线宽度）单独保存。
 
 `repo` 保存仓库入口，`worktrees` 保存当前仓库勾选的路径。
@@ -689,6 +698,37 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
   `data-single-column` 让时间线在单栏时占满整宽。
   顶部栏开关（`.vcs-columns-toggle`）调用 `setTwoColumns`：宽栏里关掉时有选中节点则切到详情；
   窄栏只改偏好，不改正在显示的栏。
+
+### 全景栏与平铺
+
+规则集中在 `overview/model.ts`，不依赖 React 与 DOM：
+
+- **状态。** `repositoryView` 把 Host 的计数合成一个状态：检出有进行中操作为 `op`，
+  远程分支有本地对应或是候选主线时为 `shadow`、否则为 `foreign`，检出有改动为 `unsaved`，贮藏为 `stash`；
+  其余按独有、领先与落后判为 `unique`、`diverged`、`behind`、`merged` 或 `synced`。
+  候选主线本身带上游时改用 `%(upstream:track)` 计数。
+  列表只收本地分支、游离检出、贮藏与没有本地对应的远程分支；仓库按最重的状态排序，
+  最重状态不重于 `foreign` 的仓库视为安静。
+  七个筛选依次是未保存、独有（含分叉）、分叉、落后、已汇入、贮藏、进行中，也是平铺状态按钮与数字键 `1`–`7` 的顺序。
+- **刻度。** 以基线为中心，每侧 29px，宽度取 `log10(1 + n) / log10(301)`，独有段至少 3px。
+- **骨架。** `buildSkeleton` 用一列的已加载历史（`/api/vcs.log` 的 `all` 首页 300 个提交）保留指针所在的提交，
+  以及沿第一父提交有两条以上通向指针的线经过的提交；之间的提交折成计数，连续的仅含标签的行合为一行，
+  与本地分支同位的远程分支并入该分支，提交不在已加载历史里的指针列在列尾。
+  lane 布局移植自原型的 `layoutLanes`。
+- **遍历。** `traversal` 按列序、列内按骨架行序取命中的指针，`stepIndex` 两端循环；命中项所在的列是窄条时先展开。
+
+数据由两个 hook 读取：`useOverview` 在全景或平铺显示时读一次 `vcs.overview` 流，逐行合并，
+`done` 时丢弃本轮未报告的仓库；当前仓库的后台刷新信号在 400ms 防抖后只重读这一个仓库，
+整轮读取期间到达的信号在读完后补读。
+`useTileHistories` 在平铺时按列序每次读 4 个仓库的历史首页。
+
+布局：全景栏绝对定位在 `.vcs-root` 左侧，打开时根节点获得同宽的 `padding-left`，
+两者沿同一条曲线移动 280ms；扣除全景栏后不足 360px 时改为覆盖的抽屉，选中指针后收起。
+收起且不平铺时不渲染全景栏，根节点不带新增属性。
+平铺时 `.vcs-main` 换成 `TiledView`，顶部栏的仓库、工作树、分支与同步控件换成状态按钮与列序开关。
+进出平铺由 `overview/motion.ts` 做 FLIP：记录叠放的 `.vcs-repository-group[data-repository]` 或平铺列的位置，
+重排后从旧位置移到新位置，错开 26ms、时长 520ms；详情面板留下一个淡出并右移的副本，退出时详情从右侧滑回。
+减少动效时不播放。指针 id 由仓库路径、种类与名称以 NUL 连接，元素按属性值比较查找，不进 CSS 选择器。
 
 ## 复用与来源
 

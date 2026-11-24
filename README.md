@@ -26,6 +26,14 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
   The gear in the same header opens **Manage repositories**, where you preview and add a folder of repositories
   or register a specific nested repository, and pick Git or Jujutsu for a repository that carries both markers.
   Discovery rules are saved relative to the session directory in `.dsh/vcs-panel.json`.
+- **Overview and tiled repositories.** The leftmost header button pushes in an overview
+  of every repository's branches, detached checkouts, and stashes, each counted against its own trunk
+  and colored by what needs attention: unsaved changes, commits only this machine has,
+  divergence, falling behind, merged, stashed, or an operation in progress.
+  Click a pointer to read it in the timeline.
+  The next button (`T`) tiles the repository groups as columns of pointers;
+  `1`–`7` step through one state, and `Enter` opens the focused pointer.
+  Repositories under the session folder that discovery leaves out are listed and can be added in one step.
 - **Worktrees on one graph.** In **Worktrees**, check Git worktrees or Jujutsu workspaces
   and switch **Commits** between **All** (default) and **Selected** in the menu header;
   in single-worktree Git, the branch menu header offers the same synced **All** / **HEAD** switch.
@@ -134,6 +142,8 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
 | Right-click / `Shift+F10` | Right-click or activate a branch, remote-branch, or tag badge for its actions; press `Shift+F10` on the branch control for branch actions or on a commit row for commit actions |
 | `Enter`, `Esc` | Confirm or cancel a branch, remote-branch, tag, or commit action dialog |
 | `[` / `]` | Move to the previous / next tree row, skipping hunk headers |
+| `T`, `/` | Tile the repositories or stack them again; search the open overview (both commands can be bound in **Settings → Shortcuts**) |
+| `1`–`7`, `n`, `Esc` | While tiled, step to the next pointer of a state (`Shift` steps back), continue with `n`; `Esc` clears the step, then stacks again |
 
 Clicking toolbar buttons or switching back to the window keeps keyboard focus ready on the active timeline
 or diff stop without interrupting active inputs or dialogs.
