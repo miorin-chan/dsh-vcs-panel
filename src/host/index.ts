@@ -3,7 +3,8 @@
  *
  * Authenticated routes under `/api/vcs.*` expose one repository's
  * working changes, a single file's hunks, its history, each turn's recorded
- * head and change totals, its local branches, and its remotes. Repository
+ * head and change totals, its local branches, and its remotes, plus an
+ * overview of every discovered repository's pointers. Repository
  * management reads and writes discovery rules and Git/Jujutsu backend choices
  * owned by the session directory.
  * Version control write routes settle what the panel shows: `POST /api/vcs.sync` brings a Git branch
@@ -61,6 +62,7 @@ const ROUTES: readonly RouteEntry[] = [
   { path: '/api/vcs.repositories', key: 'repositories', method: 'GET' },
   { path: '/api/vcs.repository-config', handlers: { GET: 'repositoryConfig', POST: 'saveRepositoryConfig' } },
   { path: '/api/vcs.repository-preview', key: 'repositoryPreview', method: 'GET' },
+  { path: '/api/vcs.overview', key: 'overview', method: 'GET' },
   { path: '/api/vcs.watch', key: 'watch', method: 'GET' },
   { path: '/api/vcs.status', key: 'status', method: 'GET' },
   { path: '/api/vcs.branches', key: 'branches', method: 'GET' },

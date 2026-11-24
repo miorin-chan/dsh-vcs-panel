@@ -3115,6 +3115,7 @@ test('apply registers every GET and POST route inside the fence and honors enabl
   apply(ctx, undefined)
   assert.deepEqual(routes.filter(r => r.path !== REPOSITORY_CONFIG_ROUTE && r.path !== REPOSITORY_PREVIEW_ROUTE).map(r => r.path), [
     '/api/vcs.repositories',
+    '/api/vcs.overview',
     '/api/vcs.watch',
     '/api/vcs.status',
     '/api/vcs.branches',

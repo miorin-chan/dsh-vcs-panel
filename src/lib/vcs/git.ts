@@ -73,6 +73,8 @@ import type { StageHistoryTips, StageReplayResult, StageResult } from '../stage-
 import type { Worktree, WorktreeOptions } from '../worktrees.js'
 import { discoverGitWorktrees, gitCommonDirAt } from '../worktrees.js'
 import { createGitWorktree, removeGitWorktree } from '../git-worktree-ops.js'
+import type { GitVersion, Limiter, OverviewRepository, UnlistedRoots } from '../overview.js'
+import { findUnlistedRepositories, readGitOverview, readGitVersion } from '../overview.js'
 import type { RecheckTarget, WorktreeChange, WorktreeCreate } from '../worktree-ops.js'
 import type { VcsCapabilities } from './capabilities.js'
 import { GIT_CAPABILITIES, GIT_WORKTREE_CAPABILITIES } from './capabilities.js'
@@ -256,9 +258,47 @@ export class GitBackend {
     this.stageHistory = new StageHistory(ctx, this.git)
   }
 
+  /** The installed release, read once it answers. */
+  #version: GitVersion | undefined
+
   /** Capabilities the client reads to choose its layout. */
   get capabilities(): VcsCapabilities {
     return GIT_CAPABILITIES
+  }
+
+  /**
+   * The installed Git release; an unreadable answer is asked again next time.
+   * @param cwd - any directory to run in.
+   * @param signal - cancellation.
+   * @returns the release, or null when unreadable.
+   */
+  async version(cwd: string, signal: AbortSignal): Promise<GitVersion | null> {
+    if (this.#version !== undefined) return this.#version
+    const version = await readGitVersion(this.git, cwd, signal)
+    if (version !== null) this.#version = version
+    return version
+  }
+
+  /**
+   * One repository's pointers, bases, and occupancy for the overview.
+   * @param root - repository root.
+   * @param options - whether discovery lists it, the shared status bound, and cancellation.
+   * @returns the overview.
+   */
+  async overview(root: string, options: { registered: boolean, statusLimiter?: Limiter, signal: AbortSignal }): Promise<OverviewRepository> {
+    const version = await this.version(root, options.signal)
+    return readGitOverview({ ctx: this.ctx, git: this.git, root, version, ...options })
+  }
+
+  /**
+   * Repositories under the session directory that discovery does not list.
+   * @param cwd - canonical session directory.
+   * @param listed - common directories and roots already listed.
+   * @param signal - cancellation.
+   * @returns the roots found.
+   */
+  unlisted(cwd: string, listed: { commons: readonly string[], roots: readonly string[] }, signal: AbortSignal): Promise<UnlistedRoots> {
+    return findUnlistedRepositories(this.ctx, this.git, cwd, listed, signal)
   }
 
   /** Registered sibling trees can be browsed, never used for panel actions. */

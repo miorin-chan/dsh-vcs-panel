@@ -18,6 +18,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `GET /api/vcs.repository-config` | `sessionId` | `revision`、`scanDirectories[]`、`repositories[]`（条目含 `path`、`available`）、`backends[]`（条目含 `path`、`vcs`、`available`）、`error?` |
 | `GET /api/vcs.repository-preview` | `sessionId`、`path`、`kind`（`directory` 或 `repository`） | `repositories[]`（相对 `path`、`name`、`vcs`、`availableVcs`）、`truncated` |
 | `POST /api/vcs.repository-config` | JSON `{ sessionId, revision, scanDirectories, repositories, backends? }`（两个路径数组，以及 `{ path, vcs }` 偏好数组） | 同配置 GET |
+| `GET /api/vcs.overview` | `sessionId`、`repo?`（至多一个，须是已发现的仓库） | NDJSON：先 `scope`（`cwd`、`repositories`），每个仓库读完一行 `repository`（`OverviewRepository`）或 `error`（`path`、`error.code`），最后 `done`（`unlistedTruncated`）；见[全景读取](#全景读取) |
 | `GET /api/vcs.status` | `sessionId`、`repo`、`worktree?`、`readOnly?`（`1` 跳过 Jujutsu 快照） | `repo`、`vcs`、`capabilities`、`defaultNode`、`branch`、`workingCopy?`、`groups`、`total`、`untrackedTotal`、`untrackedAdded`、`truncated`、`stageHistory` |
 | `GET /api/vcs.watch` | `sessionId`、`repo?`、`worktree?`（可重复）、`client?` | SSE `ready` 与 `invalidate`（`domains[]`、`origin?`） |
 | `GET /api/vcs.branches` | `sessionId`、`repo` | `branches[]`（`name`、`current`、`occupied`）、`truncated`（仅 `capabilities.branchSwitch` 为真时可用） |
@@ -289,6 +290,51 @@ Git 工作树预览保留 Git 的读取能力。
   （校验 `turn` 与 `seq` 归属一致，剔除宿主路径与文件明细），并与该轮 `head` 合并返回；
   两者均不存在（如 Host 重启后的历史轮次）时返回 `404 not-found`。
 
+### 全景读取
+
+`vcs.overview` 为[全景栏与平铺](DESIGN.md#全景栏)提供每个指针的基线、领先 / 落后、独有与占用。
+带 `repo` 时只读这一个仓库，目标按读取路由的规则校验，参数校验或缺少 `git` 都在流开始前以 JSON 错误返回。
+不带 `repo` 时按仓库菜单的发现与分组列出全部仓库，每次最多读 4 个，读完一个就写出一行，单个仓库失败只写一行 `error`。
+已登记的仓库读完后，Host 从会话目录逐层列目录（最深 6 层、最多 20,000 次列举，
+跳过 `.git`、`.jj`、`node_modules`，只进入解析后仍在会话目录内的目录），把带标记、
+却与已登记仓库不共用 Git common dir 的仓库按 `registered: false` 写出；主工作树在会话目录外的仓库不列出。
+Jujutsu 仓库暂以 `supported: false` 列出，不读指针。
+
+每个 Git 仓库的读取：
+
+- 检出来自经校验的 `worktree list`（与工作树菜单同一来源），
+  每个检出用一次 `status --porcelain=v2 -z --untracked-files=normal` 计改动条目数（整次请求共用 4 路并发），
+  用其 Git 目录下的 `rebase-merge`、`rebase-apply`、`MERGE_HEAD`、`CHERRY_PICK_HEAD`、
+  `REVERT_HEAD`、`BISECT_LOG` 判断进行中操作。
+  在 `default-workspace` 实测，51 棵工作树的状态读取共 526 ms（单棵最长 335 ms）。
+- 一次 `for-each-ref refs/heads refs/remotes` 读出指针、上游与 `%(upstream:track)`；
+  候选主线依次是各远程 `HEAD` 指向的分支、存在的 `main` / `master`，都没有时用主工作树的分支。
+- 基线：Git 2.47 起每批 64 个指针用一次带多个 `%(is-base:<commit>)` 的 `for-each-ref`，没有候选选中时取最后一个候选。
+  更旧的 Git 对每个候选跑 `rev-list --left-right --count`，取领先最少、其次落后最少的候选，平局按引用名顺序；
+  在 `default-workspace` 上与 `%(is-base:)` 的结果 97/100 一致，差异来自它的第一父提交启发式。
+- 领先 / 落后：Git 2.41 起每个基线一次 `%(ahead-behind:<base>)`，
+  更旧的 Git 和游离检出用 `rev-list --left-right --count`。
+  计数都以提交 ID 为键，引用名不进格式串。
+- 独有：有远程的仓库读一次 `rev-list --parents --branches --not --remotes` 得到未发布子图，
+  每个分支在子图内从自己的提交出发计数；子图超过 50,000 个提交时改为逐个分支 `rev-list --count <tip> --not --remotes`。
+  游离检出计 `--not --branches --remotes`，无远程的仓库计对基线的领先数，贮藏记为 1。
+- `stash list` 给出贮藏与它的基底提交，标签只计数；`fetchedAt` 是 common dir 下 `FETCH_HEAD` 的修改时间，
+  DSH 文件服务不报告修改时间，这一处像刷新监听一样直接 `lstat`。
+
+```ts
+type OverviewRepository = {
+  path: string; name: string; vcs: string; registered: boolean; supported: boolean
+  remotes: string[]; fetchedAt: number | null; tags: number; truncated: boolean
+  baselines: { name: string; ahead: number; behind: number }[]   // 相对第一个候选
+  checkouts: { path: string; branch: string | null; head: string | null; primary: boolean; locked: boolean
+    dirty: number | null; operation: 'rebase' | 'merge' | 'cherry-pick' | 'revert' | 'bisect' | null }[]
+  pointers: { kind: 'branch' | 'remote' | 'detached' | 'stash'; name: string; sha: string; time: number | null; subject: string
+    base: string | null; isBase: boolean; ahead: number | null; behind: number | null; unique: number
+    upstream?: string | null; track?: { ahead: number; behind: number; gone?: true } | null
+    checkout?: string | null; remote?: string; branch?: string; onto?: string | null }[]
+}
+```
+
 ### Git 暂存
 
 `stageOps` 声明整文件暂存与取消暂存能力。
@@ -453,6 +499,7 @@ type TurnSummary = {
 | 项目 | 上限 | 执行位置 |
 | --- | --- | --- |
 | 单会话初始仓库根 / 附加工作树数 | 各 50 | Host `discoverRepositories` / `groupRepositories` |
+| 全景：每仓库检出 / 指针 / 贮藏；未登记仓库的列举深度 / 列举次数 / 仓库数 | 51 / 2,000 / 200；6 层 / 20,000 / 50 | Host `overview.js` |
 | 仓库发现标记检查 / 配置文件 / 每组配置路径与后端偏好 | 1,000 项 / 64 KiB / 50 项 | Host `repositories.js` / `repository-config.js` |
 | 工作树状态读取并发 / 一次历史请求的工作树数 | Git 4、Jujutsu 1 / 51 | Client `VcsView` / Host `log` |
 | Jujutsu `.jj/repo` 路径链接 | 16 KiB | Host `jjCommonDirAt` |

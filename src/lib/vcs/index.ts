@@ -15,6 +15,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 
 import type { DiffComparison } from '../diff.js'
+import type { Limiter, OverviewRepository, UnlistedRoots } from '../overview.js'
 import type { JjRef } from '../jujutsu.js'
 import type { StatusBranch, StatusGroups } from '../status.js'
 import type { Worktree, WorktreeOptions } from '../worktrees.js'
@@ -282,6 +283,10 @@ export interface VcsBackend {
   tagOp?(root: string, request: unknown, signal: AbortSignal): Promise<unknown>
   /** Dispatch one commit action. */
   commitOp?(root: string, request: unknown, signal: AbortSignal): Promise<unknown>
+  /** One repository's pointers, bases, and occupancy for the overview. */
+  overview?(root: string, options: { registered: boolean, statusLimiter?: Limiter, signal: AbortSignal }): Promise<OverviewRepository>
+  /** Repositories under the session directory that discovery does not list. */
+  unlisted?(cwd: string, listed: { commons: readonly string[], roots: readonly string[] }, signal: AbortSignal): Promise<UnlistedRoots>
 }
 
 /** One backend's discovery definition. */

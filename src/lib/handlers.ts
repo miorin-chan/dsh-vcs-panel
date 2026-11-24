@@ -25,6 +25,8 @@ import { badRequest, errorResponse, json, notFound, VcsError } from './errors.js
 import { createBackends } from './vcs/index.js'
 import type { BackendRegistry, VcsBackend, VcsCapabilities } from './vcs/index.js'
 import { LOG_PAGE_MAX, LOG_SKIP_MAX } from './log.js'
+import { createLimiter, unsupportedOverview } from './overview.js'
+import type { OverviewRepository } from './overview.js'
 import { WORKING_TREE_NODE } from './nodes.js'
 import { repositoryName, sameRepoPath, validateRelPath, validateSha } from './paths.js'
 import { RESET_MODES } from './ref-utils.js'
@@ -74,6 +76,7 @@ export interface VcsRouteHandlers {
   repositoryConfig: RouteHandler
   repositoryPreview: RouteHandler
   saveRepositoryConfig: RouteHandler
+  overview: RouteHandler
   watch: RouteHandler
   status: RouteHandler
   untracked: RouteHandler
@@ -469,6 +472,88 @@ export function createHandlers(ctx: HandlersContext, {
     }, request.signal)
     watchHub.repositoryConfigChanged(sessionId, origin)
     return json(result)
+  }
+
+  /**
+   * Handle `GET /api/vcs.overview`: one NDJSON line per repository, in the order
+   * the reads finish, so the first answers draw before the slowest one. With
+   * `repo`, only that discovered repository is read; without it, every
+   * discovered repository is read and then the walk lists the repositories
+   * under the session directory that discovery leaves out.
+   */
+  async function overview(request: Request): Promise<Response> {
+    const query = new URL(request.url).searchParams
+    const { cwd: sessionCwd } = await requireSession(query)
+    const requested = query.getAll('repo')
+    if (requested.length > 1) throw badRequest('Request one repository or every repository.')
+    const cwd = await canonicalDirectory(ctx, sessionCwd, request.signal)
+    if (cwd === null) throw new VcsError('no-cwd', 'The session working directory is not available.')
+    let targets: Array<{ path: string, vcs: string }>
+    if (requested.length === 1) {
+      const repo = await requireRepository(query, request.signal)
+      await repo.backend.require(request.signal)
+      targets = [{ path: repo.root, vcs: repo.vcs }]
+    } else {
+      const found = await discoverRepositories(ctx, sessionCwd, request.signal)
+      const { repositories: grouped } = await groupRepositories(found.repositories, request.signal)
+      targets = grouped.flatMap(entry => entry.vcs === undefined ? [] : [{ path: entry.path, vcs: entry.vcs }])
+    }
+    const walk = requested.length === 0
+    const reading = new AbortController()
+    const signal = AbortSignal.any([request.signal, reading.signal])
+    const statusLimiter = createLimiter(4)
+    const encoder = new TextEncoder()
+
+    const readOne = async (path: string, vcs: string, registered: boolean): Promise<Record<string, unknown>> => {
+      const backend = backends.get(vcs)
+      if (typeof backend?.overview !== 'function') return { type: 'repository', repository: unsupportedOverview(path, vcs, registered) }
+      try {
+        await backend.require(signal)
+        const repository: OverviewRepository = await backend.overview(path, { registered, statusLimiter, signal })
+        return { type: 'repository', repository }
+      } catch (error) {
+        if (signal.aborted) throw error
+        const code = error instanceof VcsError ? error.code : 'internal'
+        if (!(error instanceof VcsError)) warn(error instanceof Error ? error.message : String(error))
+        return { type: 'error', path, vcs, registered, error: { code, message: error instanceof VcsError ? error.message : 'The repository could not be read.' } }
+      }
+    }
+
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const send = (line: Record<string, unknown>) => {
+          if (!signal.aborted) controller.enqueue(encoder.encode(`${JSON.stringify(line)}\n`))
+        }
+        const run = async () => {
+          send({ type: 'scope', cwd, repositories: targets.length })
+          const limiter = createLimiter(4)
+          await Promise.all(targets.map(target => limiter.run(async () => { send(await readOne(target.path, target.vcs, true)) })))
+          let unlistedTruncated = false
+          const git = backends.get('git')
+          if (walk && typeof git?.unlisted === 'function' && await git.require(signal).then(() => true, () => false)) {
+            const commons: string[] = []
+            for (const target of targets) {
+              const common = target.vcs === 'git' ? await git.commonDir(target.path, signal).catch(() => null) : null
+              if (common !== null) commons.push(common)
+            }
+            const found = await git.unlisted(cwd, { commons, roots: targets.map(target => target.path) }, signal)
+            unlistedTruncated = found.truncated
+            await Promise.all(found.roots.map(root => limiter.run(async () => { send(await readOne(root.path, root.vcs, false)) })))
+          }
+          send({ type: 'done', unlistedTruncated })
+        }
+        run().then(() => {
+          if (!signal.aborted) controller.close()
+        }, error => {
+          if (signal.aborted) return
+          warn(error instanceof Error ? error.message : String(error))
+          send({ type: 'done', failed: true })
+          controller.close()
+        })
+      },
+      cancel() { reading.abort() },
+    })
+    return new Response(body, { headers: { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store, no-transform', 'x-accel-buffering': 'no' } })
   }
 
   /** Handle `GET /api/vcs.watch` with the same repository and worktree validation as reads. */
@@ -1145,6 +1230,7 @@ export function createHandlers(ctx: HandlersContext, {
     repositoryConfig: wrap(repositoryConfig),
     repositoryPreview: wrap(repositoryPreview),
     saveRepositoryConfig: wrap(saveRepositoryConfig),
+    overview: wrap(overview),
     watch: wrap(watch),
     status: wrap(status),
     untracked: wrap(untracked),
