@@ -441,6 +441,29 @@ export function TimelineBesideIcon({ beside }: { beside?: boolean }) {
   )
 }
 
+/** A pane with a column at its left edge, filled while the overview is open. */
+export function OverviewIcon({ open }: { open?: boolean }) {
+  return (
+    <svg className="vcs-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      {open ? <rect x="2" y="3" width="4" height="10" rx="0.6" fill="currentColor" opacity="0.55" /> : null}
+      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1" />
+      <path d="M6.5 2.5v11" stroke="currentColor" strokeWidth="1" />
+    </svg>
+  )
+}
+
+/** Three columns side by side: the repositories tiled. */
+export function TileIcon({ tiled }: { tiled?: boolean }) {
+  return (
+    <svg className="vcs-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      {[1.5, 6.2, 10.9].map(x => (
+        <rect key={x} x={x} y="2.5" width="3.6" height="11" rx="1" stroke="currentColor" strokeWidth="1"
+          fill={tiled ? 'currentColor' : 'none'} fillOpacity={tiled ? 0.35 : undefined} />
+      ))}
+    </svg>
+  )
+}
+
 /** Wrapped line from DSH's `wrap-fill` icon. */
 export function WrapIcon() {
   return (

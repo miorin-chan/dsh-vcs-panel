@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react'
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import { ApiError, createApi, failureOf } from './api.js'
 import type {
@@ -56,6 +56,20 @@ import { RepositoryTimelines } from './RepositoryTimelines.jsx'
 import { useRepoActions } from './useRepoActions.js'
 import { useVcsWatch } from './useVcsWatch.js'
 import { TimelineSkeleton, TreeSkeleton } from './skeleton.jsx'
+import { onPanelCommand } from './commands.js'
+import type { FilterId, PointerView } from './overview/model.js'
+import {
+  FILTERS,
+  buildSkeleton, columnOrder, filterCounts, pointerTarget, repositoryView, stepIndex, tileOrder, traversal,
+} from './overview/model.js'
+import { useOverview } from './overview/useOverview.js'
+import { historyOf, useTileHistories } from './overview/useTileHistories.js'
+import { OverviewPane } from './overview/OverviewPane.jsx'
+import type { OverviewControl } from './overview/OverviewPane.jsx'
+import { TiledView } from './overview/TiledView.jsx'
+import type { TileColumn, TiledControl } from './overview/TiledView.jsx'
+import { StateButtons } from './overview/StateButtons.jsx'
+import { fadeOutInPlace, playGroups, reducedMotion, repositoryRects, slideIn } from './overview/motion.js'
 
 /** Rows per history page. */
 const PAGE_SIZE = 300
@@ -65,6 +79,12 @@ const STATUS_CONCURRENCY = 4
 const NARROW_WIDTH = 760
 /** Width of the divider between the timeline and the detail. */
 const RESIZER_WIDTH = 5
+/** Below this width beside the overview, the overview covers the panel as a drawer instead. */
+const OVERVIEW_DRAWER_REST = 360
+/** The width the tiled layout asks the Sidebar for before requesting fullscreen. */
+const TILE_ROOM = 900
+/** How long the overview takes to slide; matches `.vcs-overview` in `styles.css`. */
+const OVERVIEW_SLIDE_MS = 280
 
 /** Row-key prefix of the unstaged group, where untracked directories load. */
 const UNSTAGED_PREFIX = 'unstaged|'
@@ -361,6 +381,14 @@ function RepositoryTimelinePreview({
   )
 }
 
+/** How the Sidebar presents the panel, and the one presentation change it may ask for. */
+export interface PanelPresentation {
+  fullscreen: boolean
+  floating: boolean
+  /** Toggle the Sidebar's own fullscreen presentation for the pane holding `element`. */
+  toggleFullscreen: (element: HTMLElement | null) => boolean
+}
+
 /** Standard Sidebar tab props plus the active UI locale, visibility, and a one-shot focus request. */
 export interface VcsViewProps {
   sessionId: string
@@ -368,14 +396,24 @@ export interface VcsViewProps {
   locale?: string
   visible?: boolean
   focusRequest?: number
+  presentation?: PanelPresentation
 }
+
+/** Where the tiled layout's state traversal stands. */
+interface TileTraversal {
+  filter: FilterId | null
+  index: number
+  focus: string | null
+}
+
+const NO_TRAVERSAL: TileTraversal = Object.freeze({ filter: null, index: -1, focus: null })
 
 /**
  * Render the version control panel for one Session.
  * @param props - standard Sidebar tab props plus the active UI locale, visibility, and a one-shot request to land keyboard focus in the panel.
  */
 export function VcsView({
-  sessionId, t, locale, visible = true, focusRequest = 0,
+  sessionId, t, locale, visible = true, focusRequest = 0, presentation,
 }: VcsViewProps) {
   const [state, setState] = useState<PanelState>(() => loadState(sessionId))
   const stateRef = useRef<PanelState>(state)
@@ -442,7 +480,12 @@ export function VcsView({
   // A focus request waits for the Sidebar host to focus its pane first.
   const hostFocusPendingRef = useRef(false)
 
-  const narrow = width > 0 && width < NARROW_WIDTH
+  // The overview pushes the panel right; what remains decides the columns,
+  // unless too little remains and the overview covers the panel instead.
+  const overviewOpen = state.overview && !state.tiled
+  const overviewDrawer = overviewOpen && width > 0 && width - state.overviewWidth < OVERVIEW_DRAWER_REST
+  const contentWidth = overviewOpen && !overviewDrawer ? width - state.overviewWidth : width
+  const narrow = contentWidth > 0 && contentWidth < NARROW_WIDTH
   // One column at a time when the panel is too narrow for two, or when the
   // user put the timeline away.
   const singleColumn = narrow || !state.twoColumns
@@ -725,7 +768,8 @@ export function VcsView({
     abortBranches,
   })
   const { resetActionsUi } = actions
-  const hasOpenOverlay = actions.menu !== null || actions.dialog !== null || manageCurrentRepositories
+  const [addingRepositories, setAddingRepositories] = useState<string[] | null>(null)
+  const hasOpenOverlay = actions.menu !== null || actions.dialog !== null || manageCurrentRepositories || addingRepositories !== null
   // The timeline hands over its structural row and anchor types; the actions
   // controller holds the same objects as the panel's rows.
   const timelineRefActions: RefActionsHandler | undefined = capabilities?.branchOps === true || capabilities?.tagOps === true
@@ -867,6 +911,283 @@ export function VcsView({
     }
     update({ worktrees: next })
   }
+
+
+  // Overview column and tiled layout -------------------------------------------
+  const overviewControl = useRef<OverviewControl | null>(null)
+  const tiledControl = useRef<TiledControl | null>(null)
+  const [tileTraversal, setTileTraversal] = useState<TileTraversal>(NO_TRAVERSAL)
+  const [overviewPhase, setOverviewPhase] = useState<'closed' | 'opening' | 'open' | 'closing'>(
+    () => (state.overview && !state.tiled ? 'open' : 'closed'),
+  )
+  const [menuRequest, setMenuRequest] = useState(0)
+  const pendingMenuRef = useRef<{ pointer: PointerView, point: { clientX: number, clientY: number }, element: HTMLElement | null } | null>(null)
+  const pendingRevealRef = useRef<string | null>(null)
+  const fullscreenRequestedRef = useRef(false)
+  const motionRef = useRef<{ on: boolean, before: Map<string, DOMRect> } | null>(null)
+  const presentationRef = useRef(presentation)
+  presentationRef.current = presentation
+  const widthRef = useRef(width)
+  widthRef.current = width
+
+  const overviewData = useOverview(api, {
+    active: state.overview || state.tiled,
+    reloadKey: JSON.stringify([sessionId, manual.repositories, manual.history, manual.working]),
+    repo: state.repo,
+    repoKey: JSON.stringify([state.repo, background.history, background.working]),
+  })
+  const overviewCwd = overviewData.cwd ?? repositories.cwd ?? null
+  const overviewViews = useMemo(
+    () => [...overviewData.repositories.values()].map(repository => repositoryView(repository, overviewCwd)),
+    [overviewCwd, overviewData.repositories],
+  )
+  const viewByPath = useMemo(() => new Map(overviewViews.map(view => [view.path, view])), [overviewViews])
+  const unlistedViews = useMemo(() => overviewViews.filter(view => !view.registered), [overviewViews])
+
+  const tilePathsKey = JSON.stringify(visibleRepositories.map(entry => entry.path))
+  const tilePaths = useMemo(() => parseJson<string[]>(tilePathsKey), [tilePathsKey])
+  const tileHistories = useTileHistories(api, tilePaths, state.tiled, JSON.stringify([manual.history, background.history]))
+  const skeletons = useMemo(() => {
+    const result = new Map<string, ReturnType<typeof buildSkeleton>>()
+    for (const [path, history] of tileHistories) {
+      const view = viewByPath.get(path)
+      if (view === undefined || history.status !== 'ready') continue
+      const tags = history.commits.flatMap(commit => (commit.refs ?? [])
+        .filter(reference => reference.kind === 'tag').map(reference => ({ name: reference.name, sha: commit.sha })))
+      result.set(path, buildSkeleton(history.commits, view.pointers, tags))
+    }
+    return result
+  }, [tileHistories, viewByPath])
+  const tileColumns = useMemo<TileColumn[]>(() => tileOrder(
+    tilePaths.flatMap(path => repositories.list.filter(entry => entry.path === path)), viewByPath, state.tileOrder,
+  ).map(entry => ({
+    entry,
+    view: viewByPath.get(entry.path) ?? null,
+    skeleton: skeletons.get(entry.path) ?? null,
+    history: historyOf(tileHistories, entry.path),
+  })), [repositories.list, skeletons, state.tileOrder, tileHistories, tilePaths, viewByPath])
+  const tileCounts = useMemo(
+    () => filterCounts(tileColumns.flatMap(column => column.view === null ? [] : [column.view])),
+    [tileColumns],
+  )
+  const tileHits = useMemo(() => tileTraversal.filter === null ? [] : traversal(
+    tileColumns.flatMap(column => column.view === null ? [] : [{ repo: column.entry.path, pointers: columnOrder(column.skeleton, column.view) }]),
+    tileTraversal.filter,
+  ), [tileColumns, tileTraversal.filter])
+
+  // The pointer the timeline's selection names, marked in the overview.
+  const selectedPointer = useMemo(() => {
+    const view = state.repo === null ? undefined : viewByPath.get(state.repo)
+    if (view === undefined || state.node === null) return null
+    const tree = worktreePath(state.node)
+    const match = tree !== null
+      ? view.list.find(pointer => pointer.occupant?.path === tree)
+      : view.list.find(pointer => pointer.kind !== 'stash' && pointer.sha === state.node)
+        ?? view.list.find(pointer => pointer.kind === 'stash' && pointer.onto === state.node)
+    return match?.id ?? null
+  }, [state.node, state.repo, viewByPath])
+
+  /** Ask the Sidebar for its fullscreen presentation when the panel is narrower than `needed`. */
+  const requestRoom = useCallback((needed: number) => {
+    const current = presentationRef.current
+    if (current === undefined || current.fullscreen || current.floating || widthRef.current >= needed) return
+    if (current.toggleFullscreen(rootRef.current)) fullscreenRequestedRef.current = true
+  }, [])
+  /** Give back the fullscreen presentation this panel asked for. */
+  const releaseRoom = useCallback(() => {
+    if (!fullscreenRequestedRef.current) return
+    fullscreenRequestedRef.current = false
+    const current = presentationRef.current
+    if (current?.fullscreen === true) current.toggleFullscreen(rootRef.current)
+  }, [])
+  const measured = width > 0
+  useEffect(() => {
+    if (!measured) return
+    if (state.tiled) requestRoom(TILE_ROOM)
+    else if (state.overview) requestRoom(stateRef.current.overviewWidth + NARROW_WIDTH)
+    else releaseRoom()
+  }, [measured, releaseRoom, requestRoom, state.overview, state.tiled])
+
+  // The overview slides in from the left and out again; reduced motion and the
+  // switch into the tiled layout skip the slide.
+  useEffect(() => {
+    if (overviewOpen) {
+      if (overviewPhase === 'closed' || overviewPhase === 'closing') setOverviewPhase(reducedMotion() ? 'open' : 'opening')
+      return undefined
+    }
+    if (overviewPhase === 'closed') return undefined
+    if (state.tiled || reducedMotion()) {
+      setOverviewPhase('closed')
+      return undefined
+    }
+    setOverviewPhase('closing')
+    const timer = setTimeout(() => { setOverviewPhase('closed') }, OVERVIEW_SLIDE_MS)
+    return () => { clearTimeout(timer) }
+  }, [overviewOpen, overviewPhase, state.tiled])
+  useEffect(() => {
+    if (overviewPhase !== 'opening') return undefined
+    let second = 0
+    const first = requestAnimationFrame(() => { second = requestAnimationFrame(() => { setOverviewPhase('open') }) })
+    return () => {
+      cancelAnimationFrame(first)
+      cancelAnimationFrame(second)
+    }
+  }, [overviewPhase])
+
+  /** Switch between the stacked and the tiled layout, moving each repository group between its two places. */
+  const setTiled = useCallback((on: boolean) => {
+    const current = stateRef.current
+    if (current.tiled === on) return
+    const root = rootRef.current
+    motionRef.current = {
+      on,
+      before: on ? repositoryRects(root, '.vcs-repository-group[data-repository]') : tiledControl.current?.columnRects() ?? new Map(),
+    }
+    if (on) {
+      fadeOutInPlace(root, root?.querySelector<HTMLElement>('.vcs-content') ?? null)
+      update({ tiled: true, overviewBeforeTile: current.overview, overview: false })
+    } else {
+      setTileTraversal(NO_TRAVERSAL)
+      update({ tiled: false, overview: current.overviewBeforeTile, overviewBeforeTile: false })
+    }
+  }, [update])
+  useLayoutEffect(() => {
+    const motion = motionRef.current
+    if (motion === null || motion.on !== state.tiled) return
+    motionRef.current = null
+    const root = rootRef.current
+    if (motion.on) playGroups(root, '.vcs-tile-column[data-repository]', motion.before)
+    else {
+      playGroups(root, '.vcs-repository-group[data-repository]', motion.before)
+      slideIn(root?.querySelector<HTMLElement>('.vcs-content') ?? null)
+    }
+  }, [state.tiled])
+
+  const toggleOverview = useCallback(() => {
+    const current = stateRef.current
+    if (current.tiled) {
+      // Leave the tiled layout with the overview flipped from how tiling found it.
+      setTiled(false)
+      update({ overview: !current.overviewBeforeTile })
+      return
+    }
+    update({ overview: !current.overview })
+  }, [setTiled, update])
+
+  /**
+   * Move the timeline to a pointer: its repository becomes current, the checkout
+   * holding it joins the selection, and the timeline selects its commit, the
+   * checkout's working tree when it has unsaved changes, or a stash's base.
+   */
+  const revealPointer = useCallback((pointer: PointerView, keyboard: boolean) => {
+    const entry = repositories.list.find(item => item.path === pointer.repo)
+    const target = pointerTarget(pointer)
+    if (entry === undefined || target === null) return
+    const current = stateRef.current
+    const node = 'worktree' in target ? worktreeNode(target.worktree) : target.commit
+    const patch: Partial<PanelState> = {}
+    if (current.repositoryScope === 'selected' && !current.checkedRepositories.includes(entry.path)) {
+      patch.checkedRepositories = [...current.checkedRepositories, entry.path]
+    }
+    if (current.expandedRepositories !== null && !current.expandedRepositories.includes(entry.path)) {
+      patch.expandedRepositories = [...current.expandedRepositories, entry.path]
+    }
+    if ('commit' in target && current.ref !== 'all') patch.ref = 'all'
+    if (current.repo !== entry.path) switchRepo(entry, node)
+    else selectNode(node, true)
+    if (Object.keys(patch).length > 0) update(patch)
+    const occupant = pointer.occupant?.path
+    if (occupant !== undefined) {
+      setState(previous => {
+        const catalog = repositoryWorktrees(entry)
+        if (!catalog.some(tree => tree.path === occupant)) return previous
+        const checked = checkedWorktrees(catalog, previous.worktrees).map(tree => tree.path)
+        return checked.includes(occupant) ? previous : { ...previous, worktrees: [...checked, occupant] }
+      })
+    }
+    pendingRevealRef.current = 'commit' in target ? target.commit : null
+    if (pointer.kind === 'stash' && 'commit' in target) {
+      setNotice({ tone: 'info', text: t('overview.stashBase', { sha: target.commit.slice(0, 7) }) })
+    }
+    navZoneRef.current = 'timeline'
+    if (singleColumn) setSingleView('timeline')
+    if (keyboard) {
+      panelOwnsFocusRef.current = true
+      pendingReadyFocusRef.current = true
+      setFocusTick(value => value + 1)
+    }
+    if (overviewDrawer) update({ overview: false })
+  }, [overviewDrawer, repositories.list, selectNode, singleColumn, switchRepo, t, update])
+
+  const selectOverviewRepository = useCallback((path: string, keyboard: boolean) => {
+    const entry = repositories.list.find(item => item.path === path)
+    if (entry === undefined) return
+    const current = stateRef.current
+    const patch: Partial<PanelState> = {}
+    if (current.repositoryScope === 'selected' && !current.checkedRepositories.includes(path)) {
+      patch.checkedRepositories = [...current.checkedRepositories, path]
+    }
+    if (current.expandedRepositories !== null && !current.expandedRepositories.includes(path)) {
+      patch.expandedRepositories = [...current.expandedRepositories, path]
+    }
+    if (current.repo !== path) switchRepo(entry)
+    if (Object.keys(patch).length > 0) update(patch)
+    if (keyboard) {
+      panelOwnsFocusRef.current = true
+      pendingReadyFocusRef.current = true
+      setFocusTick(value => value + 1)
+    }
+  }, [repositories.list, switchRepo, update])
+
+  /** Open a pointer's existing actions menu; another repository becomes current first. */
+  const openPointerActions = useCallback((pointer: PointerView, point: { clientX: number, clientY: number }, element: HTMLElement | null) => {
+    const entry = repositories.list.find(item => item.path === pointer.repo)
+    if (entry === undefined || pointer.kind === 'stash') return
+    pendingMenuRef.current = { pointer, point: { clientX: point.clientX, clientY: point.clientY }, element }
+    if (stateRef.current.repo !== entry.path) switchRepo(entry)
+    setMenuRequest(value => value + 1)
+  }, [repositories.list, switchRepo])
+
+  /** Step to the next or previous pointer of one state; a spine holding it opens. */
+  const stepTraversal = useCallback((filter: FilterId, direction: 1 | -1) => {
+    const hits = traversal(
+      tileColumns.flatMap(column => column.view === null ? [] : [{ repo: column.entry.path, pointers: columnOrder(column.skeleton, column.view) }]),
+      filter,
+    )
+    if (hits.length === 0) return
+    const index = tileTraversal.filter === filter ? stepIndex(hits.length, tileTraversal.index, direction) : direction > 0 ? 0 : hits.length - 1
+    const hit = hits[index]
+    setTileTraversal({ filter, index, focus: hit.id })
+    if (viewByPath.get(hit.repo)?.quiet === true && !stateRef.current.tileExpanded.includes(hit.repo)) {
+      update({ tileExpanded: [...stateRef.current.tileExpanded, hit.repo] })
+    }
+  }, [tileColumns, tileTraversal.filter, tileTraversal.index, update, viewByPath])
+
+  const focusTilePointer = useCallback((pointer: PointerView) => {
+    setTileTraversal(previous => {
+      const index = previous.filter === null ? -1 : tileHits.findIndex(hit => hit.id === pointer.id)
+      return { filter: previous.filter, index: index >= 0 ? index : previous.index, focus: pointer.id }
+    })
+  }, [tileHits])
+
+  /** Leave the tiled layout and read a pointer, or a repository, in the stacked timeline. */
+  const openFromTile = useCallback((path: string, pointer: PointerView | null) => {
+    setTiled(false)
+    if (pointer !== null) revealPointer(pointer, true)
+    else selectOverviewRepository(path, true)
+  }, [revealPointer, selectOverviewRepository, setTiled])
+
+  // A traversal step brings its chip into view once the columns rendered it.
+  useEffect(() => {
+    if (!state.tiled || tileTraversal.focus === null) return
+    tiledControl.current?.reveal(tileTraversal.focus)
+  }, [state.tiled, tileTraversal.focus, tileTraversal.index])
+
+  // The application shortcuts for the overview and the tiled layout.
+  useEffect(() => onPanelCommand(sessionId, command => {
+    if (command === 'overview') toggleOverview()
+    else setTiled(!stateRef.current.tiled)
+  }), [sessionId, setTiled, toggleOverview])
 
   // The persisted range belongs to one backend; a Jujutsu selection must not
   // start on `HEAD`, and a Git selection must not start on `@`.
@@ -1558,6 +1879,41 @@ export function VcsView({
     }
   }, [api, currentHistory, historyKey, historyWorktrees, log.commits.length, log.worktreeHeads, log.hasMore, log.loadingMore, refreshInBackground, state.repo, state.ref, t, waitingForSnapshots])
 
+  // A pointer outside the loaded history: keep loading pages until it shows or history ends.
+  useEffect(() => {
+    const sha = pendingRevealRef.current
+    if (sha === null) return
+    if (state.node !== sha || commitIndex.has(sha)) {
+      pendingRevealRef.current = null
+      return
+    }
+    if (!currentHistory || log.status !== 'ready' || log.loadingMore) return
+    if (log.hasMore) {
+      void loadMore()
+      return
+    }
+    pendingRevealRef.current = null
+    setNotice({ tone: 'info', text: t('overview.beyondHistory') })
+  }, [commitIndex, currentHistory, loadMore, log.hasMore, log.loadingMore, log.status, state.node, t])
+
+  // Open the menu a pointer asked for once its repository is current and read.
+  useEffect(() => {
+    const request = pendingMenuRef.current
+    if (request === null || state.repo !== request.pointer.repo || status.data === null || capabilities === null) return
+    pendingMenuRef.current = null
+    const { pointer, point, element } = request
+    if (pointer.kind === 'branch') {
+      actions.openBranchActions({ kind: 'branch', name: pointer.name, current: status.data.branch?.name === pointer.name }, point, element)
+    } else if (pointer.kind === 'remote' && typeof pointer.remote === 'string' && typeof pointer.branch === 'string') {
+      actions.openBranchActions({ kind: 'remote', name: pointer.name, remote: pointer.remote, branch: pointer.branch }, point, element)
+    } else if (pointer.kind === 'detached') {
+      const tree = worktrees.find(item => item.path === pointer.occupant?.path)
+      if (tree !== undefined) {
+        actions.openWorktreeActions(tree, repoInfo?.enclosing === true ? state.repo : null, point, () => { element?.focus({ preventScroll: true }) })
+      }
+    }
+  }, [actions, capabilities, menuRequest, repoInfo, state.repo, status.data, worktrees])
+
   /** Keep focus on the active navigation stop across primary clicks on discrete buttons. */
   const onMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (event.button !== undefined && event.button !== 0) return
@@ -1602,6 +1958,69 @@ export function VcsView({
     restoreNavFocus()
   }
 
+  /**
+   * Keys of the overview and the tiled layout: `T` tiles, `/` searches the open
+   * overview, `←` in the timeline returns to it; while tiled, `1`–`7` step
+   * through a state (Shift steps back), `n` continues, `←`/`→` move along the
+   * columns, `Enter` opens the focused pointer in the timeline, and `Esc` first
+   * clears the traversal, then leaves the tiled layout.
+   * @param event - the key event at the panel root.
+   * @returns whether the key was handled.
+   */
+  const handleLayoutKey = (event: ReactKeyboardEvent<HTMLDivElement>): boolean => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return false
+    const handled = () => {
+      event.preventDefault()
+      event.stopPropagation()
+      return true
+    }
+    if (event.key === 't' || event.key === 'T') {
+      setTiled(!state.tiled)
+      return handled()
+    }
+    if (event.key === '/' && overviewOpen) {
+      overviewControl.current?.focusSearch()
+      return handled()
+    }
+    if (state.tiled) {
+      const digit = /^Digit([1-7])$/u.exec(event.code ?? '')
+      const insideList = findAncestor(event.target, rootRef.current, node => hasClass(node, 'vcs-tile-body')) !== null
+      if (digit !== null) {
+        stepTraversal(FILTERS[Number(digit[1]) - 1], event.shiftKey ? -1 : 1)
+        return handled()
+      }
+      if ((event.key === 'n' || event.key === 'N') && tileTraversal.filter !== null) {
+        stepTraversal(tileTraversal.filter, event.shiftKey ? -1 : 1)
+        return handled()
+      }
+      if (event.key === 'Escape') {
+        if (tileTraversal.filter !== null) setTileTraversal(previous => ({ ...previous, filter: null, index: -1 }))
+        else setTiled(false)
+        return handled()
+      }
+      if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !insideList) {
+        tiledControl.current?.scrollColumns(event.key === 'ArrowRight' ? 1 : -1)
+        return handled()
+      }
+      if (event.key === 'Enter' && tileTraversal.focus !== null) {
+        const onOtherButton = findAncestor(event.target, rootRef.current, node => (
+          typeof node?.tagName === 'string' && node.tagName.toUpperCase() === 'BUTTON' && !hasClass(node, 'vcs-pointer-chip')
+        )) !== null
+        if (onOtherButton) return false
+        const pointer = tileColumns.flatMap(column => column.view?.pointers ?? []).find(item => item.id === tileTraversal.focus)
+        if (pointer !== undefined) openFromTile(pointer.repo, pointer)
+        return handled()
+      }
+      // The stacked timeline is not mounted while tiled.
+      return event.key !== 'Tab'
+    }
+    if (overviewOpen && movement(event) === BACK && zoneOf(event.target, rootRef.current) !== 'tree'
+      && !(singleColumn && singleView === 'detail') && navZoneRef.current === 'timeline') {
+      if (overviewControl.current?.focus() === true) return handled()
+    }
+    return false
+  }
+
   /** Route navigation keys from the panel root, buttons, or divider back to the active zone. */
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     // React's synthetic keyboard event carries `isComposing` at runtime although
@@ -1609,6 +2028,7 @@ export function VcsView({
     const composing = (event as ReactKeyboardEvent<HTMLDivElement> & { isComposing?: boolean }).isComposing
     if (event.defaultPrevented || composing === true || isEditableTarget(event.target) || hasOpenOverlay) return
     if (isOverlayTarget(event.target, rootRef.current)) return
+    if (handleLayoutKey(event)) return
     if (isOverlayOrMenuTarget(event.target, rootRef.current)) {
       if (event.key === 'Escape') {
         event.preventDefault()
@@ -1726,6 +2146,10 @@ export function VcsView({
       className="vcs-root"
       data-narrow={narrow ? 'true' : undefined}
       data-single-column={singleColumn ? 'true' : undefined}
+      data-overview={overviewPhase === 'closed' ? undefined : overviewPhase}
+      data-overview-drawer={overviewPhase !== 'closed' && overviewDrawer ? 'true' : undefined}
+      data-tiled={state.tiled ? 'true' : undefined}
+      style={overviewPhase === 'closed' ? undefined : { '--vcs-overview-width': `${state.overviewWidth}px` } as CSSProperties}
       tabIndex={-1}
       onFocus={event => {
         panelOwnsFocusRef.current = true
@@ -1741,6 +2165,23 @@ export function VcsView({
       onClick={onClick}
       onKeyDown={onKeyDown}
     >
+      {overviewPhase === 'closed' || state.tiled ? null : (
+        <OverviewPane
+          data={overviewData}
+          views={overviewViews}
+          currentRepo={state.repo}
+          selected={selectedPointer}
+          width={state.overviewWidth}
+          onResize={overviewWidth => { update({ overviewWidth }) }}
+          onSelectRepository={selectOverviewRepository}
+          onSelectPointer={revealPointer}
+          onPointerActions={openPointerActions}
+          onAddUnlisted={paths => { setAddingRepositories(paths) }}
+          control={overviewControl}
+          t={t}
+          locale={locale}
+        />
+      )}
       <TopBar
         repositories={repositories.list}
         cwd={repositories.cwd}
@@ -1784,6 +2225,22 @@ export function VcsView({
         twoColumns={state.twoColumns}
         twoColumnsFit={!narrow}
         onTwoColumns={setTwoColumns}
+        overviewOpen={overviewOpen}
+        onOverview={toggleOverview}
+        tiled={state.tiled}
+        onTile={() => { setTiled(!state.tiled) }}
+        tileControls={state.tiled ? (
+          <StateButtons
+            counts={tileCounts}
+            filter={tileTraversal.filter}
+            index={tileTraversal.index}
+            total={tileHits.length}
+            order={state.tileOrder}
+            onStep={stepTraversal}
+            onOrder={tileOrder => { update({ tileOrder }) }}
+            t={t}
+          />
+        ) : null}
         t={t}
         locale={locale}
       />
@@ -1811,6 +2268,28 @@ export function VcsView({
         <div className="vcs-center">
           <p className="vcs-empty-title">{t('empty.repository')}</p>
           <p className="vcs-note">{t('empty.repositoryHint')}</p>
+        </div>
+      ) : state.tiled ? (
+        <div className="vcs-main vcs-main-tiled">
+          <TiledView
+            columns={tileColumns}
+            unlisted={unlistedViews}
+            cwd={overviewCwd}
+            currentRepo={state.repo}
+            expanded={state.tileExpanded}
+            filter={tileTraversal.filter}
+            focus={tileTraversal.focus}
+            narrow={narrow}
+            onFocusPointer={focusTilePointer}
+            onOpenTimeline={(path, pointer) => { openFromTile(path, pointer) }}
+            onExpand={path => { update({ tileExpanded: [...state.tileExpanded.filter(item => item !== path), path] }) }}
+            onCollapse={path => { update({ tileExpanded: state.tileExpanded.filter(item => item !== path) }) }}
+            onPointerActions={openPointerActions}
+            onAddUnlisted={paths => { setAddingRepositories(paths) }}
+            control={tiledControl}
+            t={t}
+            locale={locale}
+          />
         </div>
       ) : (
         <div className="vcs-main">
@@ -1934,6 +2413,19 @@ export function VcsView({
           onCancel={closeRepositoryManagement}
           onSaved={() => {
             closeRepositoryManagement()
+            refresh('repositories')
+          }}
+          t={t}
+        />
+      ) : addingRepositories !== null ? (
+        <RepositoryConfigDialog
+          api={api}
+          cwd={repositories.cwd}
+          repositories={repositories.list}
+          initialRepositories={addingRepositories}
+          onCancel={() => { setAddingRepositories(null) }}
+          onSaved={() => {
+            setAddingRepositories(null)
             refresh('repositories')
           }}
           t={t}

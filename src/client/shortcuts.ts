@@ -13,6 +13,10 @@ import type { ShortcutProfile } from '@deepseek-ai/dsh-client-shortcuts/protocol
 /** Command identity shown in Settings > Shortcuts. */
 export const SHORTCUT_ID = 'vcs.view.toggle'
 
+/** Commands for the overview column and the tiled layout; they start unbound. */
+export const OVERVIEW_SHORTCUT_ID = 'vcs.view.overview'
+export const TILE_SHORTCUT_ID = 'vcs.view.tile'
+
 /**
  * Per-profile defaults: Command+Shift+G on macOS and Control+Shift+G
  * elsewhere. Linux Web is omitted because DSH's Web binding policy rejects

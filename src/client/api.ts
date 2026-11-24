@@ -10,6 +10,7 @@
  */
 
 import type { BranchOpAction } from './branch.js'
+import type { OverviewRepository } from './overview/model.js'
 
 /** The parts of a thrown failure the panel reads. */
 export interface ApiFailure {
@@ -583,9 +584,21 @@ export interface CommitOpAnswer {
 }
 
 /** The route methods one Session-scoped client exposes. */
+/** One line of the overview stream. */
+export type OverviewLine =
+  | { type: 'scope', cwd: string, repositories: number }
+  | { type: 'repository', repository: OverviewRepository }
+  | { type: 'error', path: string, vcs?: string, registered?: boolean, error: { code: string, message?: string } }
+  | { type: 'done', unlistedTruncated?: boolean, failed?: boolean }
+
 export interface Api {
   /** Repositories the Session may show. */
   repositories(signal?: AbortSignal): Promise<RepositoriesAnswer>
+  /**
+   * Stream every repository's pointers, one line per repository as the Host
+   * finishes it; `repo` reads only that discovered repository.
+   */
+  overview(onLine: (line: OverviewLine) => void, options?: { repo?: string, signal?: AbortSignal }): Promise<void>
   /** Subscribe while the panel is visible. Returns the unsubscribe function. */
   watch(
     repo: string | null,
@@ -772,6 +785,55 @@ export function createApi(sessionId: string, options: ApiOptions = {}): Api {
   return {
     repositories(signal) {
       return get('/api/vcs.repositories', {}, signal)
+    },
+
+    async overview(onLine, { repo, signal } = {}) {
+      let response: Response
+      try {
+        response = await fetchImpl(`${base}/api/vcs.overview${queryString({ sessionId, repo })}`, {
+          method: 'GET',
+          credentials: 'same-origin',
+          cache: 'no-store',
+          signal: signal ?? undefined,
+        })
+      } catch (error) {
+        if (isAborted(error, signal)) throw toAbortError(error)
+        throw new ApiError('network', 'The version control panel could not reach the Host.', 0)
+      }
+      if (!response.ok || response.body === null) {
+        await decode(response, signal)
+        throw new ApiError('internal', 'The version control response could not be read.', response.status)
+      }
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      const emit = (text: string) => {
+        if (text.trim() === '') return
+        let line: unknown
+        try {
+          line = JSON.parse(text)
+        } catch {
+          return
+        }
+        if (isRecord(line) && typeof line.type === 'string') onLine(line as OverviewLine)
+      }
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          let end = buffer.indexOf('\n')
+          while (end >= 0) {
+            emit(buffer.slice(0, end))
+            buffer = buffer.slice(end + 1)
+            end = buffer.indexOf('\n')
+          }
+        }
+        emit(buffer + decoder.decode())
+      } catch (error) {
+        if (isAborted(error, signal)) throw toAbortError(error)
+        throw new ApiError('network', 'The version control panel lost the Host connection.', 0)
+      }
     },
 
     /** Subscribe while the panel is visible. EventSource reconnects after transport failures. */

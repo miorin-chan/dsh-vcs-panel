@@ -17,7 +17,7 @@ import type {
 } from './api.js'
 import type { RepositoryRow, RepositorySource } from './TopBar.jsx'
 import { Dialog } from './Dialog.jsx'
-import { errorMessage } from './format.js'
+import { errorMessage, formatPlural } from './format.js'
 import { Chevron } from './ui.jsx'
 
 /** The kind of discovery rule the dialog adds. */
@@ -188,11 +188,17 @@ export interface RepositoryConfigDialogProps {
   repositories: readonly RepositoryRow[]
   onCancel: () => void
   onSaved: () => void
+  /**
+   * Repositories to add on opening, relative to the session folder. Each is
+   * previewed like a typed path; those the Host accepts join the draft, so
+   * saving writes them.
+   */
+  initialRepositories?: readonly string[]
   t: Translate
 }
 
 /** Edit the rules for this session root. The Host owns validation and revision checks. */
-export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSaved, t }: RepositoryConfigDialogProps) {
+export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSaved, initialRepositories, t }: RepositoryConfigDialogProps) {
   const headingRef = useRef<HTMLHeadingElement | null>(null)
   const pathRef = useRef<HTMLInputElement | null>(null)
   const previewRef = useRef<AbortController | null>(null)
@@ -210,6 +216,8 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
   const [previewError, setPreviewError] = useState<ApiFailure | null>(null)
   const [previewing, setPreviewing] = useState(false)
   const [addedPath, setAddedPath] = useState<string | null>(null)
+  const [initial, setInitial] = useState<{ added: number, failed: string[] } | null>(null)
+  const initialRef = useRef(initialRepositories)
   const relativePath = path.startsWith('/') ? path : path.replace(/^(?:\.\/)+/u, '').replace(/\/+$/u, '')
 
   useEffect(() => {
@@ -233,6 +241,39 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
       previewRef.current?.abort()
     }
   }, [api, loadAttempt])
+
+  // Preview each repository the dialog opened with and add the ones the Host accepts.
+  useEffect(() => {
+    const paths = initialRef.current
+    if (config === null || paths === undefined || paths.length === 0) return undefined
+    const controller = new AbortController()
+    void (async () => {
+      const accepted: string[] = []
+      const failed: string[] = []
+      for (const candidate of paths) {
+        try {
+          const result = await api.repositoryPreview(candidate, 'repository', controller.signal)
+          if (result.repositories.length === 1) accepted.push(candidate)
+          else failed.push(candidate)
+        } catch {
+          if (controller.signal.aborted) return
+          failed.push(candidate)
+        }
+      }
+      if (controller.signal.aborted) return
+      initialRef.current = undefined
+      setDraft(previous => previous === null ? previous : {
+        ...previous,
+        repositories: [
+          ...previous.repositories,
+          ...accepted.filter(candidate => !previous.repositories.some(entry => entry.path === candidate))
+            .map(candidate => ({ path: candidate, available: true })),
+        ],
+      })
+      setInitial({ added: accepted.length, failed })
+    })()
+    return () => { controller.abort() }
+  }, [api, config])
 
   const conflict = saveError?.code === 'repository-config-conflict'
   const configError = config?.error ? { code: config.error } : null
@@ -361,6 +402,15 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
       {cwd ? <p className="vcs-dialog-text vcs-repository-scope" title={cwd}>{t('repositoryConfig.scope', { path: cwd })}</p> : null}
       <div className="vcs-repository-body">
         {config === null && loadError === null ? <p className="vcs-dialog-busy" role="status">{t('repositoryConfig.loading')}</p> : null}
+        {initialRepositories !== undefined && initial === null && config !== null ? (
+          <p className="vcs-dialog-busy" role="status">{t('repositoryConfig.checking')}</p>
+        ) : null}
+        {initial === null ? null : (
+          <p className="vcs-dialog-text" role="status">
+            {formatPlural(t, 'repositoryConfig.pending', initial.added)}
+            {initial.failed.length > 0 ? ` ${t('repositoryConfig.pendingFailed', { paths: initial.failed.join(', ') })}` : ''}
+          </p>
+        )}
         {editable ? (
           <section className="vcs-repository-editor">
             <label className="vcs-dialog-label" htmlFor="vcs-repository-config-kind">{t('repositoryConfig.addRule')}</label>

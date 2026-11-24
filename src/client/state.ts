@@ -40,6 +40,14 @@ export const REFS: readonly string[] = ['HEAD', '@', 'all']
 export const SIDEBAR_MIN = 280
 export const SIDEBAR_MAX = 480
 
+/** Overview column width bounds and default, in CSS pixels. */
+export const OVERVIEW_MIN = 320
+export const OVERVIEW_MAX = 600
+export const OVERVIEW_WIDTH = 400
+
+/** How the tiled columns are ordered. */
+export type TileOrder = 'directory' | 'attention'
+
 /** Directory keys of the commit file group, which belong to one commit only. */
 const COMMIT_DIR_PREFIX = 'commit|'
 
@@ -90,6 +98,18 @@ export interface PanelState {
   sidebarWidth: number
   /** The timeline's vertical scroll offset. */
   timelineScroll: number
+  /** Whether the overview column is pushed in from the left. */
+  overview: boolean
+  /** The overview column width, in CSS pixels. */
+  overviewWidth: number
+  /** Whether the repository groups are tiled as columns. */
+  tiled: boolean
+  /** Whether the overview was open when tiling started, so leaving restores it. */
+  overviewBeforeTile: boolean
+  /** The tiled column order. */
+  tileOrder: TileOrder
+  /** Quiet repositories whose spine the user opened into a column. */
+  tileExpanded: string[]
 }
 
 /** The status fields that pick the node a panel shows. */
@@ -128,6 +148,12 @@ export function defaultState(): PanelState {
     twoColumns: true,
     sidebarWidth: 320,
     timelineScroll: 0,
+    overview: false,
+    overviewWidth: OVERVIEW_WIDTH,
+    tiled: false,
+    overviewBeforeTile: false,
+    tileOrder: 'directory',
+    tileExpanded: [],
   }
 }
 
@@ -205,7 +231,7 @@ export function sanitizeState(raw: unknown): PanelState {
   if (stored.repositoryScope === 'all' || stored.repositoryScope === 'selected') {
     state.repositoryScope = stored.repositoryScope
   }
-  for (const field of ['checkedRepositories', 'expandedRepositories', 'worktrees'] as const) {
+  for (const field of ['checkedRepositories', 'expandedRepositories', 'worktrees', 'tileExpanded'] as const) {
     const paths = stored[field]
     if (Array.isArray(paths)) {
       state[field] = [...new Set(paths.filter((path): path is string => textOrNull(path) !== null))]
@@ -229,6 +255,13 @@ export function sanitizeState(raw: unknown): PanelState {
   if (typeof stored.timelineScroll === 'number' && Number.isFinite(stored.timelineScroll) && stored.timelineScroll >= 0) {
     state.timelineScroll = stored.timelineScroll
   }
+  state.overview = stored.overview === true
+  if (typeof stored.overviewWidth === 'number' && Number.isFinite(stored.overviewWidth)) {
+    state.overviewWidth = clamp(Math.round(stored.overviewWidth), OVERVIEW_MIN, OVERVIEW_MAX)
+  }
+  state.tiled = stored.tiled === true
+  state.overviewBeforeTile = stored.overviewBeforeTile === true
+  if (stored.tileOrder === 'attention') state.tileOrder = 'attention'
   return state
 }
 

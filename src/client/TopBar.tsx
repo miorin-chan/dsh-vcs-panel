@@ -24,8 +24,8 @@ import type {
 import type { ApiFailure } from './api.js'
 import type { MenuPoint, Notice, RefEntry } from './useRepoActions.js'
 import {
-  Arrow, BranchIcon, CheckIcon, Chevron, FilterIcon, IconButton, LockIcon, MoreIcon, PlusIcon, RefreshIcon, RefBadge,
-  SettingsIcon, SyncIcon, TimelineBesideIcon, Turning, WorkingCopyBadge,
+  Arrow, BranchIcon, CheckIcon, Chevron, FilterIcon, IconButton, LockIcon, MoreIcon, OverviewIcon, PlusIcon, RefreshIcon,
+  RefBadge, SettingsIcon, SyncIcon, TileIcon, TimelineBesideIcon, Turning, WorkingCopyBadge,
 } from './ui.jsx'
 import { errorMessage, formatCount, formatPlural, sessionRelativePath, shortChangeId } from './format.js'
 import { BRANCH_BUSY_KEYS } from './branch.js'
@@ -921,6 +921,14 @@ export interface TopBarProps {
   twoColumns?: boolean
   twoColumnsFit?: boolean
   onTwoColumns?: (next: boolean) => void
+  /** Whether the overview column is open; with `onOverview`, the leading button toggles it. */
+  overviewOpen?: boolean
+  onOverview?: () => void
+  /** Whether the repositories are tiled; with `onTile`, the second button toggles it. */
+  tiled?: boolean
+  onTile?: () => void
+  /** While tiled, the state buttons that replace the repository, worktree, branch, and sync controls. */
+  tileControls?: ReactNode
   t: Translate
   locale?: string
 }
@@ -933,7 +941,8 @@ export function TopBar({
   revalidating = false, onSync, syncing, staging = false, branches = [], branchesStatus = 'idle', branchesError = null,
   branchesTruncated = false, onLoadBranches = () => {}, onSwitchBranch = () => {}, onBranchActions = () => {},
   onRestoreFocus = () => {}, switching = false, branchBusy = null, tagBusy = null, commitBusy = null, notice,
-  twoColumns = true, twoColumnsFit = true, onTwoColumns = () => {}, t, locale,
+  twoColumns = true, twoColumnsFit = true, onTwoColumns = () => {}, overviewOpen = false, onOverview, tiled = false,
+  onTile, tileControls = null, t, locale,
 }: TopBarProps) {
   // Work on data already on screen shows as one thin bar under the header,
   // whether the user asked for it (refresh, sync, switch, a branch, tag, or
@@ -1011,8 +1020,49 @@ export function TopBar({
       ? t('worktree.writesHint')
       : `${t('worktree.writesHint')} ${readonlyHint}`
   }
+  const layoutButtons = onOverview === undefined || onTile === undefined ? null : (
+    <>
+      <IconButton
+        label={t('overview.toggle')}
+        pressed={overviewOpen}
+        title={t(overviewOpen ? 'overview.hide' : 'overview.show')}
+        onClick={onOverview}
+        className="vcs-overview-toggle"
+      >
+        <OverviewIcon open={overviewOpen} />
+      </IconButton>
+      <IconButton
+        label={t('tile.toggle')}
+        pressed={tiled}
+        title={t(tiled ? 'tile.off' : 'tile.on')}
+        onClick={onTile}
+        className="vcs-tile-toggle"
+      >
+        <TileIcon tiled={tiled} />
+      </IconButton>
+    </>
+  )
+  if (tiled) {
+    return (
+      <div className="vcs-topbar" data-tiled="true">
+        {layoutButtons}
+        {tileControls}
+        <span className="vcs-topbar-spacer" />
+        <IconButton
+          label={t(capabilities?.snapshots === true ? 'top.refreshSnapshots' : 'top.refresh')}
+          title={refreshing ? t('top.refreshing') : undefined}
+          onClick={() => { onRefresh() }}
+          busy={refreshing}
+        >
+          <Turning turning={refreshing}><RefreshIcon /></Turning>
+        </IconButton>
+        <ProgressLine busy={busy} label={t('top.refreshing')} />
+      </div>
+    )
+  }
   return (
     <div className="vcs-topbar">
+      {layoutButtons}
       <RepositoryPicker
         repositories={repositories}
         cwd={cwd}

@@ -36,7 +36,7 @@ export function RepositoryTimelines({ repositories, current, expanded, onToggle,
         const open = expanded.includes(entry.path)
         const showPath = repositories.some(other => other.path !== entry.path && other.name === entry.name)
         return (
-          <section className="vcs-repository-group" data-active={active || undefined} data-open={open || undefined} key={entry.path}>
+          <section className="vcs-repository-group" data-active={active || undefined} data-open={open || undefined} data-repository={entry.path} key={entry.path}>
             <button
               type="button"
               className="vcs-menu-item vcs-repository-group-header"

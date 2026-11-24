@@ -10,7 +10,7 @@
  * remote-branch, tag, or commit actions.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 // Side-effect type import: the browser half declares the `connection/reset`
@@ -23,13 +23,16 @@ import shellStyles from './styles.css'
 import diffStyles from './diff/FileDiff.css'
 import graphStyles from './history/graph.css'
 import { DICTIONARIES } from './locales.js'
-import { SHORTCUT_DEFAULTS, SHORTCUT_ID, mainSessionId } from './shortcuts.js'
+import { OVERVIEW_SHORTCUT_ID, SHORTCUT_DEFAULTS, SHORTCUT_ID, TILE_SHORTCUT_ID, mainSessionId } from './shortcuts.js'
 import type { SessionListSnapshot } from './shortcuts.js'
 import { createTurnChangesDefinition, turnChangedFiles, turnChanges } from './turn.js'
 import type { TrackedTurn } from './turn.js'
 import { createTurnSummaryStore } from './turn-summary.js'
 import { GitBranchIcon, TurnTailChanges } from './TurnTail.jsx'
 import { VcsView } from './VcsView.jsx'
+import type { PanelPresentation } from './VcsView.jsx'
+import { sendPanelCommand } from './commands.js'
+import type { PanelCommand } from './commands.js'
 import { ViewErrorBoundary } from './ViewErrorBoundary.jsx'
 
 /** Locale namespace owned by this plugin. */
@@ -195,6 +198,51 @@ function registerPanelShortcut(ctx: Context, scope: Context, t: Translate): () =
 }
 
 /**
+ * Register one panel-layout command (overview or tiled layout) without a
+ * default key; the user binds it in Settings > Shortcuts. A press acts on the
+ * on-screen Session's panel, opening its tab first when it is not showing.
+ * @param ctx - the Client root context.
+ * @param scope - injected Client scope.
+ * @param t - namespaced translate function.
+ * @param id - the command identity.
+ * @param labelKey - locale key of its Settings label.
+ * @param panelCommand - what the panel does.
+ * @returns shortcut disposer.
+ */
+function registerLayoutShortcut(
+  ctx: Context, scope: Context, t: Translate, id: string, labelKey: string, panelCommand: PanelCommand,
+): () => void {
+  const sidebar = ctx.sidebarRight
+  const sessions = (scope as unknown as { readonly sessions?: ClientSessionList }).sessions
+  const command: ShortcutCommand = {
+    id: id as ShortcutCommandId,
+    label: () => t(labelKey),
+    aliases: ['vcs', panelCommand],
+    defaults: {},
+    regions: ['page', 'editable', 'terminal'],
+    modals: [],
+    resolve(context) {
+      if (context?.modal !== null && context?.modal !== undefined) return { status: 'pass' }
+      const sessionId = mainSessionId(sessions?.list?.getSnapshot?.())
+      if (sessionId === null || sidebar.mounted?.getSnapshot?.() !== sessionId) return { status: 'pass' }
+      return {
+        status: 'handled',
+        run: () => {
+          if (!sidebar.isExpanded() || sidebar.active()?.kind !== TAB_KIND) sidebar.openTab(TAB_KIND)
+          sendPanelCommand(sessionId, panelCommand)
+        },
+      }
+    },
+  }
+  try {
+    return scope.shortcuts.register(command)
+  } catch (error) {
+    console.warn(`dsh-vcs-panel: ${id} could not be registered`, error)
+    return () => {}
+  }
+}
+
+/**
  * Register the Sidebar page, its guide card, the Turn-tail entry, the locale
  * dictionaries, the Turn fold, and the panel shortcut for the lifetime of this
  * plugin entry.
@@ -253,7 +301,22 @@ export function apply(ctx: Context): void {
    */
   function SidebarVcsView(props: SidebarVcsViewProps) {
     const locale = useActiveLocale()
-    const { tab } = props.useTabInfo()
+    const info = props.useTabInfo()
+    const { tab } = info
+    const fullscreen = info.sidebar?.fullscreen === true
+    const floating = info.panel?.isFloating === true
+    // The overview and the tiled layout ask for the Sidebar's own fullscreen
+    // presentation, through the same action as its chrome button.
+    const presentation = useMemo<PanelPresentation>(() => ({
+      fullscreen,
+      floating,
+      toggleFullscreen: element => {
+        const target = ctx.sidebarRight.commandTarget(element)
+        if (target === undefined) return false
+        ctx.sidebarRight.toggleFullscreen(target)
+        return true
+      },
+    }), [floating, fullscreen])
     const navRevision = tab.navigation?.revision ?? 0
     const [focusRequest, setFocusRequest] = useState(tab.visible && navRevision > 0 ? 1 : 0)
     const wasVisibleRef = useRef(tab.visible)
@@ -270,7 +333,7 @@ export function apply(ctx: Context): void {
 
     return (
       <ViewErrorBoundary key={props.sessionId} t={t}>
-        <VcsView {...props} locale={locale} visible={tab.visible} focusRequest={focusRequest} />
+        <VcsView {...props} locale={locale} visible={tab.visible} focusRequest={focusRequest} presentation={presentation} />
       </ViewErrorBoundary>
     )
   }
@@ -370,5 +433,7 @@ export function apply(ctx: Context): void {
   // normal registrations and simply has no global key.
   ctx.inject(['shortcuts', 'sessions'], scope => {
     scope.effect(() => registerPanelShortcut(ctx, scope, t), 'dsh-vcs-panel: panel shortcut')
+    scope.effect(() => registerLayoutShortcut(ctx, scope, t, OVERVIEW_SHORTCUT_ID, 'shortcut.overview', 'overview'), 'dsh-vcs-panel: overview shortcut')
+    scope.effect(() => registerLayoutShortcut(ctx, scope, t, TILE_SHORTCUT_ID, 'shortcut.tile', 'tile'), 'dsh-vcs-panel: tile shortcut')
   })
 }

@@ -174,8 +174,10 @@ test('apply registers the dictionaries, stylesheet, Sidebar page, Turn fold, and
     assert.equal(typeof dictionary.ru['turn.filesChanged.few'], 'string')
     assert.equal(typeof dictionary.ru['turn.filesChanged.many'], 'string')
     assert.deepEqual(optionalInjections, [['shortcuts', 'sessions']])
-    assert.equal(commands.length, 1)
-    assert.equal(commands[0].id, 'vcs.view.toggle')
+    // The overview and tiled-layout commands start unbound.
+    assert.deepEqual(commands.map(command => command.id), ['vcs.view.toggle', 'vcs.view.overview', 'vcs.view.tile'])
+    assert.deepEqual(commands.slice(1).map(command => command.defaults), [{}, {}])
+    assert.deepEqual(commands.slice(1).map(command => command.label()), ['vcs:shortcut.overview', 'vcs:shortcut.tile'])
 
     assert.equal(styles.length, 1)
     assert.match(styles[0].textContent, /\.vcs-root/)
@@ -412,7 +414,7 @@ test('the panel shortcut opens the page, collapses the Sidebar, and reveals it a
       },
     })
 
-    assert.equal(commands.length, 1)
+    assert.equal(commands.length, 3)
     const command = commands[0]
     assert.equal(command.id, 'vcs.view.toggle')
     assert.equal(command.label(), 'vcs:shortcut.toggle')
