@@ -29,7 +29,7 @@ or sync with the upstream.
   or register a specific nested repository, and pick Git or Jujutsu for a repository that carries both markers.
   Discovery rules are saved relative to the session directory in `.dsh/vcs-panel.json`.
   Repositories under the session folder that discovery leaves out are listed and can be added in one step.
-- **Tiled repositories.** The first button in the right-hand group (`T`) lays every repository out
+- **Tiled repositories.** The tile half of the repository button (`T`) lays every repository out
   as a column of pointers, ordered by attention or by folder; `1`–`7` step through one state,
   and `Enter` opens the focused pointer in the timeline.
 - **All repositories.** The pinned row at the top of the overview turns the timeline

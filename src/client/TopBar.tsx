@@ -742,7 +742,10 @@ export interface TopBarProps {
   onOverview: () => void
   /** Repository count when looking at the read-only aggregate timeline. */
   allRepositoryCount?: number | null
-  /** Whether the repositories are tiled; with `onTile`, the first right-side button toggles it. */
+  /**
+   * Whether the repositories are tiled. With `onTile`, the repository button carries a tile half
+   * while stacked; while tiled, the repository button alone leaves the tiled layout.
+   */
   tiled?: boolean
   onTile?: () => void
   /** While tiled, the state buttons that replace the worktree, branch, and sync controls. */
@@ -804,8 +807,12 @@ export function TopBar({
   const repositoryName = all ? t('all.title') : repository?.name ?? t('top.noRepository')
   const relativePath = repository == null ? '.' : sessionRelativePath(cwd, repository.path)
   const overviewTitle = t(overviewOpen ? 'overview.hide' : 'overview.show')
+  // The overview lists the repositories down one column and tiling spreads the
+  // same list across columns, so both entries form one split button. Tiled, the
+  // repository half already folds the columns back into the overview.
+  const tileHalf = onTile !== undefined && !tiled
   const repositoryButton = (
-    <div className="vcs-picker-wrap">
+    <div className={tileHalf ? 'vcs-picker-wrap vcs-repo-split' : 'vcs-picker-wrap'}>
       <button
         type="button"
         className="vcs-picker-button vcs-repo-button vcs-overview-toggle"
@@ -819,22 +826,15 @@ export function TopBar({
         <OverviewIcon open={overviewOpen} />
         <span className="vcs-picker-label">{repositoryName}</span>
       </button>
+      {tileHalf ? (
+        <IconButton label={t('tile.toggle')} title={t('tile.on')} onClick={onTile} className="vcs-tile-button">
+          <TileIcon />
+        </IconButton>
+      ) : null}
     </div>
   )
   const headerActions = (
     <div key="actions" className="vcs-topbar-actions">
-      {onTile === undefined ? null : (
-        <IconButton
-          key="tile"
-          label={t('tile.toggle')}
-          pressed={tiled}
-          title={t(tiled ? 'tile.off' : 'tile.on')}
-          onClick={onTile}
-          className="vcs-tile-toggle"
-        >
-          <TileIcon tiled={tiled} />
-        </IconButton>
-      )}
       {tiled ? null : (
         <IconButton
           label={t('top.twoColumns')}

@@ -3118,33 +3118,48 @@ test('Timeline +N overflow pill pairs with clickable/keyboard DetailPane ref bad
   }
 })
 
-test('TopBar keeps the tile toggle first in the right-hand actions in both layouts', async () => {
+test('TopBar splits the repository button with a tile half that only the stacked layout shows', async () => {
   const harness = createHarness()
   const restore = harness.installGlobals()
   try {
     const { TopBar } = await loadClientModule('src/client/TopBar.tsx', harness)
     let tiled = false
-    const render = () => harness.mount(harness.react.createElement(TopBar, {
+    let overviews = 0
+    const render = (tileable = true) => harness.mount(harness.react.createElement(TopBar, {
       repository: null, refreshing: false, onRefresh: () => {},
-      onOverview: () => {}, tiled, onTile: () => { tiled = !tiled }, t,
+      onOverview: () => { overviews += 1; tiled = false }, tiled,
+      onTile: tileable ? () => { tiled = !tiled } : undefined, t,
     }))
     const header = () => harness.document.body.querySelector('.vcs-topbar')
+    const repositoryGroup = () => header().children[0]
+    const halves = () => repositoryGroup().children.map(button => button.attributes.get('aria-label'))
     const actions = () => header().querySelector('.vcs-topbar-actions').children
     const labels = () => actions().map(button => button.attributes.get('aria-label'))
     render()
-    assert.equal(header().children[0].querySelector('.vcs-repo-button').attributes.get('aria-label'), 'top.noRepository')
+    assert.equal(repositoryGroup().props.className, 'vcs-picker-wrap vcs-repo-split')
+    assert.deepEqual(halves(), ['top.noRepository', 'tile.toggle'])
+    const tileHalf = repositoryGroup().children[1]
+    assert.ok(tileHalf.classList.contains('vcs-tile-button'))
+    assert.equal(tileHalf.attributes.get('title'), 'tile.on')
+    assert.equal(tileHalf.attributes.get('aria-pressed'), undefined, 'the tile half enters the layout, it does not toggle it')
     assert.equal(header().querySelector('.vcs-readonly'), null)
-    assert.deepEqual(labels(), ['tile.toggle', 'top.twoColumns', 'top.refresh'])
-    assert.equal(actions()[0].attributes.get('aria-pressed'), 'false')
-    harness.keyClick(actions()[0])
+    assert.deepEqual(labels(), ['top.twoColumns', 'top.refresh'])
+    harness.keyClick(tileHalf)
+    assert.equal(tiled, true)
     render()
-    assert.equal(header().children[0].querySelector('.vcs-repo-button').attributes.get('aria-label'), 'top.noRepository')
-    assert.deepEqual(labels(), ['tile.toggle', 'top.refresh'])
-    assert.equal(actions()[0].attributes.get('aria-pressed'), 'true')
-    harness.keyClick(actions()[0])
+    assert.equal(repositoryGroup().props.className, 'vcs-picker-wrap', 'tiled, the repository button stands alone')
+    assert.deepEqual(halves(), ['top.noRepository'])
+    assert.equal(header().querySelector('.vcs-tile-button'), null)
+    assert.deepEqual(labels(), ['top.refresh'])
+    harness.mouseClick(repositoryGroup().children[0])
+    assert.equal(overviews, 1)
+    assert.equal(tiled, false)
     render()
-    assert.deepEqual(labels(), ['tile.toggle', 'top.twoColumns', 'top.refresh'])
-    assert.equal(actions()[0].attributes.get('aria-pressed'), 'false')
+    assert.deepEqual(halves(), ['top.noRepository', 'tile.toggle'])
+    assert.deepEqual(labels(), ['top.twoColumns', 'top.refresh'])
+    render(false)
+    assert.equal(repositoryGroup().props.className, 'vcs-picker-wrap', 'without a tile action there is no tile half')
+    assert.deepEqual(halves(), ['top.noRepository'])
   } finally {
     harness.unmount()
     restore()

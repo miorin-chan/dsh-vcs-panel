@@ -179,6 +179,31 @@
   color: var(--dsw-alias-label-primary);
 }
 
+/* The repository button and the tile button read as one control split in two:
+   hovering either half, or an open overview, outlines both halves, and the tile
+   half's leading edge is the divider. */
+.vcs-repo-split .vcs-repo-button {
+  border-inline-end-width: 0;
+  border-start-end-radius: 0;
+  border-end-end-radius: 0;
+}
+
+.vcs-repo-split .vcs-tile-button {
+  border: 0.5px solid transparent;
+  border-start-start-radius: 0;
+  border-end-start-radius: 0;
+}
+
+.vcs-repo-split .vcs-tile-button:hover {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.vcs-repo-split:hover > button,
+.vcs-repo-split:has(> [aria-pressed='true']) > button {
+  border-color: var(--dsw-alias-border-l2);
+}
+
 /* Fixed so the menu can hang below the clipped header. */
 .vcs-picker-menu {
   position: fixed;

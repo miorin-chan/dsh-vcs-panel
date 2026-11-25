@@ -522,7 +522,6 @@ const dictionary: LocaleDict = Object.freeze({
   "shortcut.tile": "Alternar los repositorios en mosaico de VCS",
   "tile.toggle": "Repositorios en mosaico",
   "tile.on": "Colocar los grupos de repositorios en columnas (T)",
-  "tile.off": "Volver a apilar los grupos de repositorios (T)",
   "tile.states": "Recorrer punteros por estado",
   "tile.next": "Siguiente puntero «{state}» (Mayús: anterior)",
   "tile.none": "No hay punteros «{state}»",

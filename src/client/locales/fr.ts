@@ -522,7 +522,6 @@ const dictionary: LocaleDict = Object.freeze({
   "shortcut.tile": "Activer ou désactiver les dépôts VCS en colonnes",
   "tile.toggle": "Dépôts en colonnes",
   "tile.on": "Disposer les groupes de dépôts en colonnes (T)",
-  "tile.off": "Empiler à nouveau les groupes de dépôts (T)",
   "tile.states": "Parcourir les pointeurs par état",
   "tile.next": "Pointeur « {state} » suivant (Maj : précédent)",
   "tile.none": "Aucun pointeur « {state} »",

@@ -541,12 +541,11 @@ export function LockIcon() {
 }
 
 /** Three columns side by side: the repositories tiled. */
-export function TileIcon({ tiled }: { tiled?: boolean }) {
+export function TileIcon() {
   return (
     <svg className="vcs-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
       {[1.5, 6.2, 10.9].map(x => (
-        <rect key={x} x={x} y="2.5" width="3.6" height="11" rx="1" stroke="currentColor" strokeWidth="1"
-          fill={tiled ? 'currentColor' : 'none'} fillOpacity={tiled ? 0.35 : undefined} />
+        <rect key={x} x={x} y="2.5" width="3.6" height="11" rx="1" stroke="currentColor" strokeWidth="1" />
       ))}
     </svg>
   )
