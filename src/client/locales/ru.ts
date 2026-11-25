@@ -557,6 +557,8 @@ const dictionary: LocaleDict = Object.freeze({
   "overview.operation.cherryPick": "Идёт cherry-pick",
   "overview.operation.revert": "Идёт revert",
   "overview.operation.bisect": "Идёт bisect",
+  "overview.operation.conflict": "Есть конфликты",
+  "overview.operation.bookmarkConflict": "Конфликт закладки",
   "shortcut.overview": "Показать или скрыть обзор VCS",
   "shortcut.tile": "Включить или выключить колонки репозиториев VCS",
   "tile.toggle": "Репозитории колонками",

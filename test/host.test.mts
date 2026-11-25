@@ -11,6 +11,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { lstat, mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
@@ -18,6 +19,7 @@ import { delimiter, dirname, join, basename, resolve as resolvePath, sep } from 
 import { tmpdir } from 'node:os'
 
 import { apply, createHandlers, createTurnTracker, normalizeConfig } from '../index.js'
+import { OVERVIEW_GRAPH_MAX } from '../lib/overview.js'
 import { parseGitWorktrees } from '../lib/worktrees.js'
 
 // Keep the fixtures independent of the user's global git configuration.
@@ -5040,4 +5042,336 @@ test('sync diagnostics keep the last stderr lines and drop URL credentials', asy
     "fatal: unable to access 'https://***@example.com/repo.git/' | fatal: two | fatal: three",
   )
   assert.equal(redactDetail(''), '')
+})
+
+/** Decode the overview route's streamed answer, or its single-repository preflight error. */
+async function jjOverview(ctx, params) {
+  const response = await createHandlers(ctx).overview(new Request(`http://127.0.0.1${route('/api/vcs.overview', { sessionId: 'source', ...params })}`))
+  if (response.status !== 200) return { status: response.status, error: (await response.json()).error }
+  return { status: response.status, lines: (await response.text()).trimEnd().split('\n').map(line => JSON.parse(line)) }
+}
+
+const jjOperationHead = cwd => jj(cwd, ['--ignore-working-copy', '--at-op=@', 'op', 'log', '--no-graph', '-n', '1', '-T', 'id'])
+
+test('Jujutsu overview reads bookmarks, tracked distances, workspaces, and anonymous heads without snapshotting', { skip: !HAS_JJ }, async t => {
+  const { source, scratch, ctx } = lifecycleFixture(t, 'colocated')
+  const publisher = join(scratch, 'publisher')
+  jj(scratch, ['git', 'init', '--no-colocate', publisher])
+  jj(publisher, ['describe', '-m', 'Base'])
+  jj(publisher, ['new', '-m', 'Trunk'])
+  const trunk = recordedJjHead(publisher)
+  jj(publisher, ['bookmark', 'create', 'main', 'gone'])
+  jj(publisher, ['new', '-m', 'Published'])
+  const published = recordedJjHead(publisher)
+  jj(publisher, ['bookmark', 'create', 'ahead'])
+  jj(publisher, ['new', '-m', 'Remote ahead'])
+  const remoteAhead = recordedJjHead(publisher)
+  jj(publisher, ['bookmark', 'create', 'behind'])
+  jj(publisher, ['new', 'main', '-m', 'Foreign'])
+  const foreign = recordedJjHead(publisher)
+  jj(publisher, ['bookmark', 'create', 'foreign'])
+  jj(publisher, ['git', 'export'])
+
+  jj(source, ['git', 'remote', 'add', 'origin', join(publisher, '.jj', 'repo', 'store', 'git')])
+  jj(source, ['git', 'fetch', '--remote', 'origin'])
+  jj(source, ['bookmark', 'track', 'main', 'ahead', 'behind', 'gone', '--remote', 'origin'])
+  jj(source, ['bookmark', 'set', 'behind', '--allow-backwards', '-r', published])
+  jj(source, ['new', 'gone', '-m', 'Local before remote deletion'])
+  const gone = recordedJjHead(source)
+  jj(source, ['bookmark', 'set', 'gone'])
+  jj(publisher, ['bookmark', 'delete', 'gone'])
+  jj(publisher, ['git', 'export'])
+  jj(source, ['git', 'fetch', '--remote', 'origin'])
+  const fetchTime = Number(jj(source, ['--ignore-working-copy', '--at-op=@', 'op', 'log', '-G', '-n', '1', '-T', 'time.end().format("%s")']))
+  assert.ok(fetchTime > 0)
+
+  // A named placeholder is kept in the graph, but doesn't count in any distance.
+  jj(source, ['new', 'ahead'])
+  const placeholder = recordedJjHead(source)
+  jj(source, ['bookmark', 'create', 'placeholder'])
+  jj(source, ['new', '-m', 'Ahead locally'])
+  const localAhead = recordedJjHead(source)
+  jj(source, ['bookmark', 'set', 'ahead'])
+  jj(source, ['bookmark', 'create', 'also-ahead'])
+  jj(source, ['tag', 'set', 'v1', '-r', trunk])
+
+  jj(source, ['new', 'main', '-m', 'Anonymous only here'])
+  const anonymous = recordedJjHead(source)
+  const changeId = jj(source, ['--ignore-working-copy', 'log', '-G', '-r', '@', '-T', 'change_id.short()'])
+  jj(source, ['new', '--no-edit', 'main'])
+  const loosePlaceholder = jj(source, ['--ignore-working-copy', 'log', '-G', '-r',
+    'heads(mutable()) & empty() & description(exact:"")', '-T', 'commit_id ++ "\\n"'])
+  assert.ok(loosePlaceholder.split('\n').some(id => id !== '0'.repeat(40) && /^[0-9a-f]{40}$/u.test(id)))
+  const linked = join(source, 'review')
+  jj(source, ['workspace', 'add', '--name', 'review', '-r', 'foreign@origin', linked])
+  const linkedHead = recordedJjHead(linked)
+
+  jj(source, ['new', 'ahead'])
+  writeFileSync(join(source, 'dirty.txt'), 'recorded change\n')
+  jj(source, ['status'])
+  const dirtyHead = recordedJjHead(source)
+  assert.notEqual(dirtyHead, localAhead)
+  writeFileSync(join(source, 'not-snapshotted.txt'), 'unrecorded change\n')
+  const before = jjOperationHead(source)
+
+  const fetchHeadFile = join(source, '.git', 'FETCH_HEAD')
+  writeFileSync(fetchHeadFile, '')
+  utimesSync(fetchHeadFile, fetchTime - 100, fetchTime - 100)
+  const answer = await jjOverview(ctx, { repo: source })
+  assert.deepEqual(answer.lines?.map(line => line.type), ['scope', 'repository', 'done'], JSON.stringify(answer))
+  const { repository } = answer.lines[1]
+  assert.equal(repository.path, source)
+  assert.equal(repository.registered, true)
+  assert.equal(repository.vcs, 'jujutsu')
+  assert.equal(repository.supported, true)
+  assert.equal(repository.truncated, false)
+  assert.equal(repository.tags, 1)
+  assert.deepEqual(repository.remotes, ['origin'])
+  assert.deepEqual(repository.baselines, [{ name: 'main@origin', ahead: 0, behind: 0 }])
+  assert.equal(repository.fetchedAt, fetchTime, 'operation-log time wins over older FETCH_HEAD')
+  assert.deepEqual(repository.checkouts, [
+    { path: source, branch: 'ahead', head: localAhead, workingCopy: dirtyHead, primary: true, locked: false, dirty: 1, operation: null },
+    { path: linked, branch: null, head: foreign, workingCopy: linkedHead, primary: false, locked: false, dirty: 0, operation: null },
+  ])
+  const counts = ['kind', 'sha', 'ahead', 'behind', 'unique']
+  assert.deepEqual(Object.fromEntries(repository.pointers.map(p => [p.name, counts.map(field => p[field])])), {
+    main: ['branch', trunk, 0, 0, 0],
+    'main@origin': ['remote', trunk, 0, 0, 0],
+    ahead: ['branch', localAhead, 2, 0, 1],
+    'ahead@origin': ['remote', published, 1, 0, 0],
+    'also-ahead': ['branch', localAhead, 2, 0, 1],
+    behind: ['branch', published, 1, 0, 0],
+    'behind@origin': ['remote', remoteAhead, 2, 0, 0],
+    gone: ['branch', gone, 1, 0, 1],
+    'foreign@origin': ['remote', foreign, 1, 0, 0],
+    placeholder: ['branch', placeholder, 1, 0, 0],
+    [linked]: ['detached', foreign, 1, 0, 0],
+    [changeId]: ['detached', anonymous, 1, 0, 1],
+  })
+  const pointers = new Map(repository.pointers.map(p => [p.name, p]))
+  assert.ok(repository.pointers.every(p => p.base === 'main@origin'))
+  assert.deepEqual(repository.pointers.filter(p => p.isBase).map(p => p.name), ['main@origin'])
+  assert.deepEqual(pointers.get('ahead').track, { ahead: 1, behind: 0 })
+  assert.equal(pointers.get('ahead').upstream, 'ahead@origin')
+  assert.deepEqual(pointers.get('behind').track, { ahead: 0, behind: 1 })
+  assert.equal(pointers.get('behind').upstream, 'behind@origin')
+  assert.deepEqual(pointers.get('main').track, { ahead: 0, behind: 0 })
+  assert.equal(pointers.get('main').upstream, 'main@origin')
+  assert.deepEqual(pointers.get('gone').track, { ahead: 0, behind: 0, gone: true })
+  assert.equal(pointers.get('gone').upstream, 'gone@origin')
+  assert.equal(pointers.get('gone').bookmarkConflict, true)
+  assert.equal(pointers.get('foreign@origin').remote, 'origin')
+  assert.equal(pointers.get('foreign@origin').branch, 'foreign')
+  assert.equal(pointers.get('ahead').checkout, source)
+  assert.equal(pointers.get('also-ahead').checkout, source)
+  assert.equal(pointers.get(linked).checkout, linked)
+  assert.equal(pointers.get(changeId).checkout, undefined)
+  assert.equal(pointers.get(changeId).subject, 'Anonymous only here')
+
+  utimesSync(fetchHeadFile, fetchTime + 100, fetchTime + 100)
+  const newer = await jjOverview(ctx, {})
+  assert.deepEqual(newer.lines?.map(line => line.type), ['scope', 'repository', 'done'], JSON.stringify(newer))
+  assert.equal(newer.lines[1].repository.fetchedAt, fetchTime + 100, 'newer colocated FETCH_HEAD wins')
+  assert.equal(jjOperationHead(source), before)
+  assert.equal(recordedJjHead(source), dirtyHead, 'the new file was not snapshotted')
+  assert.equal(recordedJjHead(linked), linkedHead)
+})
+
+test('Jujutsu overview handles a conflicted merge workspace as its own position', { skip: !HAS_JJ }, async t => {
+  const { source, ctx } = lifecycleFixture(t, 'jujutsu')
+  writeFileSync(join(source, 'file'), 'base\n')
+  jj(source, ['describe', '-m', 'Base'])
+  jj(source, ['bookmark', 'create', 'main'])
+  jj(source, ['new', '-m', 'One'])
+  writeFileSync(join(source, 'file'), 'one\n')
+  jj(source, ['bookmark', 'create', 'one'])
+  jj(source, ['new', 'main', '-m', 'Two'])
+  writeFileSync(join(source, 'file'), 'two\n')
+  jj(source, ['bookmark', 'create', 'two'])
+  jj(source, ['new', 'one', 'two'])
+  const merge = recordedJjHead(source)
+  const before = jjOperationHead(source)
+
+  const { lines } = await jjOverview(ctx, { repo: source })
+  assert.deepEqual(lines?.map(line => line.type), ['scope', 'repository', 'done'], JSON.stringify(lines))
+  const { repository } = lines[1]
+  assert.deepEqual(repository.checkouts, [
+    { path: source, branch: null, head: merge, workingCopy: merge, primary: true, locked: false, dirty: 0, operation: 'conflict' },
+  ])
+  assert.deepEqual(repository.pointers.filter(p => p.kind === 'detached'), [{
+    kind: 'detached', name: source, sha: merge, subject: '', time: repository.pointers.find(p => p.kind === 'detached').time,
+    base: 'main', isBase: false, ahead: 3, behind: 0, unique: 3, checkout: source,
+  }])
+  assert.equal(repository.fetchedAt, null)
+  assert.equal(jjOperationHead(source), before)
+})
+
+test('Jujutsu overview falls back from root to the local main, or leaves distances empty without a base', { skip: !HAS_JJ }, async t => {
+  const { source, ctx } = lifecycleFixture(t, 'jujutsu')
+  jj(source, ['describe', '-m', 'Default local position'])
+  const main = recordedJjHead(source)
+  jj(source, ['bookmark', 'create', 'main'])
+  jj(source, ['new', '-m', 'Local only'])
+  const topic = recordedJjHead(source)
+  jj(source, ['bookmark', 'create', 'trunk', 'master', 'topic'])
+  // A hash-shaped bookmark must not replace the actual commit id in revsets.
+  jj(source, ['bookmark', 'create', main])
+  jj(source, ['new', 'topic'])
+  assert.equal(jj(source, ['--ignore-working-copy', 'log', '-G', '-r', 'trunk()', '-T', 'commit_id']), '0'.repeat(40))
+  assert.equal(jj(source, ['--ignore-working-copy', 'log', '-G', '-r', main, '-T', 'commit_id']), topic)
+
+  const read = async (host = ctx) => {
+    const { lines } = await jjOverview(host, { repo: source })
+    assert.deepEqual(lines?.map(line => line.type), ['scope', 'repository', 'done'], JSON.stringify(lines))
+    return lines[1].repository
+  }
+  const local = await read()
+  assert.deepEqual(local.remotes, [])
+  assert.equal(local.fetchedAt, null)
+  assert.deepEqual(local.baselines, [{ name: 'main', ahead: 0, behind: 0 }])
+  assert.deepEqual(local.pointers.map(p => [p.name, p.sha, p.ahead, p.behind, p.unique, p.isBase]), [
+    [main, topic, 1, 0, 1, false], ['main', main, 0, 0, 0, true], ['master', topic, 1, 0, 1, false],
+    ['topic', topic, 1, 0, 1, false], ['trunk', topic, 1, 0, 1, false],
+  ])
+  jj(source, ['bookmark', 'delete', 'main', 'master', 'trunk'])
+  jj(source, ['new', 'root()']) // workspace is behind no bookmark, and root isn't a base by itself
+  const noBase = await read()
+  assert.deepEqual(noBase.baselines, [])
+  assert.deepEqual(noBase.pointers.map(p => [p.kind, p.name, p.base, p.isBase, p.ahead, p.behind, p.unique]), [
+    ['branch', main, null, false, null, null, 0], ['branch', 'topic', null, false, null, null, 0],
+    ['detached', source, null, false, null, null, 0],
+  ])
+
+  // A user-configured trunk can also name a commit without a bookmark.
+  const unnamed = await read({ ...ctx, subprocess: { ...ctx.subprocess, spawn: spec => ctx.subprocess.spawn({
+    ...spec, argv: [spec.argv[0], '--config', `revset-aliases."trunk()"="commit_id(${main})"`, ...spec.argv.slice(1)],
+  }) } })
+  assert.deepEqual(unnamed.baselines, [{ name: 'trunk()', ahead: 0, behind: 0 }])
+  assert.deepEqual(unnamed.pointers.map(p => [p.name, p.ahead, p.behind, p.unique, p.isBase]), [
+    [main, 1, 0, 1, false], ['topic', 1, 0, 1, false], [source, 0, 1, 0, false],
+  ])
+
+  // Unique work does not depend on a base: with a remote but no trunk, the
+  // bookmarks still count what no remote bookmark reaches (root excluded).
+  const bare = join(dirname(source), 'no-trunk-remote.git')
+  execFileSync('git', ['init', '--bare', '-q', bare])
+  jj(source, ['git', 'remote', 'add', 'origin', bare])
+  const remoteNoBase = await read()
+  assert.deepEqual(remoteNoBase.remotes, ['origin'])
+  assert.deepEqual(remoteNoBase.baselines, [])
+  assert.deepEqual(remoteNoBase.pointers.map(p => [p.name, p.ahead, p.unique]), [
+    [main, null, 2], ['topic', null, 2], [source, null, 0],
+  ])
+})
+
+test('Jujutsu overview reads an unlisted colocated root without needing git', { skip: !HAS_JJ }, async t => {
+  const { source, ctx } = lifecycleFixture(t, 'jujutsu')
+  const hidden = join(source, 'nest', 'deep')
+  mkdirSync(join(source, 'nest'))
+  jj(source, ['git', 'init', '--colocate', hidden])
+  jj(hidden, ['describe', '-m', 'Unlisted'])
+  jj(hidden, ['bookmark', 'create', 'main'])
+  const spawn = ctx.subprocess.spawn
+  const seen: string[][] = []
+  const onlyJj = { ...ctx, subprocess: {
+    resolveExecutable: async name => {
+      if (name === 'git') throw new Error('git is not installed')
+      return ctx.subprocess.resolveExecutable(name)
+    },
+    spawn: spec => { seen.push(spec.argv); return spawn(spec) },
+  } }
+  const all = await jjOverview(onlyJj, {})
+  assert.deepEqual(all.lines?.map(line => line.type), ['scope', 'repository', 'repository', 'done'], JSON.stringify(all))
+  const [listed, unlisted] = all.lines.slice(1, -1).map(line => line.repository)
+  assert.equal(listed.path, source)
+  assert.equal(listed.registered, true)
+  assert.equal(unlisted.path, hidden)
+  assert.equal(unlisted.registered, false)
+  assert.equal(unlisted.vcs, 'jujutsu')
+  assert.deepEqual(unlisted.pointers.map(p => [p.kind, p.name, p.isBase]), [['branch', 'main', true]])
+  assert.ok(seen.length > 0 && seen.every(argv => argv.includes('--ignore-working-copy')))
+})
+
+test('overview without jj answers vcs-missing for one repository and per line for all', async t => {
+  const { source, ctx } = lifecycleFixture(t, 'git')
+  const jjRoot = join(source, 'jujutsu')
+  mkdirSync(join(jjRoot, '.jj', 'repo'), { recursive: true })
+  const notInstalled = { ...ctx, subprocess: { ...ctx.subprocess, resolveExecutable: async name => {
+    if (name === 'jj') throw new Error('jj is not installed')
+    return ctx.subprocess.resolveExecutable(name)
+  } } }
+  const one = await jjOverview(notInstalled, { repo: jjRoot })
+  assert.equal(one.status, 503)
+  assert.equal(one.error.code, 'vcs-missing')
+  const all = await jjOverview(notInstalled, {})
+  assert.equal(all.status, 200)
+  const error = all.lines.find(line => line.type === 'error')
+  assert.deepEqual(error, {
+    type: 'error', path: jjRoot, vcs: 'jujutsu', registered: true,
+    error: { code: 'vcs-missing', message: 'jj is not available on this host.' },
+  })
+  assert.deepEqual(all.lines.filter(line => line.type === 'repository').map(line => [line.repository.path, line.repository.vcs]), [[source, 'git']])
+  assert.equal(all.lines.at(-1).type, 'done')
+})
+
+test('Jujutsu overview bounds count output and skips a bookmark with an invalid target', { skip: !HAS_JJ }, async t => {
+  const { source, ctx } = lifecycleFixture(t, 'jujutsu')
+  jj(source, ['describe', '-m', 'Local main'])
+  const main = recordedJjHead(source)
+  jj(source, ['bookmark', 'create', 'main'])
+  jj(source, ['new', '-m', 'Topic'])
+  const topic = recordedJjHead(source)
+  jj(source, ['bookmark', 'create', 'topic'])
+  const before = jjOperationHead(source)
+  const oversized = '.'.repeat(OVERVIEW_GRAPH_MAX + 1)
+  const injectedTarget = 'root() | all()'
+  const begins = `(commit_id(${main})..commit_id(${topic}))`
+  const seenRevsets: string[] = []
+  const host = { ...ctx, subprocess: { ...ctx.subprocess, spawn: spec => {
+    const handle = ctx.subprocess.spawn(spec)
+    const revisionIndex = spec.argv.indexOf('-r')
+    const revset = revisionIndex < 0 ? '' : spec.argv[revisionIndex + 1]
+    if (revset !== '') seenRevsets.push(revset)
+    const bigCount = spec.argv.at(-1) === '"."' && revset.startsWith(begins)
+    const isBookmarkList = spec.argv.includes('bookmark')
+    if (!bigCount && !isBookmarkList) return handle
+    if (bigCount) {
+      assert.equal(spec.argv[spec.argv.indexOf('-n') + 1], String(OVERVIEW_GRAPH_MAX + 1))
+      assert.equal(spec.stdio.stdout.maxBytes, OVERVIEW_GRAPH_MAX + 1)
+    }
+    const { stdout } = handle.collected
+    return { ...handle, collected: { ...handle.collected, stdout: { ...stdout, readFrom(offset) {
+      const received = stdout.readFrom(offset)
+      const text = bigCount ? oversized : received.text + JSON.stringify({
+        name: 'bad', remote: null, tracked: false, conflict: false, targets: [injectedTarget],
+      }) + '\n'
+      return { ...received, text }
+    } } } }
+  } } }
+
+  const { lines } = await jjOverview(host, { repo: source })
+  assert.deepEqual(lines?.map(line => line.type), ['scope', 'repository', 'done'], JSON.stringify(lines))
+  const { repository } = lines[1]
+  assert.equal(repository.truncated, true)
+  assert.deepEqual(repository.pointers.map(p => [p.name, p.ahead, p.behind, p.unique]), [
+    ['main', 0, 0, 0], ['topic', OVERVIEW_GRAPH_MAX, 0, OVERVIEW_GRAPH_MAX],
+  ])
+  assert.ok(seenRevsets.some(revset => revset.startsWith(begins)))
+  assert.ok(seenRevsets.every(revset => !revset.includes(injectedTarget)))
+  assert.equal(jjOperationHead(source), before)
+})
+
+test('Jujutsu overview does not reconcile divergent operation heads', { skip: !HAS_JJ }, async t => {
+  const { source, ctx } = lifecycleFixture(t, 'jujutsu')
+  const start = jjOperationHead(source)
+  jj(source, ['new', '-m', 'One operation'])
+  jj(source, [`--at-op=${start}`, 'new', '-m', 'A concurrent operation'])
+  const headsPath = join(source, '.jj', 'repo', 'op_heads', 'heads')
+  const before = await readdir(headsPath)
+  assert.equal(before.length, 2)
+  const { lines } = await jjOverview(ctx, { repo: source })
+  assert.deepEqual(lines?.map(line => line.type), ['scope', 'error', 'done'], JSON.stringify(lines))
+  assert.equal(lines[1].error.code, 'internal')
+  assert.equal(lines[1].path, source)
+  assert.deepEqual(await readdir(headsPath), before)
 })

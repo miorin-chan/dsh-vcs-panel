@@ -27,7 +27,7 @@ async function registrations(runner: JujutsuRunner, cwd: string, signal: AbortSi
 }
 
 export async function supportsJjWorkspaceRemove(runner: JujutsuRunner, cwd: string, signal: AbortSignal): Promise<boolean> {
-  const help = await runner.run(['workspace', 'remove', '-h'], { cwd, signal })
+  const help = await runner.run(['--ignore-working-copy', 'workspace', 'remove', '-h'], { cwd, signal })
   return help.exitCode === 0 && !help.lossy && /^Usage: jj workspace remove /mu.test(help.stdout)
 }
 

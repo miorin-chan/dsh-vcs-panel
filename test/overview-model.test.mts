@@ -137,6 +137,64 @@ test('headlines and gauges carry the number that matters', () => {
   assert.ok(gauge({ ...named('old'), behind: 100_000 } as never).behind <= 29)
 })
 
+test('Jujutsu workspaces and bookmarks have distinct conflict headlines; an anonymous head keeps its change id', () => {
+  const copy = sha('b')
+  const view = repositoryView(repository({
+    vcs: 'jujutsu',
+    checkouts: [
+      checkout('/w/repo', { branch: 'broken', workingCopy: copy, dirty: 1, operation: 'conflict' }),
+      checkout('/w/clean', { workingCopy: sha('c') }),
+      checkout('/w/dirty', { workingCopy: sha('d'), dirty: 1 }),
+    ],
+    pointers: [
+      pointer('branch', 'broken', { checkout: '/w/repo', unique: 1, ahead: 1 }),
+      pointer('branch', 'two-targets', { bookmarkConflict: true }),
+      pointer('detached', 'yxwvutsrqpon', { ahead: 2, unique: 1 }),
+      pointer('detached', '/w/clean', { checkout: '/w/clean' }),
+      pointer('detached', '/w/dirty', { checkout: '/w/dirty' }),
+    ],
+  }) as never, '/w')
+  const [workspace, bookmark, anonymous, clean, dirty] = view.pointers
+  assert.equal(workspace.state, 'op')
+  assert.deepEqual(headline(workspace), { key: 'overview.operation.conflict' })
+  assert.deepEqual(pointerTarget(workspace), { commit: copy })
+  assert.equal(bookmark.state, 'op')
+  assert.deepEqual(headline(bookmark), { key: 'overview.operation.bookmarkConflict' })
+  assert.deepEqual(pointerTarget(bookmark), { commit: bookmark.sha })
+  assert.equal(anonymous.display, 'yxwvutsrqpon')
+  assert.equal(anonymous.state, 'unique')
+  assert.deepEqual(pointerTarget(anonymous), { commit: anonymous.sha })
+  assert.equal(clean.display, 'clean')
+  assert.equal(clean.state, 'synced')
+  assert.equal(dirty.state, 'unsaved')
+  assert.deepEqual(pointerTarget(dirty), { commit: sha('d') })
+  assert.equal(filterCounts([view]).op, 2)
+})
+
+test('Jujutsu pairs remote bookmarks by local name and folds only a non-conflicted remote on the same commit', () => {
+  const view = repositoryView(repository({
+    vcs: 'jujutsu',
+    baselines: [{ name: 'main@origin', ahead: 0, behind: 0 }],
+    checkouts: [],
+    pointers: [
+      pointer('branch', 'feature/one', { upstream: null }),
+      pointer('remote', 'feature/one@mirror', { branch: 'feature/one', remote: 'mirror' }),
+      pointer('remote', 'feature/one@origin', { branch: 'feature/one', remote: 'origin', sha: sha('b') }),
+      pointer('remote', 'feature/one@other', { branch: 'feature/one', remote: 'other', bookmarkConflict: true }),
+      pointer('remote', 'main@origin', { branch: 'main', remote: 'origin', isBase: true }),
+    ],
+  }) as never, '/w')
+  assert.deepEqual(view.pointers.map(p => p.state), ['synced', 'shadow', 'shadow', 'op', 'foreign'])
+  assert.deepEqual(view.list.map(p => p.name), ['feature/one@other', 'main@origin', 'feature/one'])
+  assert.deepEqual(view.pointers[0].levelRemotes, ['mirror'])
+  const skeleton = buildSkeleton([{ sha: sha('b'), parents: [sha('a')] }, { sha: sha('a'), parents: [] }], view.pointers)
+  const shown = skeleton.rows.flatMap(row => row.pointers.map(p => p.name))
+  assert.ok(shown.includes('feature/one@origin'), 'an out-of-position shadow stays visible in the tile')
+  assert.ok(shown.includes('feature/one@other'), 'a remote bookmark conflict is never folded')
+  assert.ok(!shown.includes('feature/one@mirror'), 'the level remote is shown on the local chip instead')
+  assert.deepEqual(traversal([{ repo: view.path, pointers: columnOrder(skeleton, view) }], 'op').map(p => p.name), ['feature/one@other'])
+})
+
 test('the skeleton keeps pointer commits and fork points, folds the rest, and lists the unplaced', () => {
   // main: m3 → m2 → m1 → root; topic forks at m1: t2 → t1 → m1; a tag sits on m2 and root.
   const [m3, m2, m1, root, t2, t1] = ['3', '2', '1', '0', '6', '5'].map(sha)
@@ -184,10 +242,11 @@ test('the skeleton keeps pointer commits and fork points, folds the rest, and li
   assert.equal(tagged.rows[0].root, true)
 
   // A remote level with its local branch is drawn as the branch's shadow.
-  const shadowed = buildSkeleton(commits, [
-    { ...views[0], upstream: 'origin/main' },
-    { ...views[0], id: 'r', kind: 'remote', name: 'origin/main' },
-  ] as never)
+  const paired = repositoryView(repository({ pointers: [
+    pointer('branch', 'main', { sha: m3, upstream: 'origin/main' }),
+    pointer('remote', 'origin/main', { sha: m3 }),
+  ] }) as never, '/w')
+  const shadowed = buildSkeleton(commits, paired.pointers)
   assert.equal(shadowed.rows[0].pointers.length, 1)
   // A history that ends at a page boundary says so.
   const page = buildSkeleton(commits.slice(0, 3), [views[0]] as never)

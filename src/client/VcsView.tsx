@@ -965,7 +965,7 @@ export function VcsView({
   widthRef.current = width
 
   const overviewData = useOverview(api, {
-    active: state.overview || state.tiled,
+    active: (state.overview || state.tiled) && !waitingForSnapshots,
     reloadKey: JSON.stringify([sessionId, manual.repositories, manual.history, manual.working, overviewWriteRevision]),
     repo: state.repo,
     repoKey: JSON.stringify([state.repo, background.history, background.working]),
@@ -982,6 +982,7 @@ export function VcsView({
   const tilePaths = useMemo(() => parseJson<string[]>(tilePathsKey), [tilePathsKey])
   const tileHistories = useTileHistories(
     api, tilePaths, state.tiled, JSON.stringify([sessionId, manual.history, background.history, overviewWriteRevision]),
+    waitingForSnapshots,
   )
   const skeletons = useMemo(() => {
     const result = new Map<string, ReturnType<typeof buildSkeleton>>()
@@ -1018,7 +1019,7 @@ export function VcsView({
     const tree = worktreePath(state.node)
     const match = tree !== null
       ? view.list.find(pointer => pointer.occupant?.path === tree)
-      : view.list.find(pointer => pointer.kind !== 'stash' && pointer.sha === state.node)
+      : view.list.find(pointer => pointer.kind !== 'stash' && (pointer.sha === state.node || pointer.occupant?.workingCopy === state.node))
         ?? view.list.find(pointer => pointer.kind === 'stash' && pointer.onto === state.node)
     return match?.id ?? null
   }, [state.node, state.repo, viewByPath])
@@ -1996,15 +1997,15 @@ export function VcsView({
       return
     }
     const { point, element } = request
-    if (pointer.kind === 'branch') {
-      actions.openBranchActions({ kind: 'branch', name: pointer.name, current: actionStatus.data.branch?.name === pointer.name }, point, element)
-    } else if (pointer.kind === 'remote' && typeof pointer.remote === 'string' && typeof pointer.branch === 'string') {
-      actions.openBranchActions({ kind: 'remote', name: pointer.name, remote: pointer.remote, branch: pointer.branch }, point, element)
-    } else if (pointer.kind === 'detached') {
+    if (pointer.kind === 'detached' || baseCapabilities.workingCopy === 'commit') {
       const tree = worktrees.find(item => item.path === pointer.occupant?.path)
       if (tree !== undefined) {
         actions.openWorktreeActions(tree, repoInfo?.enclosing === true ? state.repo : null, point, () => { element?.focus({ preventScroll: true }) })
       }
+    } else if (pointer.kind === 'branch') {
+      actions.openBranchActions({ kind: 'branch', name: pointer.name, current: actionStatus.data.branch?.name === pointer.name }, point, element)
+    } else if (pointer.kind === 'remote' && typeof pointer.remote === 'string' && typeof pointer.branch === 'string') {
+      actions.openBranchActions({ kind: 'remote', name: pointer.name, remote: pointer.remote, branch: pointer.branch }, point, element)
     }
   }, [actions, actionStatus, baseCapabilities, pointerRequestTick, repoInfo, sessionId, setNotice, state.repo, state.tiled,
     statusPath, t, tileAnchorActions, tileTraversal.focus, update, viewByPath, worktrees])

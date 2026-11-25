@@ -17,13 +17,14 @@
  */
 
 import { lstat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 import type { Context } from '@deepseek-ai/cordis'
 
 import { outputTooLarge, VcsError } from './errors.js'
 import type { GitRunner } from './git.js'
 import { remoteNames } from './git-utils.js'
+import { jjCommonDirAt } from './jujutsu-worktrees.js'
 import { isFullSha, repositoryName, sameRepoPath } from './paths.js'
 import { discoverGitWorktrees, gitCommonDirAt } from './worktrees.js'
 
@@ -33,8 +34,8 @@ export const OVERVIEW_CHECKOUT_MAX = 51
 export const OVERVIEW_REF_MAX = 2000
 /** Most stash entries one repository's overview lists. */
 export const OVERVIEW_STASH_MAX = 200
-/** Unpublished commits above this count fall back to one count per branch. */
-const UNPUBLISHED_GRAPH_MAX = 50_000
+/** Git's unpublished graph budget and Jujutsu's per-count limit. */
+export const OVERVIEW_GRAPH_MAX = 50_000
 /** Pointers per `%(is-base:)` listing, keeping argv short. */
 const IS_BASE_BATCH = 64
 /** Concurrent fallback counts per repository. */
@@ -61,7 +62,7 @@ const DEFAULT_BRANCHES = ['refs/heads/main', 'refs/heads/master']
 export type GitVersion = readonly [number, number, number]
 
 /** An unfinished operation in one checkout. */
-export type OverviewOperation = 'rebase' | 'merge' | 'cherry-pick' | 'revert' | 'bisect'
+export type OverviewOperation = 'rebase' | 'merge' | 'cherry-pick' | 'revert' | 'bisect' | 'conflict'
 
 /** What kind of pointer a row is. */
 export type OverviewPointerKind = 'branch' | 'remote' | 'detached' | 'stash'
@@ -70,10 +71,13 @@ export type OverviewPointerKind = 'branch' | 'remote' | 'detached' | 'stash'
 export interface OverviewCheckout {
   path: string
   branch: string | null
+  /** Position of the checkout; in Jujutsu this can be the parent of the working copy. */
   head: string | null
+  /** Jujutsu: the recorded working-copy commit, even when its parent is the position. */
+  workingCopy?: string
   primary: boolean
   locked: boolean
-  /** Changed entries `git status` lists, untracked included; null when unreadable. */
+  /** Changed entries, untracked included; null when unreadable. */
   dirty: number | null
   operation: OverviewOperation | null
 }
@@ -81,7 +85,7 @@ export interface OverviewCheckout {
 /** One pointer and its distance from its base. */
 export interface OverviewPointer {
   kind: OverviewPointerKind
-  /** Branch or `remote/branch` name, stash selector, or the checkout path of a detached head. */
+  /** Ref name, stash selector, checkout path, or the short change id of an anonymous head. */
   name: string
   /** Full commit id the pointer names. */
   sha: string
@@ -105,6 +109,8 @@ export interface OverviewPointer {
   /** Remote branch: the remote and the branch on it. */
   remote?: string
   branch?: string
+  /** Jujutsu: the bookmark has conflicting targets. */
+  bookmarkConflict?: true
   /** Stash: the commit it was made on. */
   onto?: string | null
 }
@@ -126,14 +132,14 @@ export interface OverviewRepository {
   /** False for a backend whose pointers the overview does not read yet. */
   supported: boolean
   remotes: string[]
-  /** `FETCH_HEAD` modification time in seconds, or null when nothing was fetched. */
+  /** Latest recorded fetch in epoch seconds, or null when nothing was fetched. */
   fetchedAt: number | null
   baselines: OverviewBaseline[]
   checkouts: OverviewCheckout[]
   pointers: OverviewPointer[]
   /** Tags are counted, not ranked. */
   tags: number
-  /** Whether a list hit its cap. */
+  /** Whether a list or count exceeded its cap. */
   truncated: boolean
 }
 
@@ -173,20 +179,21 @@ export function createLimiter(size: number): Limiter {
   const waiting: Array<() => void> = []
   return {
     async run(task) {
-      if (active >= size) await new Promise<void>(resolve => { waiting.push(resolve) })
-      active += 1
+      if (active < size) active += 1
+      else await new Promise<void>(resolve => { waiting.push(resolve) })
       try {
         return await task()
       } finally {
-        active -= 1
-        waiting.shift()?.()
+        const next = waiting.shift()
+        if (next === undefined) active -= 1
+        else next()
       }
     },
   }
 }
 
 /** Map with bounded concurrency, keeping input order. */
-async function mapLimited<TItem, TResult>(
+export async function mapLimited<TItem, TResult>(
   items: readonly TItem[],
   size: number,
   map: (item: TItem) => Promise<TResult>,
@@ -402,7 +409,7 @@ async function occupancy(
 }
 
 /** `FETCH_HEAD` modification time of one common directory, in seconds. */
-async function fetchedAt(common: string | null): Promise<number | null> {
+export async function fetchHeadTime(common: string | null): Promise<number | null> {
   if (common === null) return null
   try {
     // The DSH file service reports no modification times; the Host reads this
@@ -509,9 +516,9 @@ async function countExcluding(git: GitRunner, root: string, revision: string, ex
 /** Unique counts for the local branches of a repository with remotes. */
 async function branchUniques(git: GitRunner, root: string, tips: readonly string[], signal: AbortSignal): Promise<Map<string, number>> {
   if (tips.length === 0) return new Map()
-  const result = await git.run(['rev-list', '--parents', `--max-count=${UNPUBLISHED_GRAPH_MAX + 1}`, '--branches', '--not', '--remotes'], { cwd: root, signal })
+  const result = await git.run(['rev-list', '--parents', `--max-count=${OVERVIEW_GRAPH_MAX + 1}`, '--branches', '--not', '--remotes'], { cwd: root, signal })
   const lines = result.exitCode === 0 && !result.lossy ? result.stdout.split('\n').filter(line => line !== '').length : Infinity
-  if (lines <= UNPUBLISHED_GRAPH_MAX) return unpublishedCounts(result.stdout, tips)
+  if (lines <= OVERVIEW_GRAPH_MAX) return unpublishedCounts(result.stdout, tips)
   const counts = new Map<string, number>()
   await mapLimited([...new Set(tips)], FALLBACK_CONCURRENCY, async tip => {
     counts.set(tip, await countExcluding(git, root, tip, ['--remotes'], signal))
@@ -683,7 +690,7 @@ export async function readGitOverview(options: GitOverviewOptions): Promise<Over
     registered,
     supported: true,
     remotes,
-    fetchedAt: await fetchedAt(common),
+    fetchedAt: await fetchHeadTime(common),
     baselines,
     checkouts,
     pointers,
@@ -723,7 +730,7 @@ export interface UnlistedRoots {
  * Find repositories under the session directory that discovery does not list.
  * The walk lists contained directories only, follows no symlink, and stops at
  * {@link UNLISTED_DEPTH} levels or {@link UNLISTED_DIRECTORY_MAX} listings.
- * Checkouts are grouped by their Git common directory; a group whose primary
+ * Checkouts are grouped by their backend's common directory; a group whose primary
  * checkout lies outside the session directory, or that shares a common
  * directory with a listed repository, is left out.
  * @param ctx - Host context.
@@ -763,8 +770,8 @@ export async function findUnlistedRepositories(
       }
       const names = new Set(entries.map(entry => entry.name))
       const path = fs.processPath(target)
-      if (names.has('.git')) found.push({ path, vcs: 'git' })
-      else if (names.has('.jj')) found.push({ path, vcs: 'jujutsu' })
+      if (names.has('.jj')) found.push({ path, vcs: 'jujutsu' })
+      else if (names.has('.git')) found.push({ path, vcs: 'git' })
       if (depth === UNLISTED_DEPTH) continue
       for (const entry of entries) {
         if (entry.type !== 'directory' || WALK_IGNORED.has(entry.name) || !fs.contains(top, entry.target)) continue
@@ -783,25 +790,27 @@ export async function findUnlistedRepositories(
       break
     }
     if (listed.roots.some(root => sameRepoPath(root, candidate.path))) continue
-    if (candidate.vcs !== 'git') {
-      roots.push(candidate)
-      continue
-    }
-    const common = await gitCommonDirAt(git, candidate.path, signal)
+    if (candidate.vcs === 'git' && await git.resolve(signal) === null) continue
+    const common = candidate.vcs === 'jujutsu' ? await jjCommonDirAt(ctx, candidate.path, signal)
+      : await gitCommonDirAt(git, candidate.path, signal)
     if (common === null || commons.some(known => sameRepoPath(known, common))) continue
     commons.push(common)
-    // The group's primary checkout names the repository, as `worktree list` does.
     let primary: string | null = null
-    for await (const tree of discoverGitWorktrees(ctx, git, candidate.path, signal)) {
-      if (tree.primary === true) {
-        primary = tree.path
-        break
+    if (candidate.vcs === 'jujutsu') {
+      // A linked workspace points to the owning workspace's .jj/repo.
+      if (basename(common) === 'repo' && basename(dirname(common)) === '.jj') primary = dirname(dirname(common))
+    } else {
+      for await (const tree of discoverGitWorktrees(ctx, git, candidate.path, signal)) {
+        if (tree.primary === true) {
+          primary = tree.path
+          break
+        }
       }
     }
     if (primary === null) continue
     const target = await fs.resolve(primary, { signal }).catch(() => undefined)
     if (target === undefined || !fs.contains(top, target)) continue
-    roots.push({ path: fs.processPath(target), vcs: 'git' })
+    roots.push({ path: fs.processPath(target), vcs: candidate.vcs })
   }
   return { roots, truncated }
 }

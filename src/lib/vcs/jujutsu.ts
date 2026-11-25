@@ -45,6 +45,8 @@ import {
 } from '../jujutsu.js'
 import { discoverJjWorkspaces, jjCommonDirAt, readWorkspaces, WORKSPACE_LIST } from '../jujutsu-worktrees.js'
 import { createJjWorkspace, deleteJjWorkspace, supportsJjWorkspaceRemove } from '../jujutsu-worktree-ops.js'
+import { readJjOverview } from '../jujutsu-overview.js'
+import type { Limiter, OverviewRepository } from '../overview.js'
 import type { RecheckTarget, WorktreeChange, WorktreeCreate } from '../worktree-ops.js'
 import { COMMIT_FILE_MAX } from '../commit.js'
 import { LOG_PAGE_MAX, LOG_SKIP_MAX } from '../log.js'
@@ -129,6 +131,10 @@ export class JujutsuBackend {
 
   commonDir(root: string, signal: AbortSignal): Promise<string | null> {
     return jjCommonDirAt(this.ctx, root, signal)
+  }
+
+  overview(root: string, options: { registered: boolean, statusLimiter?: Limiter, signal: AbortSignal }): Promise<OverviewRepository> {
+    return readJjOverview({ ctx: this.ctx, runner: this.runner, root, ...options })
   }
 
   worktrees(

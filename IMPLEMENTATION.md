@@ -293,12 +293,11 @@ Git 工作树预览保留 Git 的读取能力。
 ### 全景读取
 
 `vcs.overview` 为[全景栏与平铺](DESIGN.md#全景栏)提供每个指针的基线、领先 / 落后、独有与占用。
-带 `repo` 时只读这一个仓库，目标按读取路由的规则校验，参数校验或缺少 `git` 都在流开始前以 JSON 错误返回。
+带 `repo` 时只读这一个仓库，目标按读取路由的规则校验；参数无效或缺少后端命令时在流开始前返回 JSON 错误。
 不带 `repo` 时按仓库菜单的发现与分组列出全部仓库，每次最多读 4 个，读完一个就写出一行，单个仓库失败只写一行 `error`。
-已登记的仓库读完后，Host 从会话目录逐层列目录（最深 6 层、最多 20,000 次列举，
-跳过 `.git`、`.jj`、`node_modules`，只进入解析后仍在会话目录内的目录），把带标记、
-却与已登记仓库不共用 Git common dir 的仓库按 `registered: false` 写出；主工作树在会话目录外的仓库不列出。
-Jujutsu 仓库暂以 `supported: false` 列出，不读指针。
+已登记的仓库读完后，Host 从会话目录逐层列目录（最深 6 层、最多 20,000 次列举，跳过 `.git`、`.jj`、`node_modules`，
+只进入解析后仍在会话目录内的目录），把带标记、却与已登记仓库不共用后端元数据目录的仓库按 `registered: false` 写出；
+主检出在会话目录外的仓库不列出。
 
 每个 Git 仓库的读取：
 
@@ -321,16 +320,33 @@ Jujutsu 仓库暂以 `supported: false` 列出，不读指针。
 - `stash list` 给出贮藏与它的基底提交，标签只计数；`fetchedAt` 是 common dir 下 `FETCH_HEAD` 的修改时间，
   DSH 文件服务不报告修改时间，这一处像刷新监听一样直接 `lstat`。
 
+每个 Jujutsu 仓库按[书签与工作区的对应规则](DESIGN.md#jujutsu-的指针对应到同一组量)读取：
+
+- `op log` 读取最近 2,000 个操作里的当前操作 ID 和抓取完成时间，其余命令都固定在该操作。
+  全部命令带 `--ignore-working-copy`；操作日志头分叉、无法读出唯一操作时，只报告仓库读取失败，不合并操作。
+  共置仓库用 `git root` 确认共享的 Git 目录，再将 `FETCH_HEAD` 的修改时间与抓取操作时间取较新的一项。
+- `bookmark list --all-remotes` 读书签目标及跟踪状态，`workspace list` 读并核验工作区路径，
+  `log --no-graph` 读取工作副本的位置和改动数、`trunk()`、匿名头，以及指针的提交摘要。
+  `git remote list` 列远程，`tag list` 计标签。
+  共用一个位置的工作区仍分别列在 `checkouts` 中，书签行优先显示有冲突或未保存改动的工作区。
+- 基线距离、跟踪距离与独有从已校验的完整提交 ID 构造 revset，以 `jj log -T '"."'` 的输出长度计数。
+  独有不依赖基线：有远程却没有基线时仍按 `::x ~ ::remote_bookmarks()` 计数。
+  同一 revset 只读一次，整次请求最多并行 4 路计数；书签和匿名头各列至多 2,000 项，
+  工作区至多 51 个，每项提交计数和标签数至多 50,000。
+  超过这些上限时设置 `truncated`。
+
 ```ts
 type OverviewRepository = {
   path: string; name: string; vcs: string; registered: boolean; supported: boolean
   remotes: string[]; fetchedAt: number | null; tags: number; truncated: boolean
   baselines: { name: string; ahead: number; behind: number }[]   // 相对第一个候选
   checkouts: { path: string; branch: string | null; head: string | null; primary: boolean; locked: boolean
-    dirty: number | null; operation: 'rebase' | 'merge' | 'cherry-pick' | 'revert' | 'bisect' | null }[]
+    workingCopy?: string   // Jujutsu 的记录快照 @；head 是用来匹配书签的位置
+    dirty: number | null; operation: 'rebase' | 'merge' | 'cherry-pick' | 'revert' | 'bisect' | 'conflict' | null }[]
   pointers: { kind: 'branch' | 'remote' | 'detached' | 'stash'; name: string; sha: string; time: number | null; subject: string
     base: string | null; isBase: boolean; ahead: number | null; behind: number | null; unique: number
     upstream?: string | null; track?: { ahead: number; behind: number; gone?: true } | null
+    bookmarkConflict?: true
     checkout?: string | null; remote?: string; branch?: string; onto?: string | null }[]
 }
 ```
@@ -703,12 +719,11 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 
 规则集中在 `overview/model.ts`，不依赖 React 与 DOM：
 
-- **状态。** `repositoryView` 把 Host 的计数合成一个状态：检出有进行中操作为 `op`，
-  远程分支有本地对应或是候选主线时为 `shadow`、否则为 `foreign`，检出有改动为 `unsaved`，贮藏为 `stash`；
-  其余按独有、领先与落后判为 `unique`、`diverged`、`behind`、`merged` 或 `synced`。
-  候选主线本身带上游时改用 `%(upstream:track)` 计数。
-  列表只收本地分支、游离检出、贮藏与没有本地对应的远程分支；仓库按最重的状态排序，
-  最重状态不重于 `foreign` 的仓库视为安静。
+- **状态。** `repositoryView` 把 Host 的计数合成一个状态：检出有进行中操作或书签冲突时为 `op`，
+  远程指针有本地对应时为 `shadow`（Git 的候选主线也算）、否则为 `foreign`，检出有改动为 `unsaved`，
+  贮藏为 `stash`；其余按独有、领先与落后判为 `unique`、`diverged`、`behind`、`merged` 或 `synced`。
+  Git 的候选主线本身带上游时改用 `%(upstream:track)` 计数；Jujutsu 始终保留与仓库基线的距离。
+  列表省略 `shadow`；仓库按最重的状态排序，最重状态不重于 `foreign` 的仓库视为安静。
   七个筛选依次是未保存、独有（含分叉）、分叉、落后、已汇入、贮藏、进行中，也是平铺状态按钮与数字键 `1`–`7` 的顺序。
 - **刻度。** 以基线为中心，每侧 29px，宽度取 `log10(1 + n) / log10(301)`，独有段至少 3px。
 - **骨架。** `buildSkeleton` 用一列的已加载历史（`/api/vcs.log` 的 `all` 首页 300 个提交）保留指针所在的提交，
@@ -721,6 +736,7 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 `done` 时丢弃本轮未报告的仓库；当前仓库的后台刷新信号在 400ms 防抖后只重读这一个仓库，
 整轮读取期间到达的信号在读完后补读。
 `useTileHistories` 在平铺时按列序每次读 4 个仓库的历史首页。
+手动刷新时，两者等待 Jujutsu 的勾选工作区快照完成再读。
 
 `overview/directActions.ts` 的 `tileDirectActions` 按[直接按钮的规则](DESIGN.md#操作条的直接按钮)从指针、仓库视图、
 后端能力和该仓库的写入状态选出动作；移除工作树时再用工作树清单中的保护信息。 平铺沿用指针菜单的仓库切换和状态读取，
@@ -734,7 +750,8 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 平铺时 `.vcs-main` 换成 `TiledView`，顶部栏的仓库、工作树、分支与同步控件换成状态按钮与列序开关。
 进出平铺由 `overview/motion.ts` 做 FLIP：记录叠放的 `.vcs-repository-group[data-repository]` 或平铺列的位置，
 重排后从旧位置移到新位置，错开 26ms、时长 520ms；详情面板留下一个淡出并右移的副本，退出时详情从右侧滑回。
-减少动效时不播放。指针 id 由仓库路径、种类与名称以 NUL 连接，元素按属性值比较查找，不进 CSS 选择器。
+减少动效时不播放。指针 id 由仓库路径、种类与名称以 NUL 连接；同名的 Jujutsu 匿名头再用提交 ID 区分。
+元素按属性值比较查找，不进 CSS 选择器。
 
 ## 复用与来源
 

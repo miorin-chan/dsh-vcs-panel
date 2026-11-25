@@ -7,58 +7,10 @@
  * an order, or a filter lives here, free of React and DOM so it stays testable.
  */
 
-/** An unfinished operation in one checkout. */
-export type OverviewOperation = 'rebase' | 'merge' | 'cherry-pick' | 'revert' | 'bisect'
+import type { OverviewCheckout, OverviewPointer, OverviewPointerKind, OverviewRepository } from '../../lib/overview.js'
+import { BOOKMARK_CONFLICT_KEY, OPERATION_KEYS } from './labels.js'
 
-/** One checkout as the Host reports it. */
-export interface OverviewCheckout {
-  path: string
-  branch: string | null
-  head: string | null
-  primary: boolean
-  locked: boolean
-  dirty: number | null
-  operation: OverviewOperation | null
-}
-
-/** What kind of pointer a row is. */
-export type PointerKind = 'branch' | 'remote' | 'detached' | 'stash'
-
-/** One pointer as the Host reports it. */
-export interface OverviewPointer {
-  kind: PointerKind
-  name: string
-  sha: string
-  time: number | null
-  subject: string
-  base: string | null
-  isBase: boolean
-  ahead: number | null
-  behind: number | null
-  unique: number
-  upstream?: string | null
-  track?: { ahead: number, behind: number, gone?: true } | null
-  checkout?: string | null
-  remote?: string
-  branch?: string
-  onto?: string | null
-}
-
-/** One repository as the Host reports it. */
-export interface OverviewRepository {
-  path: string
-  name: string
-  vcs: string
-  registered: boolean
-  supported: boolean
-  remotes: string[]
-  fetchedAt: number | null
-  baselines: Array<{ name: string, ahead: number, behind: number }>
-  checkouts: OverviewCheckout[]
-  pointers: OverviewPointer[]
-  tags: number
-  truncated: boolean
-}
+export type { OverviewCheckout, OverviewPointer, OverviewRepository } from '../../lib/overview.js'
 
 /** One state, heaviest first by "can it be recovered if lost". */
 export type PointerState =
@@ -78,7 +30,7 @@ export type FilterId = typeof FILTERS[number]
 
 /** One pointer with what the view derives from it. */
 export interface PointerView extends OverviewPointer {
-  /** Stable identity across reloads: repository, kind, and name. */
+  /** Stable identity across reloads, with a commit suffix for divergent anonymous heads. */
   id: string
   repo: string
   state: PointerState
@@ -88,9 +40,13 @@ export interface PointerView extends OverviewPointer {
   nested: boolean
   /** Remote branch drawn as its local branch's shadow (`≡ origin`). */
   shadowed: boolean
+  /** Remote on the same commit as its local counterpart, folded into it in the skeleton. */
+  foldedRemote: boolean
+  /** Remotes whose pointers share this local pointer's commit. */
+  levelRemotes: string[]
   /** The base line is the branch's own upstream. */
   baseIsUpstream: boolean
-  /** What the row prints: a detached head shows its checkout path. */
+  /** A detached checkout shows its path; an anonymous head keeps its change id. */
   display: string
 }
 
@@ -144,7 +100,7 @@ export function checkoutLabel(path: string, repo: string, cwd: string | null | u
 
 /** The state of one pointer; the heaviest condition wins. */
 export function pointerState(pointer: PointerView): PointerState {
-  if (pointer.occupant?.operation !== null && pointer.occupant?.operation !== undefined) return 'op'
+  if (pointer.bookmarkConflict === true || pointer.occupant?.operation != null) return 'op'
   if (pointer.kind === 'remote') return pointer.shadowed ? 'shadow' : 'foreign'
   if ((pointer.occupant?.dirty ?? 0) > 0) return 'unsaved'
   if (pointer.kind === 'stash') return 'stash'
@@ -196,7 +152,7 @@ export function elementWithData(root: ParentNode | null | undefined, attribute: 
 }
 
 /** The stable id of one pointer. */
-export function pointerId(repo: string, kind: PointerKind, name: string): string {
+export function pointerId(repo: string, kind: OverviewPointerKind, name: string): string {
   return `${repo}\u0000${kind}\u0000${name}`
 }
 
@@ -208,37 +164,68 @@ export function pointerId(repo: string, kind: PointerKind, name: string): string
  */
 export function repositoryView(repository: OverviewRepository, cwd: string | null | undefined): RepositoryView {
   const relativePath = relativeTo(repository.path, cwd)
+  const bookmarks = repository.vcs === 'jujutsu'
   const locals = repository.pointers.filter(pointer => pointer.kind === 'branch')
+  const localsByName = new Map(locals.map(local => [local.name, local]))
+  const localsByUpstream = new Map(locals.map(local => [local.upstream, local]))
+  const remotes = repository.pointers.filter(pointer => pointer.kind === 'remote')
+  const remoteNames = new Set(remotes.map(remote => remote.name))
+  const localForRemote = new Map<OverviewPointer, OverviewPointer>()
+  const foldedRemotes = new Set<OverviewPointer>()
+  const levelRemotes = new Map<OverviewPointer, string[]>()
+  for (const remote of remotes) {
+    const local = localsByUpstream.get(remote.name) ?? (bookmarks && remote.branch !== undefined ? localsByName.get(remote.branch) : undefined)
+    if (local === undefined) continue
+    localForRemote.set(remote, local)
+    if (local.sha === remote.sha && !local.bookmarkConflict && !remote.bookmarkConflict) {
+      foldedRemotes.add(remote)
+      const name = remote.remote ?? remote.name.split('/')[0]
+      levelRemotes.set(local, [...levelRemotes.get(local) ?? [], name])
+    }
+  }
   const baseNames = new Set(repository.baselines.map(line => line.name))
+  const anonymousNames = new Set<string>()
+  const divergentNames = new Set<string>()
+  for (const pointer of repository.pointers) {
+    if (pointer.kind !== 'detached' || pointer.checkout != null) continue
+    if (anonymousNames.has(pointer.name)) divergentNames.add(pointer.name)
+    else anonymousNames.add(pointer.name)
+  }
   const primary = repository.checkouts.find(tree => tree.primary) ?? repository.checkouts[0]
   const pointers = repository.pointers.map((pointer): PointerView => {
+    const path = pointer.checkout
+    const occupant = typeof path === 'string' ? repository.checkouts.find(tree => tree.path === path) ?? null : null
+    const level = levelRemotes.get(pointer) ?? []
+    // Git's tracking atom can still describe a level upstream beyond the ref cap.
+    if (!bookmarks && pointer.upstream != null && !remoteNames.has(pointer.upstream)
+      && pointer.track?.ahead === 0 && pointer.track.behind === 0 && pointer.track.gone !== true) {
+      level.push(pointer.upstream.split('/')[0])
+    }
+    const id = pointerId(repository.path, pointer.kind, pointer.name)
     const view: PointerView = {
       ...pointer,
-      id: pointerId(repository.path, pointer.kind, pointer.name),
+      id: pointer.kind === 'detached' && path == null && divergentNames.has(pointer.name) ? `${id}\u0000${pointer.sha}` : id,
       repo: repository.path,
       state: 'synced',
-      occupant: null,
-      nested: false,
-      shadowed: false,
+      occupant,
+      nested: occupant !== null && repository.checkouts.some(tree => tree !== primary && tree !== occupant && inside(occupant.path, tree.path)),
+      shadowed: pointer.kind === 'remote' && (localForRemote.has(pointer) || (!bookmarks && baseNames.has(pointer.name))),
+      foldedRemote: foldedRemotes.has(pointer),
+      levelRemotes: level,
       baseIsUpstream: false,
-      display: pointer.kind === 'detached' ? checkoutLabel(pointer.name, repository.path, cwd) : pointer.name,
+      display: pointer.kind === 'detached' && typeof path === 'string' ? checkoutLabel(path, repository.path, cwd) : pointer.name,
     }
     // The trunk itself counts against its own upstream.
-    if (pointer.kind === 'branch' && pointer.isBase && typeof pointer.upstream === 'string' && pointer.track !== null && pointer.track !== undefined) {
+    if (!bookmarks && pointer.kind === 'branch' && pointer.isBase && typeof pointer.upstream === 'string' && pointer.track != null) {
       view.ahead = pointer.track.ahead
       view.behind = pointer.track.behind
       view.base = pointer.upstream
       view.baseIsUpstream = true
     }
-    const path = pointer.checkout
-    view.occupant = typeof path === 'string' ? repository.checkouts.find(tree => tree.path === path) ?? null : null
-    view.nested = view.occupant !== null && repository.checkouts.some(tree => tree !== primary && tree !== view.occupant
-      && inside(view.occupant?.path ?? '', tree.path))
-    view.shadowed = pointer.kind === 'remote' && (locals.some(local => local.upstream === pointer.name) || baseNames.has(pointer.name))
     view.state = pointerState(view)
     return view
   })
-  const list = pointers.filter(pointer => pointer.kind !== 'remote' || pointer.state === 'foreign').sort(byRank)
+  const list = pointers.filter(pointer => pointer.state !== 'shadow').sort(byRank)
   const rank = Math.min(9, ...list.map(pointer => STATE_RANK[pointer.state]))
   const parts = relativePath === '.' ? [] : relativePath.split('/')
   return {
@@ -277,15 +264,6 @@ export function matchesSearch(pointer: PointerView, query: string, cwd: string |
     .some(text => typeof text === 'string' && text.toLocaleLowerCase().includes(needle))
 }
 
-/** The wording of each unfinished operation. */
-export const OPERATION_KEYS: Readonly<Record<OverviewOperation, string>> = Object.freeze({
-  rebase: 'overview.operation.rebase',
-  merge: 'overview.operation.merge',
-  'cherry-pick': 'overview.operation.cherryPick',
-  revert: 'overview.operation.revert',
-  bisect: 'overview.operation.bisect',
-})
-
 /** The number a row leads with, or null for the plain "level" wording. */
 export interface Headline {
   key: string
@@ -306,7 +284,8 @@ export function headline(pointer: PointerView): Headline {
     case 'behind': return { key: 'overview.metric.behind', count: pointer.behind ?? 0 }
     case 'merged': return { key: 'overview.state.merged' }
     case 'stash': return { key: 'overview.state.stash' }
-    case 'op': return { key: OPERATION_KEYS[pointer.occupant?.operation ?? 'merge'] }
+    case 'op': return { key: pointer.bookmarkConflict === true ? BOOKMARK_CONFLICT_KEY
+      : pointer.occupant?.operation == null ? 'overview.state.op' : OPERATION_KEYS[pointer.occupant.operation] }
     default: return (pointer.ahead ?? 0) > 0 ? { key: 'overview.metric.ahead', count: pointer.ahead ?? 0 } : { key: 'overview.state.synced' }
   }
 }
@@ -432,9 +411,7 @@ export function buildSkeleton(
   tags: readonly SkeletonTag[] = [],
 ): Skeleton {
   const bySha = new Map(commits.map(commit => [commit.sha, commit]))
-  const drawn = pointers.filter(pointer => !(pointer.kind === 'remote' && pointers.some(local => (
-    local.kind === 'branch' && local.upstream === pointer.name && local.sha === pointer.sha
-  ))))
+  const drawn = pointers.filter(pointer => !pointer.foldedRemote)
   const labels = new Map<string, { pointers: PointerView[], tags: string[] }>()
   const label = (sha: string) => {
     let entry = labels.get(sha)
@@ -552,6 +529,10 @@ export function columnOrder(skeleton: Skeleton | null, repository: RepositoryVie
  * @returns the commit id or the checkout to select.
  */
 export function pointerTarget(pointer: PointerView): { commit: string } | { worktree: string } | null {
+  const workingCopy = pointer.occupant?.workingCopy
+  if (workingCopy !== undefined && (pointer.state === 'unsaved' || pointer.occupant?.operation === 'conflict' || /^0+$/u.test(pointer.sha))) {
+    return { commit: workingCopy }
+  }
   if (pointer.state === 'unsaved' && pointer.occupant !== null) return { worktree: pointer.occupant.path }
   if (pointer.kind === 'stash') return pointer.onto === null || pointer.onto === undefined ? null : { commit: pointer.onto }
   return { commit: pointer.sha }

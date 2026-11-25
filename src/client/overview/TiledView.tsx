@@ -128,8 +128,6 @@ function PointerChip({ pointer, focused, hit, onFocus, onActions, t, locale }: {
   t: Translate
   locale?: string
 }) {
-  const shadow = pointer.kind === 'branch' && typeof pointer.upstream === 'string' && pointer.track !== null && pointer.track !== undefined
-    && pointer.track.ahead === 0 && pointer.track.behind === 0 && pointer.track.gone !== true
   const metric = LOUD_STATES.has(pointer.state) || pointer.state === 'merged' ? headlineText(pointer, t, locale) : null
   return (
     <button
@@ -152,7 +150,7 @@ function PointerChip({ pointer, focused, hit, onFocus, onActions, t, locale }: {
     >
       <KindGlyph kind={pointer.kind} />
       <span className="vcs-pointer-chip-name">{pointer.display}</span>
-      {shadow ? <span className="vcs-pointer-chip-shadow">≡ {pointer.upstream?.split('/')[0]}</span> : null}
+      {pointer.levelRemotes.length > 0 ? <span className="vcs-pointer-chip-shadow">≡ {pointer.levelRemotes.join(', ')}</span> : null}
       {metric === null ? null : <em>{metric}</em>}
     </button>
   )
@@ -258,7 +256,7 @@ function ColumnBody({ column, focus, filter, cwd, onFocus, onActions, t, locale 
     <div className="vcs-tile-body">
       {rows.map((row, index) => {
         const step = skeleton?.lanes[index]
-        const pointers = row.pointers.filter(pointer => pointer.kind !== 'remote' || pointer.state === 'foreign' || pointer.state === 'shadow')
+        const pointers = row.pointers
         const loud = pointers.find(pointer => LOUD_STATES.has(pointer.state) || pointer.state === 'merged')
         const dot = loud === undefined ? resolveColor(step?.column ?? 0) : stateColor(loud.state)
         const tags = row.tags.length > 3
@@ -310,7 +308,8 @@ function ActionBar({ pointer, view, cwd, directActions, onOpen, onActions, onDir
   t: Translate
   locale?: string
 }) {
-  const facts: string[] = [view.relativePath === '.' ? view.name : view.relativePath, t(STATE_KEYS[pointer.state])]
+  const facts: string[] = [view.relativePath === '.' ? view.name : view.relativePath,
+    pointer.state === 'op' ? headlineText(pointer, t, locale) : t(STATE_KEYS[pointer.state])]
   if (pointer.kind === 'stash') facts.push(pointer.subject.replace(/^(?:WIP on|On) [^:]+: /u, ''))
   else if (pointer.base !== null) {
     facts.push(t('tile.distance', { base: pointer.base, ahead: String(pointer.ahead ?? 0), behind: String(pointer.behind ?? 0) }))
@@ -324,7 +323,8 @@ function ActionBar({ pointer, view, cwd, directActions, onOpen, onActions, onDir
       : facts2)
   }
   facts.push(pointer.sha.slice(0, 7))
-  const hasActions = pointer.kind !== 'stash' && (pointer.kind !== 'detached' || pointer.occupant !== null)
+  const hasActions = view.vcs === 'jujutsu' ? pointer.occupant !== null
+    : pointer.kind !== 'stash' && (pointer.kind !== 'detached' || pointer.occupant !== null)
   return (
     <>
       <span className="vcs-tile-actionbar-who" data-state={pointer.state}>

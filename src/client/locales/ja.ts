@@ -512,6 +512,8 @@ const dictionary: LocaleDict = Object.freeze({
   "overview.operation.cherryPick": "チェリーピック中",
   "overview.operation.revert": "リバート中",
   "overview.operation.bisect": "二分探索中",
+  "overview.operation.conflict": "競合あり",
+  "overview.operation.bookmarkConflict": "ブックマークの競合",
   "shortcut.overview": "VCS の全体像を切り替え",
   "shortcut.tile": "VCS のタイル表示を切り替え",
   "tile.toggle": "リポジトリをタイル表示",

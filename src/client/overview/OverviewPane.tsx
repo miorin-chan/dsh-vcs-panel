@@ -69,10 +69,12 @@ export function pointerFacts(pointer: PointerView, view: RepositoryView, cwd: st
     facts.push(`${pointer.nested ? '⊂' : '⌂'} ${label}`)
   }
   if (pointer.kind === 'branch') {
-    if (typeof pointer.upstream !== 'string') facts.push(t('overview.unpublished'))
-    else if (pointer.track?.gone === true) facts.push(`${pointer.upstream} · ${t('overview.upstreamGone')}`)
-    else if ((pointer.track?.ahead ?? 0) === 0 && (pointer.track?.behind ?? 0) === 0) facts.push(`≡ ${pointer.upstream.split('/')[0]}`)
-    else facts.push(`${pointer.upstream} ${arrows(pointer.track?.ahead ?? 0, pointer.track?.behind ?? 0)}`)
+    const distance = arrows(pointer.track?.ahead ?? 0, pointer.track?.behind ?? 0)
+    if (typeof pointer.upstream !== 'string') {
+      if (pointer.levelRemotes.length === 0) facts.push(t('overview.unpublished'))
+    } else if (pointer.track?.gone === true) facts.push(`${pointer.upstream} · ${t('overview.upstreamGone')}`)
+    else if (distance !== '' || pointer.levelRemotes.length === 0) facts.push(`${pointer.upstream} ${distance}`.trim())
+    if (pointer.levelRemotes.length > 0) facts.push(`≡ ${pointer.levelRemotes.join(', ')}`)
   }
   if (pointer.kind === 'detached') facts.push(pointer.unique > 0 ? t('overview.detached') : t('overview.detachedClean'))
   if (pointer.kind === 'stash') facts.push(pointer.subject.replace(/^(?:WIP on|On) [^:]+: /u, ''))

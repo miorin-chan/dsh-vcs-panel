@@ -512,6 +512,8 @@ const dictionary: LocaleDict = Object.freeze({
   "overview.operation.cherryPick": "拣选中",
   "overview.operation.revert": "还原中",
   "overview.operation.bisect": "二分查找中",
+  "overview.operation.conflict": "有冲突",
+  "overview.operation.bookmarkConflict": "书签冲突",
   "shortcut.overview": "切换版本管理全景",
   "shortcut.tile": "切换版本管理平铺",
   "tile.toggle": "平铺仓库",

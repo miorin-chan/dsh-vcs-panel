@@ -188,5 +188,8 @@ test('detached branch creation names the commit; missing checkouts and Jujutsu a
   // copy keeps its forget-or-remove choice in the menu, and no branch actions apply.
   assert.deepEqual(fixture(detached).actions({ ...GIT_CAPABILITIES, workingCopy: 'commit' }), [])
   assert.deepEqual(fixture({ ...topic, ...unique }, { vcs: 'jujutsu' }).actions(JUJUTSU_CAPABILITIES), [])
+  assert.deepEqual(fixture({ ...linked, upstream: 'topic@origin' }, { vcs: 'jujutsu' })
+    .actions({ ...JUJUTSU_CAPABILITIES, worktreeForget: true, worktreeRemove: true }), [])
+  assert.deepEqual(fixture({ ...foreign, name: 'other@origin' }, { vcs: 'jujutsu' }).actions(JUJUTSU_CAPABILITIES), [])
   assert.deepEqual(fixture(detached).actions(null), [])
 })

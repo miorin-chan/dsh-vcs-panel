@@ -530,10 +530,15 @@ export function createHandlers(ctx: HandlersContext, {
           await Promise.all(targets.map(target => limiter.run(async () => { send(await readOne(target.path, target.vcs, true)) })))
           let unlistedTruncated = false
           const git = backends.get('git')
-          if (walk && typeof git?.unlisted === 'function' && await git.require(signal).then(() => true, () => false)) {
+          if (walk && typeof git?.unlisted === 'function') {
             const commons: string[] = []
             for (const target of targets) {
-              const common = target.vcs === 'git' ? await git.commonDir(target.path, signal).catch(() => null) : null
+              const backend = backends.get(target.vcs)
+              if (backend === undefined) continue
+              const common = await backend.commonDir(target.path, signal).catch(error => {
+                if (signal.aborted) throw error
+                return null
+              })
               if (common !== null) commons.push(common)
             }
             const found = await git.unlisted(cwd, { commons, roots: targets.map(target => target.path) }, signal)

@@ -527,6 +527,8 @@ const dictionary: LocaleDict = Object.freeze({
   "overview.operation.cherryPick": "Cherry-pick em andamento",
   "overview.operation.revert": "Revert em andamento",
   "overview.operation.bisect": "Bisect em andamento",
+  "overview.operation.conflict": "Há conflitos",
+  "overview.operation.bookmarkConflict": "Conflito de marcador",
   "shortcut.overview": "Alternar o panorama do VCS",
   "shortcut.tile": "Alternar os repositórios do VCS em colunas",
   "tile.toggle": "Repositórios em colunas",

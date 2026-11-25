@@ -75,9 +75,10 @@ export async function readWorkspaces(
   cwd: string,
   template: string = WORKSPACE_NAMES,
   signal: AbortSignal | undefined,
+  operation = '@',
 ): Promise<JjWorkspaceRecord[] | null> {
   const result = await runner.run(
-    ['--ignore-working-copy', '--at-op=@', 'workspace', 'list', '-T', template],
+    ['--ignore-working-copy', `--at-op=${operation}`, 'workspace', 'list', '-T', template],
     { cwd, signal },
   )
   if (result.lossy) throw outputTooLarge()
@@ -98,10 +99,10 @@ export async function* discoverJjWorkspaces(
   runner: JujutsuRunner,
   root: string,
   signal: AbortSignal | undefined,
-  { paths = null, commonDir = null }: WorktreeOptions = {},
+  { paths = null, commonDir = null, operation = '@' }: WorktreeOptions & { operation?: string } = {},
 ): AsyncGenerator<Worktree> {
   const matches = (path: string): boolean => paths === null || paths.some(requested => sameRepoPath(path, requested))
-  const entries = await readWorkspaces(runner, root, WORKSPACE_LIST, signal)
+  const entries = await readWorkspaces(runner, root, WORKSPACE_LIST, signal, operation)
   // Older jj versions cannot identify the current workspace independently of
   // its commit. Keep the anchor-only view instead of guessing at membership.
   if (entries === null) return
@@ -119,7 +120,7 @@ export async function* discoverJjWorkspaces(
     if (commonDir === null) return
     const candidateDir = await jjCommonDirAt(ctx, path, signal)
     if (candidateDir === null || !sameRepoPath(candidateDir, commonDir)) continue
-    const actual = (await readWorkspaces(runner, path, CURRENT_WORKSPACE, signal))?.[0]
+    const actual = (await readWorkspaces(runner, path, CURRENT_WORKSPACE, signal, operation))?.[0]
     if (actual?.name === entry.name) {
       const primary = (await ctx.fs.lstat(join(path, '.jj', 'repo'), undefined, signal))?.type === 'directory'
       yield { path, name: entry.name, head: entry.head, primary }

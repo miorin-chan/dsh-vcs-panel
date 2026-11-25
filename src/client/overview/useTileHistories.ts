@@ -26,15 +26,16 @@ const IDLE: ColumnHistory = Object.freeze({ status: 'idle', commits: [] })
  * @param paths - repositories in column order.
  * @param active - whether the layout is tiled.
  * @param reloadKey - changes when histories should be read again.
+ * @param paused - retain the visible history while a manual snapshot finishes.
  * @returns the reads by repository.
  */
-export function useTileHistories(api: Api, paths: readonly string[], active: boolean, reloadKey: string): ReadonlyMap<string, ColumnHistory> {
+export function useTileHistories(api: Api, paths: readonly string[], active: boolean, reloadKey: string, paused: boolean): ReadonlyMap<string, ColumnHistory> {
   const [histories, setHistories] = useState<ReadonlyMap<string, ColumnHistory>>(new Map())
   const loadedRef = useRef(new Map<string, string>())
   const pathsKey = JSON.stringify(paths)
 
   useEffect(() => {
-    if (!active) return undefined
+    if (!active || paused) return undefined
     const controller = new AbortController()
     const wanted = paths.filter(path => loadedRef.current.get(path) !== reloadKey)
     let next = 0
@@ -60,7 +61,7 @@ export function useTileHistories(api: Api, paths: readonly string[], active: boo
     return () => { controller.abort() }
     // pathsKey stands for paths.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, api, pathsKey, reloadKey])
+  }, [active, api, pathsKey, reloadKey, paused])
 
   return active ? histories : EMPTY_MAP
 }
