@@ -14,6 +14,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 
+import type { ActivityRepositoryAnswer, ActivityRequest } from '../activity.js'
 import type { DiffComparison } from '../diff.js'
 import type { Limiter, OverviewRepository, UnlistedRoots } from '../overview.js'
 import type { JjRef } from '../jujutsu.js'
@@ -263,6 +264,8 @@ export interface VcsBackend {
   diff(root: string, target: DiffTarget, signal: AbortSignal): Promise<DiffAnswer>
   /** One page of history. */
   log(root: string, page: LogPage, signal: AbortSignal): Promise<LogPageAnswer>
+  /** One page of local activity, without snapshotting a working copy. */
+  activity?(root: string, request: ActivityRequest, signal: AbortSignal): Promise<ActivityRepositoryAnswer>
   /** One commit's metadata and changed files. */
   commit(root: string, rawSha: string | null, signal: AbortSignal): Promise<CommitAnswer>
   /** The staging history's undo and redo tips. */

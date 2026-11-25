@@ -19,6 +19,7 @@ import type { WatchedRepository, WatchReceive } from './watch-repository.js'
 
 const STREAM_MAX = 64
 const TURN_MAX = 16
+const ACTIVITY = 'activity'
 const MUTATION_MAX = 128
 const COALESCE_MS = 100
 const MUTATION_TOOLS = new Set(['write', 'edit', 'apply_patch', 'str_replace_editor'])
@@ -66,6 +67,7 @@ interface TurnObservation {
   ended: boolean
   workspaceChanged: boolean
   workspaceSent?: boolean
+  activitySent?: boolean
   unknown: boolean
   seq?: number
   summary?: WorkspaceChangeSummary | null
@@ -313,6 +315,12 @@ export function createWatchHub(
               else await target.checkOperation()
             }
           }
+        }
+      }
+      if (turn.ended && !turn.activitySent && currentStreams.some(stream => !stream.signal.aborted)) {
+        turn.activitySent = true
+        for (const stream of currentStreams) {
+          if (!stream.signal.aborted) stream.invalidate([ACTIVITY])
         }
       }
     }

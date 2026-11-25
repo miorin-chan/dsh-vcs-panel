@@ -64,6 +64,7 @@ const ROUTES: readonly RouteEntry[] = [
   { path: '/api/vcs.repository-config', handlers: { GET: 'repositoryConfig', POST: 'saveRepositoryConfig' } },
   { path: '/api/vcs.repository-preview', key: 'repositoryPreview', method: 'GET' },
   { path: '/api/vcs.overview', key: 'overview', method: 'GET' },
+  { path: '/api/vcs.activity', key: 'activity', method: 'GET' },
   { path: '/api/vcs.watch', key: 'watch', method: 'GET' },
   { path: '/api/vcs.status', key: 'status', method: 'GET' },
   { path: '/api/vcs.branches', key: 'branches', method: 'GET' },

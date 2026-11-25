@@ -28,10 +28,12 @@ import {
   fileHeaderCount,
   parseUnifiedDiff,
 } from '../diff.js'
+import type { ActivityRepositoryAnswer, ActivityRequest } from '../activity.js'
 import type { JjCommit, JjEntry, JjRecord } from '../jujutsu.js'
 import {
   isJjBinaryDiff,
   JujutsuRunner,
+  JJ_ACTIVITY_TEMPLATE,
   JJ_DETAIL_TEMPLATE,
   JJ_DIFF_ENTRY_TEMPLATE,
   JJ_LOG_TEMPLATE,
@@ -425,25 +427,40 @@ export class JujutsuBackend {
       if (!heads.every(isFullSha)) throw badRequest('Workspace heads must be full commit ids.')
       revset = `::(${heads.map(head => `commit_id(${head})`).join(' | ')}) ~ root()`
     }
-    const result = await this.#read(
-      ['log', '--no-graph', '-r', revset, '-n', String(cap), '-T', JJ_LOG_TEMPLATE],
-      { cwd: root, signal },
-    )
-    if (result.lossy) throw outputTooLarge()
-    if (result.exitCode !== 0) {
-      throw new VcsError('internal', 'The history could not be read.')
-    }
-
-    const commits = parseJjRecords(result.stdout)
-      .map(parseJjCommit)
-      .filter(commit => commit !== undefined)
-      .slice(skip, skip + limit)
+    const commits = (await this.#readLog(root, revset, cap, signal)).slice(skip, skip + limit)
     const truncated = skip + commits.length >= LOG_SKIP_MAX
     return {
       commits,
       truncated,
       nextSkip: commits.length === 0 ? null : skip + commits.length,
     }
+  }
+
+  async activity(root: string, { until, limit }: ActivityRequest, signal: AbortSignal): Promise<ActivityRepositoryAnswer> {
+    let revset = '(::(bookmarks() | working_copies() | (visible_heads() & mutable()))'
+      + ' ~ root() ~ (working_copies() & description(exact:"")) ~ (empty() & description(exact:"") & ~merges()))'
+    // jj's date parser (Jiff) tops out at 9999-12-30T22:00:00Z. For a
+    // boundary beyond its range, read without the revset bound and filter below.
+    if (until !== null && until < 253_402_207_200) {
+      const before = new Date((until + 1) * 1000).toISOString()
+      revset += ` & committer_date(before:"${before}")`
+    }
+    const commits = await this.#readLog(root, revset, limit, signal, true)
+    const entries = commits.flatMap((commit): ActivityRepositoryAnswer['entries'] => {
+      const time = (commit.committerTime ?? NaN) / 1000
+      return Number.isSafeInteger(time) && (until === null || time <= until) ? [{ kind: 'commit', time, commit }] : []
+    })
+    return { entries, exhausted: commits.length < limit }
+  }
+
+  async #readLog(root: string, revset: string, limit: number, signal: AbortSignal, activity = false): Promise<JjCommit[]> {
+    const result = await this.#read(
+      ['log', '--no-graph', '-r', revset, '-n', String(limit), '-T', activity ? JJ_ACTIVITY_TEMPLATE : JJ_LOG_TEMPLATE],
+      { cwd: root, signal, ...(activity && { env: { TZ: 'UTC' } }) },
+    )
+    if (result.lossy) throw outputTooLarge()
+    if (result.exitCode !== 0) throw new VcsError('internal', 'The history could not be read.')
+    return parseJjRecords(result.stdout).map(parseJjCommit).filter(commit => commit !== undefined)
   }
 
   /**

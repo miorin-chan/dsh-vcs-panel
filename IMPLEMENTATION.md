@@ -19,6 +19,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `GET /api/vcs.repository-preview` | `sessionId`、`path`、`kind`（`directory` 或 `repository`） | `repositories[]`（相对 `path`、`name`、`vcs`、`availableVcs`）、`truncated` |
 | `POST /api/vcs.repository-config` | JSON `{ sessionId, revision, scanDirectories, repositories, backends? }`（两个路径数组，以及 `{ path, vcs }` 偏好数组） | 同配置 GET |
 | `GET /api/vcs.overview` | `sessionId`、`repo?`（至多一个，须是已发现的仓库） | NDJSON：先 `scope`（`cwd`、`repositories`），每个仓库读完一行 `repository`（`OverviewRepository`）或 `error`（`path`、`error.code`），最后 `done`（`unlistedTruncated`）；见[全景读取](#全景读取) |
+| `GET /api/vcs.activity` | `sessionId`、`until?`（含该秒）、`limit?` | `ActivityAnswer`：`entries[]`、`next`、`failures[]`；见[全部仓库活动读取](#全部仓库活动读取) |
 | `GET /api/vcs.status` | `sessionId`、`repo`、`worktree?`、`readOnly?`（`1` 跳过 Jujutsu 快照） | `repo`、`vcs`、`capabilities`、`defaultNode`、`branch`、`workingCopy?`、`groups`、`total`、`untrackedTotal`、`untrackedAdded`、`truncated`、`stageHistory` |
 | `GET /api/vcs.watch` | `sessionId`、`repo?`、`worktree?`（可重复）、`client?` | SSE `ready` 与 `invalidate`（`domains[]`、`origin?`） |
 | `GET /api/vcs.branches` | `sessionId`、`repo` | `branches[]`（`name`、`current`、`occupied`）、`truncated`（仅 `capabilities.branchSwitch` 为真时可用） |
@@ -50,6 +51,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
   客户端防抖合并域。同一域只运行一次读取，期间到达的通知合成一次待处理刷新。
   仓库列表刷新后，同一路径的后端变化会重置阅读状态与 diff 缓存，并以新的后端范围和仓库标识重开订阅。
   写入或对话期间暂缓读取。面板写入带 `X-VCS-Client`，若事件的 `origin` 匹配该面板，它使用操作完成后的显式刷新。
+  有改动的 Agent 回合结束后，同一会话的订阅另收到 `activity`，只刷新跨仓库历史，不改变订阅的仓库或工作树。
 - Git 用独立的工作树监听与元数据监听。
   后者覆盖每棵工作树的 `HEAD`、index 和公共引用存储，动态监听当前分支与上游引用，并过滤锁文件与 Watchman cookie。
   公共目录的 `refs/stash` 与 `logs/refs/stash` 变化使 `history` 失效；丢弃非顶端的贮藏可能只更新引用日志。
@@ -388,6 +390,22 @@ type OverviewRepository = {
 }
 ```
 
+### 全部仓库活动读取
+
+`vcs.activity` 沿用 `vcs.repositories` 的发现及工作树归组，并逐一按读取路由校验仓库入口。
+`until` 只接受十进制非负安全整数，`limit` 只接受 1–300 的整数；参数在发现与后端命令之前校验。
+最多同时读四个仓库，取消时停止排队的读取。 单个仓库失败只加入 `failures`，视为读完，不持有写入锁。
+
+Git 的 `--branches` 与已验证的检出 HEAD 限定提交范围；运行前核对 Git 报告的工作树根，损坏的标记不会让读取退到外层仓库。
+日志共用提交解析与远程引用标注，额外用 `%ct` 取排序用的秒数。
+`--until=@<秒> +0000` 使用 Git 的精确日期格式，含边界秒；显式时区也避免 `@0` 等早期值被解释成近似日期。
+贮藏沿用列表上限，按 W 的提交者时间筛选。 Jujutsu 用书签、工作副本和可变可见头的祖先，
+排除根、未描述的工作副本与空的未描述非合并提交。 全程带 `--ignore-working-copy`，
+用 `committer_date(before:…)` 传入 `until + 1`，超出该日期解析器范围时省略 revset 的上界并按条目的秒数筛选。
+
+Host 合并时按提交者时间降序，同秒先按发现顺序、再按仓库内的原顺序。
+截取后附上已读到的同秒条目；只要还有未读条目，`next` 就取末条的时间减一，负数或没有末条时为 `null`。
+
 ### Git 暂存
 
 `stageOps` 声明整文件暂存与取消暂存能力。
@@ -467,6 +485,7 @@ type CommitNode = {
   refs: Ref[]
   author: string
   authorTime: number
+  committerTime?: number   // 活动与详情额外读取，毫秒
   subject: string
   workingCopy?: boolean
   empty?: boolean
@@ -475,7 +494,6 @@ type CommitNode = {
 
 type CommitDetail = CommitNode & {
   committer?: string
-  committerTime?: number
   message?: string
   files: FileEntry[]
 }
@@ -489,6 +507,16 @@ type StashEntry = {
   time: number             // %ct，秒
   branch: string | null
   message: string
+}
+
+type ActivityEntry =
+  | { kind: 'commit'; repo: string; time: number; commit: CommitNode }
+  | { kind: 'stash'; repo: string; time: number; stash: StashEntry }
+
+type ActivityAnswer = {
+  entries: ActivityEntry[]   // time 为提交者时间，秒；repo 为规范化的仓库入口
+  next: number | null        // 下一次读取的 until
+  failures: { repo: string; error: { code: string } }[]
 }
 
 type StashDetail = StashEntry & {
@@ -576,7 +604,7 @@ type TurnSummary = {
 | --- | --- | --- |
 | 单会话初始仓库根 / 附加工作树数 | 各 50 | Host `discoverRepositories` / `groupRepositories` |
 | 全景：每仓库检出 / 指针；未登记仓库的列举深度 / 列举次数 / 仓库数 | 51 / 2,000；6 层 / 20,000 / 50 | Host `overview.js` |
-| 贮藏列表（全景与历史首页）/ 检查及冲突路径 / 存放说明 | 200 条 / 50 条 / 1,000 字符 | Host `stash.js` / `stash-ops.js` / `handlers.js` |
+| 贮藏列表（全景、历史首页与全部仓库）/ 检查及冲突路径 / 存放说明 | 200 条 / 50 条 / 1,000 字符 | Host `stash.js` / `stash-ops.js` / `handlers.js` |
 | 全景栏宽度 / 抽屉阈值；平铺每列历史 / 并发读取 | 320–600px（默认 400）/ 余宽 360px；300 个提交 / 4 | Client `state.ts`、`VcsView`、`useTileHistories` |
 | 仓库发现标记检查 / 配置文件 / 每组配置路径与后端偏好 | 1,000 项 / 64 KiB / 50 项 | Host `repositories.js` / `repository-config.js` |
 | 工作树状态读取并发 / 一次历史请求的工作树数 | Git 4、Jujutsu 1 / 51 | Client `VcsView` / Host `log` |
@@ -586,6 +614,8 @@ type TurnSummary = {
 | “全部展开”的 diff 预算 | 单文件 1,000 行；单节点累计 20,000 行 | Client `budgetFolds`、`expandedFileFolds` |
 | diff 请求并发 / 视口预载距离 / 结果缓存 | 4 个并发 / 800 px / 最近 300 条 | Client 请求队列与缓存 |
 | 历史分页 / 最多加载提交数 | 300 条/页，最多 10,000 条 | Host `log` |
+| 全部仓库分页 / 累计条目 / 并发读取 / 记住的展开活动 | 默认 200、可请求 1–300 条，已读的同秒条目一起返回 / 10,000 条 / 4 个仓库 / 200 个 | Host `activity`、Client `useActivity` / `state.ts` |
+| 全部仓库的页边界 | Jujutsu 先取拓扑上的前 N 条，Host 再按时间排序；时间与拓扑不一致时是近似页。 Git 的 `--date-order` 同样将子提交排在父提交前，回拨时钟可能影响取样。 单个仓库同一秒超过 N 个提交时，游标会跳过未读到的同秒提交。 | Host Git / Jujutsu 后端与 `mergeActivity` |
 | 单会话保留的轮末头指针 / 客户端空闲轮次摘要缓存 | 2,000 轮 / 500 条 | Host `TurnTracker`、Client `turn-summary` |
 | 单条后端命令 | 30 s 超时（远程抓取与推送 120 s，含钩子），stdout 8 MB，stderr 尾部 16 KB，终止宽限 2 s | Host `CommandRunner`、`lib/sync.js`、`lib/branch-ops.js`、`lib/tag-ops.js`、`lib/commit-ops.js` |
 | Jujutsu 快照频率 | 手动刷新每棵勾选树一次，有变更的 Agent 回合快照所在工作区 | Jujutsu 后端与 Host 订阅 |
@@ -680,6 +710,8 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 `mergeStaging`、`twoColumns`（`wrap`、`mergeStaging`、`twoColumns` 均默认 `true`，只有显式 `false` 才关闭）、
 `sidebarWidth`、`timelineScroll`，以及全景与平铺的 `overview`、`overviewWidth`（320–600，默认 400）、`tiled`、
 `overviewBeforeTile`、`tileOrder`（默认 `attention`，保留已保存的 `directory`）与展开的窄条 `tileExpanded`。
+全部仓库另保存 `timelineScope`、选中行 `activitySelected`、该行条目身份 `activityEntry`、
+活动展开集 `activityExpanded` 与时间线滚动偏移 `activityScroll`。 发现结果少于两个仓库时回到单个仓库。
 切换仓库时，`perRepoRef` 在内存按仓库保留勾选、选中节点、历史范围、详情锚点与展开状态。
 `repositoryScrollRef` 单独保留各仓库时间线的滚动偏移；恢复时重读之前已加载的历史页，让偏移仍有对应的内容。
 页签身份与右侧栏布局由宿主的 `sidebarRight` 存储按会话保存，应用重启后恢复；面板自己的阅读状态（含时间线宽度）单独保存。
@@ -697,7 +729,7 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 数据刷新、折叠全部文件或收起吸顶文件头时，统一先记录锚点行与行内像素偏移，重排后恢复；
 锚点行未渲染时沿“文件行 → 父目录链 → 分组行”降级。
 
-顶部栏的仓库按钮写当前仓库名，按下开合[全景栏](#全景栏与平铺)，平铺时按下则退出平铺并打开全景栏。
+顶部栏的仓库按钮写当前仓库名或「全部仓库」，按下开合[全景栏](#全景栏与平铺)，平铺时按下则退出平铺并打开全景栏。
 工作树菜单由 `HeaderPicker` 打开，本地分支菜单每次打开时重读，期间保留上一份列表。
 这两个菜单共用 `PickerHeader` 顶栏（`.vcs-picker-header`）：`.vcs-picker-header-title` 名称、可选的
 `.vcs-picker-range` 分段胶囊（支持 `←`/`→` 与 `↑`/`↓` 导航）和 `.vcs-picker-actions` 里的 `PickerAction` 图标操作。
@@ -785,6 +817,23 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
   顶部栏开关（`.vcs-columns-toggle`）调用 `setTwoColumns`：宽栏里关掉时有选中节点则切到详情；
   窄栏只改偏好，不改正在显示的栏。
 
+### 全部仓库管线
+
+`useActivity` 只在全部仓库的时间线可见且不平铺时读取。 首页不传游标，续载按 `next` 请求并按种类、
+仓库路径、完整提交 ID 去重。 进入、重新可见或收到历史失效时重读第一页，用它覆盖最近的区间并保留更早的后缀；
+读到更深的旧后缀时沿用旧游标。 手动刷新只保留新首页，不走 Jujutsu 的快照路径。
+
+`activity-model.ts` 按本地日期分段，先按说明与 30 分钟窗口找跨仓库改动，再按仓库把间隔不超过 45 分钟的提交合段。
+索引同时记录活动、可见行和条目身份，折叠或重分组后用条目身份恢复选中；
+父提交与贮藏基底只在同一仓库的目标已加载时链接，先展开对应活动再选中。
+`activityLayout` 用同一个 `Graph` 画两条固定 lane：一条按日期断开的中性主线，一条展开时连住子行的旁支。
+`ActivityTimeline` 和 `Timeline` 共用虚拟窗口、滚动跟随和方向键；活动列表变动时用第一可见行的键保持滚动位置。
+
+详情用选中条目的仓库与能力调用 `DetailPane`，不绑定写入或引用菜单回调。
+目录、文件折叠与详情锚点按活动行键保存在内存，左右对比与换行仍共用面板偏好。
+单栏时单击行与仓库时间线一样进入详情，「在仓库中打开」改由详情工具栏的仓库按钮或 `o` 发起；两栏时双击行也会打开。
+打开条目和全景指针共用 `revealInRepository`：回到仓库、设定节点与提交范围，必要时续载该仓库的历史。
+
 ### 全景栏与平铺
 
 规则集中在 `overview/model.ts`，不依赖 React 与 DOM：
@@ -806,15 +855,17 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 `done` 时丢弃本轮未报告的仓库；当前仓库的后台刷新信号在 400ms 防抖后只重读这一个仓库，
 整轮读取期间到达的信号在读完后补读。
 `useTileHistories` 在平铺时每次按发现顺序读 4 个仓库的历史首页，列序由 `tileOrder` 另行决定。
-手动刷新时，两者等待 Jujutsu 的勾选工作区快照完成再读。
+单仓库手动刷新时，两者等待 Jujutsu 的勾选工作区快照完成再读。
 
 `OverviewPane` 以发现列表为切换入口：读取中的仓库按发现顺序显示指针行的轮廓，
 读取失败的仓库带错误说明并排在「需要处理」末尾。
-两类行都可以选中；时间线只读当前仓库，独立报告历史与工作树的读取结果。 栏头只用发现列表计数，
+两类行都可以选中；单仓库时间线独立报告历史与工作树的读取结果。 栏头只用发现列表计数，
 齿轮打开同一个 `RepositoryConfigDialog`，没有仓库时仍可进入，关闭对话框后焦点回到齿轮。
 仓库行以 `repo:<path>` 为键，流式读取重排时光标与焦点留在原行；
 当前仓库或光标所在的仓库进入一致组时自动展开该组。 用户打开全景时聚焦当前仓库，
 恢复已展开的布局时只设置默认停靠点，不移动焦点；从时间线向左则回到全景上次的停靠点。
+发现两个及以上仓库时，`OverviewPane` 在列表首行固定「全部仓库」，不参与筛选；
+选中时当前标记与默认停靠点从仓库行移到该行，顶部栏隐藏单仓库控件并标明只读。
 点击贮藏指针选中 `stash:<sha>`，需要时续载历史寻找基底；时间线与全景按同一 ID 高亮，而不高亮基底提交。
 右键贮藏指针沿用时间线的贮藏菜单。
 
@@ -837,6 +888,8 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 退出时记录列的位置，时间线从当前列移回；其余列的不可交互副本向恢复的全景行或面板左缘移动，
 并在 300ms 内沿 `ease-in` 淡出。
 详情面板进平铺时原地淡出右移，退出时从右侧滑回。减少动效时不播放。
+全部仓库进入平铺时没有当前列，时间线与详情原地淡出；各列从全景行或左缘展开。
+退出时各列按原来的规则收回，时间线原地淡入，已读的活动仍在；打开某列或其中的指针则回到单个仓库。
 指针 id 由仓库路径、种类与名称以 NUL 连接；贮藏用 W 的提交 ID 代替会变动的序号，同名的 Jujutsu 匿名头再用提交 ID 区分。
 元素按属性值比较查找，不进 CSS 选择器。
 

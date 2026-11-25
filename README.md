@@ -32,6 +32,12 @@ or sync with the upstream.
 - **Tiled repositories.** The first button in the right-hand group (`T`) lays every repository out
   as a column of pointers, ordered by attention or by folder; `1`–`7` step through one state,
   and `Enter` opens the focused pointer in the timeline.
+- **All repositories.** The pinned row at the top of the overview turns the timeline
+  into one read-only history of every repository, grouped by day.
+  The same commit message landing in several repositories within half an hour folds into one row,
+  and a repository's commits less than 45 minutes apart fold into one burst of work; expand either in place.
+  Select a row to read its changes, and press `o`, double-click it, or use the repository button
+  in the detail toolbar to open the same commit or stash in its own repository, where the menus act on it.
 - **Worktrees on one graph.** In **Worktrees**, check Git worktrees or Jujutsu workspaces
   and switch **Commits** between **All** (default) and **Selected** in the menu header;
   in single-worktree Git, the branch menu header offers the same synced **All** / **HEAD** switch.
@@ -151,6 +157,7 @@ or sync with the upstream.
 | `Enter`, `Esc` | Confirm or cancel a branch, remote-branch, tag, commit, or stash action dialog |
 | `[` / `]` | Move to the previous / next tree row, skipping hunk headers |
 | `T`, `/` | Tile the repositories or return to the timeline; search the open overview (both commands can be bound in **Settings → Shortcuts**) |
+| `Space`, `o` | In **All repositories**, expand or fold the burst or shared change under the cursor; open the selected row in its repository |
 | `1`–`7`, `n`, `Esc` | While tiled, step to the next pointer of a state (`Shift` steps back), continue with `n`; `Esc` clears the step, then returns to the timeline |
 
 Clicking toolbar buttons or switching back to the window keeps keyboard focus ready on the active timeline

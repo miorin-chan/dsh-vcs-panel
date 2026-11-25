@@ -52,6 +52,7 @@ export interface GraphProps {
   viewportHeight?: number
   width?: number
   selectedIndex?: number
+  highlightStash?: boolean
 }
 
 /**
@@ -67,6 +68,7 @@ export function Graph({
   viewportHeight = 0,
   width = 120,
   selectedIndex = -1,
+  highlightStash = false,
 }: GraphProps) {
   const totalRows = Number.isFinite(rowCount) ? rowCount : 0
   const paths = layout?.paths ?? []
@@ -107,7 +109,9 @@ export function Graph({
       if (!pathDs[i]) continue
       const bounds = pathBounds[i]
       if (bounds.maxY < visibleStartRow - 1 || bounds.minY > visibleEndRow + 1) continue
-      visible.push({ key: i, d: pathDs[i], color: resolveColor(paths[i].color), dashed: paths[i].dashed === true })
+      const path = paths[i]
+      visible.push({ key: i, d: pathDs[i],
+        color: path.neutral ? 'var(--dsw-alias-border-l2)' : resolveColor(path.color), dashed: path.dashed === true })
     }
     return visible
   }, [pathDs, pathBounds, paths, visibleStartRow, visibleEndRow])
@@ -140,14 +144,15 @@ export function Graph({
     const start = Math.max(0, Math.min(visibleStartRow, totalRows))
     const end = Math.max(start, Math.min(visibleEndRow, totalRows, dots.length))
     if (end <= start) return []
-    return dots.slice(start, end).map((dot, offset) => ({
+    return dots.slice(start, end).flatMap((dot, offset) => dot === null ? [] : [{
       index: start + offset,
       center: dot.center,
-      color: resolveColor(dot.color),
+      color: dot.type === 'stash' && highlightStash ? 'var(--vcs-state-stash)'
+        : dot.neutral ? 'var(--dsw-alias-label-tertiary)' : resolveColor(dot.color),
       type: dot.type,
       selected: start + offset === selectedIndex,
-    }))
-  }, [dots, visibleStartRow, visibleEndRow, totalRows, selectedIndex])
+    }])
+  }, [dots, highlightStash, visibleStartRow, visibleEndRow, totalRows, selectedIndex])
 
   if (totalRows === 0 || viewportHeight <= 0 || width <= 0) return null
 
@@ -183,91 +188,35 @@ export function Graph({
         {visibleDots.map((dot) => {
           const cx = dot.center.x
           const cy = dot.center.y * rowHeight
-          if (dot.type === 'stash') {
-            return <rect key={`dot-${dot.index}`} className="vcs-graph-dot vcs-graph-dot-stash"
-              x={-4} y={-4} width={8} height={8} rx={1} transform={`translate(${cx} ${cy}) rotate(45)`} />
-          }
-          if (dot.type === 'worktree' || dot.type === 'working') {
-            return (
-              <g key={`dot-${dot.index}`}>
-                {dot.selected ? (
-                  <circle
-                    className="vcs-graph-dot-selected"
-                    cx={cx}
-                    cy={cy}
-                    r={SELECTED_RING_RADIUS}
-                    stroke={dot.color}
-                  />
-                ) : null}
-                <circle
-                  className={`vcs-graph-dot ${dot.type === 'worktree' ? 'vcs-graph-dot-worktree' : 'vcs-graph-dot-working'}`}
-                  cx={cx}
-                  cy={cy}
-                  r={HEAD_DOT_RADIUS}
-                  fill="var(--dsw-alias-bg-base)"
-                  stroke={dot.color}
-                />
-              </g>
-            )
-          }
-          if (dot.type === 'head') {
-            return (
-              <g key={`dot-${dot.index}`}>
-                {dot.selected ? (
-                  <circle
-                    className="vcs-graph-dot-selected"
-                    cx={cx}
-                    cy={cy}
-                    r={SELECTED_RING_RADIUS}
-                    stroke={dot.color}
-                  />
-                ) : null}
-                <circle
-                  className="vcs-graph-dot vcs-graph-dot-head"
-                  cx={cx}
-                  cy={cy}
-                  r={HEAD_DOT_RADIUS}
-                  fill="var(--dsw-alias-bg-base)"
-                  stroke={dot.color}
-                />
-              </g>
-            )
-          }
-          if (dot.type === 'merge') {
-            return (
-              <g key={`dot-${dot.index}`}>
-                {dot.selected ? (
-                  <circle
-                    className="vcs-graph-dot-selected"
-                    cx={cx}
-                    cy={cy}
-                    r={SELECTED_RING_RADIUS}
-                    stroke={dot.color}
-                  />
-                ) : null}
-                <circle
-                  className="vcs-graph-dot vcs-graph-dot-merge"
-                  cx={cx}
-                  cy={cy}
-                  r={DOT_RADIUS}
-                  fill="var(--dsw-alias-bg-base)"
-                  stroke={dot.color}
-                />
-              </g>
-            )
-          }
+          const shape = (() => {
+            switch (dot.type) {
+              case 'stash':
+                return <rect className="vcs-graph-dot vcs-graph-dot-stash"
+                  x={-4} y={-4} width={8} height={8} rx={1} transform={`translate(${cx} ${cy}) rotate(45)`} />
+              case 'batch':
+                return <rect className="vcs-graph-dot vcs-graph-dot-batch"
+                  x={cx - 4} y={cy - 4} width={8} height={8} rx={1.5} fill={dot.color} />
+              case 'head':
+              case 'worktree':
+              case 'working':
+              case 'merge':
+                return <circle className={`vcs-graph-dot vcs-graph-dot-${dot.type}`} cx={cx} cy={cy}
+                  r={dot.type === 'merge' ? DOT_RADIUS : HEAD_DOT_RADIUS} fill="var(--dsw-alias-bg-base)" stroke={dot.color} />
+              case 'burst':
+                return <>
+                  <circle className="vcs-graph-dot vcs-graph-dot-burst" cx={cx} cy={cy} r={DOT_RADIUS + 2.5} stroke={dot.color} />
+                  <circle className="vcs-graph-dot" cx={cx} cy={cy} r={DOT_RADIUS} fill={dot.color} />
+                </>
+              case 'default':
+                return <circle className="vcs-graph-dot" cx={cx} cy={cy} r={DOT_RADIUS} fill={dot.color} />
+            }
+          })()
           return (
             <g key={`dot-${dot.index}`}>
-              {dot.selected ? (
-                <circle
-                  className="vcs-graph-dot-selected"
-                  cx={cx}
-                  cy={cy}
-                  r={SELECTED_RING_RADIUS}
-                  stroke={dot.color}
-                />
-              ) : null}
-              <circle className="vcs-graph-dot" cx={cx} cy={cy} r={DOT_RADIUS} fill={dot.color} />
+              {dot.selected && (dot.type !== 'stash' || highlightStash)
+                ? <circle className="vcs-graph-dot-selected" cx={cx} cy={cy} r={SELECTED_RING_RADIUS} stroke={dot.color} />
+                : null}
+              {shape}
             </g>
           )
         })}

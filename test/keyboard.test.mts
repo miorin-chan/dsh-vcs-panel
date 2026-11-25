@@ -2298,6 +2298,8 @@ function overviewResponse(repositories, cwd = '/fixture') {
 /** Exercise the real panel and route payloads with controllable discovery, status, writes, and rereads. */
 async function withGitPanel(repositories, {
   width = 1000, panelState = {}, initialWorktrees = [], expanded = [], commits = [tileTopic, tileMain, tileLoose],
+  activity = () => ({ entries: [], next: null, failures: [] }),
+  read = () => ({}), stashes = new Map(),
   write = () => assert.fail('unexpected write'),
 }, run) {
   const harness = createHarness({ width })
@@ -2313,7 +2315,7 @@ async function withGitPanel(repositories, {
     configurable: true,
   })
   const json = (answer, status = 200) => Response.json(answer, { status })
-  const reads = { overview: [], log: [], status: [] }
+  const reads = { overview: [], log: [], status: [], activity: [] }
   const writes = []
   const waits = { status: new Map(), overview: null }
   const discovery = { repositories }
@@ -2342,6 +2344,9 @@ async function withGitPanel(repositories, {
         const selected = path === null ? discovery.repositories : discovery.repositories.filter(repo => repo.path === path)
         return overviewResponse(selected)
       }
+      case '/api/vcs.activity':
+        reads.activity.push(query.searchParams)
+        return json(await activity(query.searchParams))
       case '/api/vcs.status': {
         reads.status.push([path, worktree])
         await waits.status.get(worktree ?? path)
@@ -2360,10 +2365,13 @@ async function withGitPanel(repositories, {
         reads.log.push(path)
         const skip = Number(query.searchParams.get('skip') ?? 0)
         const limit = Number(query.searchParams.get('limit') ?? commits.length)
-        return json({ commits: commits.slice(skip, skip + limit).map(sha => ({ sha, parents: [], refs: [], subject: sha })) })
+        return json({
+          commits: commits.slice(skip, skip + limit).map(sha => ({ sha, parents: [], refs: [], subject: sha })),
+          ...(skip === 0 && stashes.has(path) ? { stashes: stashes.get(path) } : {}),
+        })
       }
       default:
-        return json({})
+        return json(await read(query))
     }
   }
   try {
@@ -6088,4 +6096,209 @@ test('overview opens the stash itself; row menu and Apply/Branch dialogs keep th
     if (previousStorage === undefined) delete globalThis.sessionStorage
     else Object.defineProperty(globalThis, 'sessionStorage', previousStorage)
   }
+})
+
+const activityCommit = (repo, sha, subject, time, parents = []) => ({
+  kind: 'commit', repo, time,
+  commit: { sha, subject, author: 'Ada', authorTime: time * 1000, refs: [{ kind: 'branch', name: 'main' }], parents },
+})
+
+test('the overview pins All repositories through filtering and hands off the activity cursor with Enter', async () => {
+  const alpha = tileRepo(tileAlpha, [tilePointer('topic', tileTopic, { unique: 2 })])
+  const beta = tileRepo(tileBeta, [])
+  const first = activityCommit(tileAlpha, tileMain, 'alpha at midnight', 1_700_000_003)
+  const older = activityCommit(tileBeta, tileTopic, 'beta previous day', first.time - 86_400)
+  await withGitPanel([alpha, beta], {
+    width: 1450, panelState: { tiled: false, overview: true },
+    activity: () => ({ entries: [first, older], next: null, failures: [] }),
+  }, async ({ harness, body, discovery, persisted, reads, writes }) => {
+    const q = selector => body.querySelector(selector)
+    const all = () => q('[data-all-repositories]')
+    assert.equal(all(), q('.vcs-overview-list').children[0])
+    assert.equal(all().attributes.has('aria-expanded'), false)
+    assert.equal(all().attributes.has('aria-current'), false)
+    assert.equal(q(`[data-overview-key="repo:${tileAlpha}"]`).attributes.get('aria-current'), 'true')
+    q('[aria-label="overview.searchLabel"]').props.onChange({ target: { value: 'does not match any repository' } })
+    await harness.settle()
+    harness.mouseClick(q('.vcs-state-chip'))
+    assert.equal(all(), q('.vcs-overview-list').children[0], 'neither search nor state filtering hides the aggregate row')
+
+    all().focus()
+    assert.equal(harness.keyDown(all(), 'Enter').prevented, true)
+    await harness.settle()
+    const timeline = () => q('.vcs-timeline[data-scope="all"]')
+    assert.ok(timeline())
+    assert.equal(textOf(q('.vcs-repo-button')), 'all.title')
+    assert.match(q('.vcs-repo-button').attributes.get('title'), /all.count/)
+    assert.equal(q('.vcs-worktree-button'), null)
+    assert.equal(q('.vcs-branch-button'), null)
+    assert.equal(q('.vcs-activity-read-only').attributes.get('title'), 'all.readOnly')
+    assert.equal(all().attributes.get('aria-current'), 'true')
+    assert.equal(persisted().repo, tileAlpha, 'aggregate selection keeps the last single repository')
+    assert.equal(persisted().timelineScope, 'all')
+    assert.equal(reads.activity[0].get('limit'), '200')
+    assert.equal(reads.activity[0].has('until'), false)
+    let selected = timeline().querySelector('[aria-current="true"]')
+    assert.equal(harness.document.activeElement, selected)
+    assert.equal(harness.keyDown(selected, 'ArrowDown').prevented, true)
+    await harness.settle()
+    selected = timeline().querySelector('[aria-current="true"]')
+    assert.match(textOf(selected), /beta previous day/)
+    assert.equal(selected.dataset.timelineIndex, '3', 'the second date heading is not a keyboard stop')
+    harness.keyDown(selected, 'ArrowLeft')
+    assert.equal(harness.document.activeElement, all())
+
+    // Clearing the search and state filter lets the previous repository show again.
+    q('[aria-label="overview.searchLabel"]').props.onChange({ target: { value: '' } })
+    await harness.settle()
+    harness.mouseClick(q('.vcs-state-chip'))
+    await harness.settle()
+    const sameRepo = q(`[data-overview-key="repo:${tileAlpha}"]`)
+    assert.ok(sameRepo)
+    assert.equal(sameRepo.attributes.has('aria-current'), false)
+    harness.mouseClick(sameRepo)
+    await harness.settle()
+    assert.equal(persisted().timelineScope, 'repository', 'clicking the preserved repo still exits aggregate scope')
+    assert.equal(sameRepo.attributes.get('aria-current'), 'true')
+    assert.equal(all().attributes.has('aria-current'), false)
+
+    harness.mouseClick(all())
+    await harness.settle()
+    assert.match(textOf(timeline().querySelector('[aria-current="true"]')), /beta previous day/)
+    discovery.repositories = [alpha]
+    harness.mouseClick(q('[aria-label="top.refresh"]'))
+    await harness.settle()
+    assert.equal(persisted().timelineScope, 'repository')
+    assert.equal(all(), null)
+    assert.equal(timeline(), null)
+    assert.deepEqual(writes, [])
+  })
+})
+
+test('activity toggles keep selection, parent links expand the right activity, and reveal opens commits and stashes in their repository', async () => {
+  const bsha = '4'.repeat(40)
+  const saved = {
+    sha: '5'.repeat(40), base: tileMain, index: '6'.repeat(40), untracked: null,
+    selector: 'stash@{0}', branch: 'main', message: 'Save work', time: 1_700_000_300,
+  }
+  const alpha = tileRepo(tileAlpha, [])
+  const beta = tileRepo(tileBeta, [tilePointer(saved.selector, saved.sha, { kind: 'stash', onto: saved.base, subject: saved.message })])
+  const start = 1_700_000_000
+  const newCommit = activityCommit(tileAlpha, tileTopic, 'Read parent', start + 5000, [tileLoose, bsha])
+  const burst = activityCommit(tileAlpha, tileMain, 'Burst newest', start + 1800)
+  const earlier = activityCommit(tileAlpha, tileLoose, 'Earlier file', start + 1500)
+  const older = activityCommit(tileBeta, bsha, 'Older page', start - 86_400)
+  const stash = { kind: 'stash', repo: tileBeta, time: saved.time, stash: saved }
+  const file = { path: 'file.txt', status: 'M', added: 1, deleted: 1, binary: false }
+  const activityResponses = {
+    first: { entries: [newCommit, burst, earlier, stash], next: stash.time - 1, failures: [] },
+    older: { entries: [older], next: null, failures: [] },
+  }
+  const details = []
+  await withGitPanel([alpha, beta], {
+    width: 1450, panelState: { tiled: false, overview: true, ref: 'HEAD' }, stashes: new Map([[tileBeta, [saved]]]),
+    activity: params => params.has('until') ? activityResponses.older : activityResponses.first,
+    read({ pathname, searchParams }) {
+      if (pathname === '/api/vcs.commit') {
+        const sha = searchParams.get('sha')
+        const source = [newCommit, burst, earlier, older].find(entry => entry.commit.sha === sha)?.commit
+        details.push([searchParams.get('repo'), sha])
+        return { commit: source === undefined ? undefined
+          : { ...source, files: [file], committer: 'Ada', committerTime: source.authorTime, message: '' } }
+      }
+      if (pathname === '/api/vcs.stash') return { stash: { ...saved, files: [file], staged: 0 } }
+      if (pathname === '/api/vcs.diff') return { kind: 'text', path: file.path, before: true, after: true, hunks: [] }
+      return {}
+    },
+  }, async ({ harness, body, reads, persisted, writes, current }) => {
+    const q = selector => body.querySelector(selector)
+    const selected = () => q('.vcs-activity-row[aria-current="true"]')
+    const button = () => q('.vcs-activity-open')
+    const toggle = () => q('.vcs-activity-toggle')
+    const enter = async () => { harness.mouseClick(q('[data-all-repositories]')); await harness.settle() }
+    await enter()
+    const initial = persisted().activitySelected
+    assert.match(initial, new RegExp(tileTopic))
+    assert.deepEqual(details.at(-1), [tileAlpha, tileTopic])
+    assert.equal(q('.vcs-detail-refs button'), null, 'aggregate ref badges never open menus')
+    assert.equal(q('.vcs-stash-save'), null)
+    assert.equal(typeof selected().props.onContextMenu, 'undefined')
+
+    harness.mouseClick(toggle())
+    await harness.settle()
+    assert.equal(persisted().activitySelected, initial, 'clicking the toggle does not select the activity')
+    assert.equal(harness.document.activeElement.dataset.kind, 'burst')
+    assert.ok(q('.vcs-activity-row[data-kind="child"]'))
+    harness.keyDown(harness.document.activeElement, 'ArrowDown')
+    await harness.settle()
+    assert.equal(selected().dataset.kind, 'child')
+    harness.keyDown(selected(), ' ')
+    await harness.settle()
+    assert.equal(selected().dataset.kind, 'burst')
+    assert.equal(q('.vcs-activity-row[data-kind="child"]'), null)
+
+    harness.keyDown(selected(), 'Home')
+    await harness.settle()
+    assert.equal(q('.vcs-node-header').querySelectorAll('.vcs-parent-link').length, 1)
+    harness.mouseClick(q('.vcs-parent-link'))
+    await harness.settle()
+    assert.equal(selected().dataset.kind, 'child', 'the parent is selected inside the expanded burst')
+    assert.ok(details.some(([repo, sha]) => repo === tileAlpha && sha === tileLoose))
+    assert.equal(textOf(q('.vcs-node-title')), 'Earlier file')
+    const fileHead = q('[data-row-key="commit|file.txt"]')
+    harness.mouseClick(fileHead)
+    await harness.settle()
+    assert.notEqual(q('.vcs-tree-file[data-open]'), null)
+    assert.deepEqual(persisted().folds, {}, 'activity diff toggles never enter repository storage')
+
+    harness.keyDown(selected(), 'o')
+    await harness.settle()
+    assert.equal(persisted().timelineScope, 'repository')
+    assert.equal(persisted().node, tileLoose)
+    assert.equal(persisted().ref, 'all')
+    assert.equal(harness.document.activeElement.attributes.get('aria-current'), 'true')
+    await enter()
+    assert.equal(selected().dataset.kind, 'child')
+    assert.notEqual(q('.vcs-tree-file[data-open]'), null, 'return restores reading state for the activity row')
+    harness.mouseClick(q('.vcs-load-more'))
+    await harness.settle()
+    assert.equal(reads.activity.at(-1).get('until'), String(stash.time - 1))
+    assert.ok(body.querySelectorAll('.vcs-activity-row').find(row => textOf(row).includes('Older page')))
+    const beforeTiles = reads.activity.length
+    harness.keyDown(selected(), 't')
+    await harness.settle()
+    assert.equal(persisted().timelineScope, 'all')
+    assert.equal(current(), undefined, 'tiled activity carries no current repository column')
+    assert.equal(reads.activity.length, beforeTiles)
+    harness.keyDown(q('.vcs-root'), 't')
+    await harness.settle()
+    assert.equal(selected().dataset.kind, 'child')
+    assert.equal(reads.activity.at(-1).has('until'), false)
+    assert.ok(body.querySelectorAll('.vcs-activity-row').some(row => textOf(row).includes('Older page')),
+      're-entering splices the new first page onto already loaded older rows')
+    harness.mouseClick(q('[aria-label="top.refresh"]'))
+    await harness.settle()
+    assert.ok(!body.querySelectorAll('.vcs-activity-row').some(row => textOf(row).includes('Older page')),
+      'manual refresh resets to the first page')
+
+    const stashRow = body.querySelectorAll('.vcs-activity-row').find(row => textOf(row).includes('Save work'))
+    harness.mouseClick(stashRow)
+    await harness.settle()
+    assert.match(button().attributes.get('title'), /beta/)
+    assert.equal(q('.vcs-detail-toolbar').querySelector('[data-kind="stash"]').tagName, 'SPAN')
+    harness.mouseClick(button())
+    await harness.settle()
+    assert.equal(persisted().timelineScope, 'repository')
+    assert.equal(persisted().repo, tileBeta)
+    assert.equal(persisted().node, `stash:${saved.sha}`)
+    assert.ok(q('.vcs-stash-row[aria-current="true"]'))
+    await enter()
+    const pointer = q('.vcs-overview-pointer[data-kind="stash"]')
+    assert.equal(pointer.attributes.get('aria-current'), 'true')
+    harness.mouseClick(pointer)
+    await harness.settle()
+    assert.equal(persisted().timelineScope, 'repository')
+    assert.equal(persisted().node, `stash:${saved.sha}`, 'the overview pointer and activity reveal land at the same node')
+    assert.deepEqual(writes, [])
+  })
 })

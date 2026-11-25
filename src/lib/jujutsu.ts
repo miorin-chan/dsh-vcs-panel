@@ -10,6 +10,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 
 import { CommandRunner } from './command.js'
+import type { CommitNode, VcsRef } from './log.js'
 import { isFullSha } from './paths.js'
 import type { FileEntry } from './status.js'
 
@@ -17,9 +18,7 @@ import type { FileEntry } from './status.js'
 export type JjRecord = Record<string, unknown>
 
 /** One ref a commit record carries. */
-export interface JjRef {
-  /** Display name: a bookmark name, `name@remote`, or a tag name. */
-  name: string
+export interface JjRef extends VcsRef {
   /** Which list the ref came from. */
   kind: 'bookmark' | 'remote' | 'tag'
   /** A conflicted bookmark, marked rather than hidden. */
@@ -27,33 +26,15 @@ export interface JjRef {
 }
 
 /** One parsed commit record, from the log or detail template. */
-export interface JjCommit {
-  /** Full commit id. */
-  sha: string
-  /** Short change id, when the template emitted one. */
-  changeId?: string
-  /** Full parent commit ids, without the empty root. */
-  parents: string[]
+export interface JjCommit extends CommitNode {
   /** Local, remote, and tag refs pointing at this commit. */
   refs: JjRef[]
-  /** Author name. */
-  author: string
-  /** Author time in epoch milliseconds, or NaN. */
-  authorTime: number
-  /** First description line. */
-  subject: string
   /** True for the working-copy commit. */
   workingCopy: boolean
   /** True when the commit changes nothing. */
   empty: boolean
   /** True when the commit has unresolved conflicts. */
   conflict: boolean
-  /** Committer name, from the detail template. */
-  committer?: string
-  /** Committer time in epoch milliseconds, from the detail template. */
-  committerTime?: number
-  /** Full description, from the detail template. */
-  message?: string
 }
 
 /** Per-file line counts the detail template reports. */
@@ -118,10 +99,11 @@ const COMMIT_FIELDS = [
 ].join(', ')
 
 /** Fields only the selected node's detail needs. */
+const COMMITTER_TIME = '"committerTime" => committer.timestamp().format("%s")'
 const DETAIL_FIELDS = [
   '"description" => description',
   '"committer" => committer.name()',
-  '"committerTime" => committer.timestamp().format("%s")',
+  COMMITTER_TIME,
 ].join(', ')
 
 /** Per-file line counts and the node totals. */
@@ -134,6 +116,9 @@ const STAT_FIELDS = [
 
 /** One commit row per line; no patch, no per-file stats. */
 export const JJ_LOG_TEMPLATE = `json({${COMMIT_FIELDS}, ${REF_FIELDS}}) ++ "${NEWLINE}"`
+
+/** The same history row, with its activity ordering time. */
+export const JJ_ACTIVITY_TEMPLATE = `json({${COMMIT_FIELDS}, ${REF_FIELDS}, ${COMMITTER_TIME}}) ++ "${NEWLINE}"`
 
 /** One commit with its description and per-file stats; used by status and detail. */
 export const JJ_DETAIL_TEMPLATE = `json({${COMMIT_FIELDS}, ${DETAIL_FIELDS}, ${STAT_FIELDS}, ${REF_FIELDS}}) ++ "${NEWLINE}"`

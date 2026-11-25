@@ -1717,3 +1717,21 @@ test('stash API sends full ids and returns structured blocked failures', async (
     assert.equal(query.get('rev'), sha, 'opening either stash file scope sends the W id')
   }
 })
+
+test('api.activity sends only the session and optional time-page parameters', async () => {
+  const queries = []
+  const signal = new AbortController().signal
+  const page = { entries: [], next: null, failures: [] }
+  const api = createApi('activity session', { fetchImpl: async (url, options) => {
+    queries.push(new URL(url, 'http://localhost'))
+    assert.equal(options.signal, signal)
+    assert.equal(options.method, 'GET')
+    return Response.json(page)
+  } })
+  assert.deepEqual(await api.activity({ limit: 200 }, signal), page)
+  assert.deepEqual(await api.activity({ limit: 200, until: 0 }, signal), page)
+  assert.deepEqual(queries.map(url => [url.pathname, ...url.searchParams.entries()]), [
+    ['/api/vcs.activity', ['sessionId', 'activity session'], ['limit', '200']],
+    ['/api/vcs.activity', ['sessionId', 'activity session'], ['until', '0'], ['limit', '200']],
+  ])
+})

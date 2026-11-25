@@ -20,15 +20,17 @@ import { basename, dirname, isAbsolute } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 
+import { ACTIVITY_PAGE_MAX, ACTIVITY_PAGE_SIZE, mergeActivity } from './activity.js'
+import type { ActivityFailure, ActivityRepositoryAnswer } from './activity.js'
 import { canonicalDirectory } from './contain.js'
 import { badRequest, errorResponse, json, notFound, VcsError } from './errors.js'
 import { createBackends } from './vcs/index.js'
 import type { BackendRegistry, VcsBackend, VcsCapabilities } from './vcs/index.js'
 import { LOG_PAGE_MAX, LOG_SKIP_MAX } from './log.js'
-import { createLimiter, unsupportedOverview } from './overview.js'
+import { createLimiter, mapLimited, unsupportedOverview } from './overview.js'
 import type { OverviewRepository } from './overview.js'
 import { WORKING_TREE_NODE } from './nodes.js'
-import { repositoryName, sameRepoPath, validateRelPath, validateSha } from './paths.js'
+import { isFullSha, repositoryName, sameRepoPath, validateRelPath, validateSha } from './paths.js'
 import { RESET_MODES } from './ref-utils.js'
 import { requireStashSha } from './stash.js'
 import { STASH_MESSAGE_MAX } from './stash-types.js'
@@ -80,6 +82,7 @@ export interface VcsRouteHandlers {
   repositoryPreview: RouteHandler
   saveRepositoryConfig: RouteHandler
   overview: RouteHandler
+  activity: RouteHandler
   watch: RouteHandler
   status: RouteHandler
   untracked: RouteHandler
@@ -344,10 +347,7 @@ export function createHandlers(ctx: HandlersContext, {
     const { cwd } = await requireSession(query)
     const repoQuery = query.get('repo')
     if (repoQuery === null || repoQuery === '') throw badRequest('repo is required.')
-    const match = await resolveSessionRepository(ctx, cwd, repoQuery, signal)
-    if (match === undefined) {
-      throw new VcsError('not-a-repo', 'The requested repository is not available in this session.')
-    }
+    const match = await requireRepositoryMatch(cwd, repoQuery, signal)
     const vcs = match.vcs
     if (vcs === undefined) {
       throw new VcsError('internal', 'This repository uses an unsupported version control backend.')
@@ -357,6 +357,12 @@ export function createHandlers(ctx: HandlersContext, {
       throw new VcsError('internal', 'This repository uses an unsupported version control backend.')
     }
     return { root: match.path, name: repositoryName(match.path), vcs, backend }
+  }
+
+  async function requireRepositoryMatch(cwd: string, path: string, signal: AbortSignal) {
+    const match = await resolveSessionRepository(ctx, cwd, path, signal)
+    if (match === undefined) throw new VcsError('not-a-repo', 'The requested repository is not available in this session.')
+    return match
   }
 
   /** Content reads can target a verified sibling of the allowed repository. */
@@ -444,15 +450,55 @@ export function createHandlers(ctx: HandlersContext, {
     return { repositories, worktreesTruncated }
   }
 
+  async function findRepositories(cwd: string, signal: AbortSignal) {
+    const found = await discoverRepositories(ctx, cwd, signal)
+    return {
+      ...found,
+      ...await groupRepositories(found.repositories, signal),
+    }
+  }
+
   /** Handle `GET /api/vcs.repositories`. */
   async function repositories(request: Request): Promise<Response> {
+    const { cwd } = await requireSession(new URL(request.url).searchParams)
+    return json(await findRepositories(cwd, request.signal))
+  }
+
+  /** Handle `GET /api/vcs.activity` without taking a write lock or snapshot. */
+  async function activity(request: Request): Promise<Response> {
     const query = new URL(request.url).searchParams
+    const rawUntil = query.get('until')
+    const until = rawUntil === null ? null : readNonNegativeInteger(rawUntil)
+    if (until === undefined || query.getAll('until').length > 1) {
+      throw badRequest('until must be a non-negative safe integer.')
+    }
+    const limit = readInteger(query.get('limit'), ACTIVITY_PAGE_SIZE)
+    if (limit === undefined || limit < 1 || limit > ACTIVITY_PAGE_MAX || query.getAll('limit').length > 1) {
+      throw badRequest(`limit must be an integer from 1 to ${ACTIVITY_PAGE_MAX}.`)
+    }
+    const { signal } = request
     const { cwd } = await requireSession(query)
-    const found = await discoverRepositories(ctx, cwd, request.signal)
-    return json({
-      ...found,
-      ...await groupRepositories(found.repositories, request.signal),
+    signal.throwIfAborted()
+    const { repositories } = await findRepositories(cwd, signal)
+    const results = await mapLimited(repositories, 4, async (item): Promise<{ repo: string; page: ActivityRepositoryAnswer } | ActivityFailure> => {
+      signal.throwIfAborted()
+      const repo = item.path
+      try {
+        const match = await requireRepositoryMatch(cwd, repo, signal)
+        if (match.vcs !== item.vcs) throw new VcsError('not-a-repo', 'The repository has changed.')
+        const backend = match.vcs === undefined ? undefined : backends.get(match.vcs)
+        if (typeof backend?.activity !== 'function') return { repo, error: { code: 'unsupported' } }
+        await backend.require(signal)
+        const heads = [...new Set((item.worktrees ?? []).map(tree => tree.head).filter(isFullSha))]
+        return { repo, page: await backend.activity(match.path, { until, limit, heads }, signal) }
+      } catch (error) {
+        if (signal.aborted || isAbortError(error)) throw error
+        if (!(error instanceof VcsError)) warn(error instanceof Error ? error.message : String(error))
+        return { repo, error: { code: error instanceof VcsError ? error.code : 'internal' } }
+      }
     })
+    signal.throwIfAborted()
+    return json(mergeActivity(results, limit))
   }
 
   async function repositoryConfig(request: Request): Promise<Response> {
@@ -500,8 +546,7 @@ export function createHandlers(ctx: HandlersContext, {
       await repo.backend.require(request.signal)
       targets = [{ path: repo.root, vcs: repo.vcs }]
     } else {
-      const found = await discoverRepositories(ctx, sessionCwd, request.signal)
-      const { repositories: grouped } = await groupRepositories(found.repositories, request.signal)
+      const { repositories: grouped } = await findRepositories(sessionCwd, request.signal)
       targets = grouped.flatMap(entry => entry.vcs === undefined ? [] : [{ path: entry.path, vcs: entry.vcs }])
     }
     const walk = requested.length === 0
@@ -1308,6 +1353,7 @@ export function createHandlers(ctx: HandlersContext, {
     repositoryPreview: wrap(repositoryPreview),
     saveRepositoryConfig: wrap(saveRepositoryConfig),
     overview: wrap(overview),
+    activity: wrap(activity),
     watch: wrap(watch),
     status: wrap(status),
     untracked: wrap(untracked),

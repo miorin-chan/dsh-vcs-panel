@@ -12,10 +12,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Api } from './api.js'
 
 /** The invalidation domains the Host announces. */
-const DOMAINS: WatchDomain[] = ['working', 'history', 'repositories']
+const DOMAINS: WatchDomain[] = ['working', 'history', 'repositories', 'activity']
 
 /** One invalidation domain. */
-export type WatchDomain = 'working' | 'history' | 'repositories'
+export type WatchDomain = 'working' | 'history' | 'repositories' | 'activity'
 
 const DEBOUNCE_MS = 160
 
@@ -55,13 +55,15 @@ export interface VcsWatchOptions {
   history: boolean
   /** Whether a repository read is in flight. */
   repositories: boolean
+  /** Whether an aggregate history read is in flight. */
+  activity?: boolean
   /** Run the reads for the domains that settled. */
   onRefresh: (domains: WatchDomain[]) => void
 }
 
 /** Merge invalidations while reads or writes are in flight, with one trailing batch. */
 export function useVcsWatch({
-  api, repo, vcs, pathsKey, visible, blocked, working, history, repositories, onRefresh,
+  api, repo, vcs, pathsKey, visible, blocked, working, history, repositories, activity = false, onRefresh,
 }: VcsWatchOptions): void {
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === 'visible')
   const [queued, setQueued] = useState<WatchQueue | null>(null)
@@ -103,7 +105,7 @@ export function useVcsWatch({
 
   useEffect(() => {
     if (!active || blocked || queued?.api !== api || queued.scope !== scope) return undefined
-    const busy: Record<WatchDomain, boolean> = { working, history, repositories }
+    const busy: Record<WatchDomain, boolean> = { working, history, repositories, activity }
     const runnable = queued.domains.filter(domain => !busy[domain])
     if (runnable.length === 0) return undefined
     const timer = setTimeout(() => {
@@ -115,5 +117,5 @@ export function useVcsWatch({
       current.onRefresh(runnable)
     }, DEBOUNCE_MS)
     return () => { clearTimeout(timer) }
-  }, [active, api, blocked, history, queued, repositories, scope, working])
+  }, [active, activity, api, blocked, history, queued, repositories, scope, working])
 }

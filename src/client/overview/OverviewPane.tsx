@@ -11,7 +11,7 @@ import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ApiFailure, RepositoryInfo } from '../api.js'
 import { errorMessage, formatCommitTime, formatPlural } from '../format.js'
 import { Bar, Skeleton } from '../skeleton.jsx'
-import { Chevron, IconButton, SettingsIcon } from '../ui.jsx'
+import { AllRepositoriesIcon, Chevron, IconButton, SettingsIcon } from '../ui.jsx'
 import type { OverviewData } from './useOverview.js'
 import type { FilterId, PointerView, RepositoryView } from './model.js'
 import {
@@ -38,6 +38,8 @@ export interface OverviewPaneProps {
   views: readonly RepositoryView[]
   cwd: string | null
   currentRepo: string | null
+  allRepositories: { active: boolean; count: number } | null
+  onSelectAll: (keyboard: boolean) => void
   /** The pointer the timeline's selection names. */
   selected: string | null
   width: number
@@ -129,6 +131,9 @@ type RepositorySummary =
 type NavigationRow =
   | { key: string; path: string; expandable: boolean }
   | { key: string; pointer: PointerView }
+  | { key: 'all'; all: true }
+
+const ALL_ROW: NavigationRow = { key: 'all', all: true }
 
 const repoKey = (path: string) => `repo:${path}`
 
@@ -150,7 +155,7 @@ function PendingPointers() {
 
 export function OverviewPane({
   data, repositories, views, cwd, currentRepo, selected, width, onResize, onSelectRepository, onSelectPointer, onPointerActions,
-  onManageRepositories, onAddUnlisted, control, t, locale,
+  allRepositories, onSelectAll, onManageRepositories, onAddUnlisted, control, t, locale,
 }: OverviewPaneProps) {
   const titleRef = useRef<HTMLDivElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
@@ -182,7 +187,7 @@ export function OverviewPane({
   const listed = registered.filter(repositoryOn).sort(byAttention)
   const loud = listed.filter(view => !view.quiet || narrowed)
   const quiet = listed.filter(view => view.quiet && !narrowed)
-  const currentKey = currentRepo === null ? null : repoKey(currentRepo)
+  const currentKey = allRepositories?.active ? ALL_ROW.key : currentRepo === null ? null : repoKey(currentRepo)
   // Moving a keyed element to another section can detach it in the DOM. Capture
   // only actual list focus, so an inactive cursor never steals focus on a read.
   const focused = listRef.current?.ownerDocument.activeElement as HTMLElement | null | undefined
@@ -203,6 +208,7 @@ export function OverviewPane({
     ...shownPointers(view).map(pointer => ({ key: pointer.id, pointer })),
   ]
   const rows = [
+    ...(allRepositories === null ? [] : [ALL_ROW]),
     ...loud.flatMap(stopsWithPointers),
     ...failed.map(({ entry }) => repositoryStop(entry.path)),
     ...pending.map(entry => repositoryStop(entry.path)),
@@ -292,7 +298,8 @@ export function OverviewPane({
       event.stopPropagation()
       setCursor(row.key)
       if ('pointer' in row) onSelectPointer(row.pointer, true)
-      else onSelectRepository(row.path, true)
+      else if ('path' in row) onSelectRepository(row.path, true)
+      else onSelectAll(true)
       return
     } else if ((event.key === 'ArrowLeft' || event.key === 'h') && row !== undefined && 'path' in row && row.expandable) {
       event.preventDefault()
@@ -334,7 +341,7 @@ export function OverviewPane({
     dragRef.current = { x: event.clientX, width }
   }
 
-  const currentTag = (path: string) => path === currentRepo
+  const currentTag = (current: boolean) => current
     ? <span className="vcs-overview-tag" data-current="">{t('overview.current')}</span>
     : null
 
@@ -342,6 +349,23 @@ export function OverviewPane({
     focusRow(repoKey(path))
     onSelectRepository(path, false)
   }
+
+  const allRow = allRepositories === null ? null : (
+    <div
+      key={ALL_ROW.key} className="vcs-overview-repo vcs-overview-all"
+      role="treeitem" aria-level={1} aria-current={allRepositories.active || undefined}
+      data-overview-key={ALL_ROW.key} data-all-repositories="" tabIndex={activeKey === ALL_ROW.key ? 0 : -1}
+      title={t('all.hint')}
+      onClick={() => { focusRow(ALL_ROW.key); onSelectAll(false) }}
+    >
+      <AllRepositoriesIcon />
+      <span className="vcs-overview-repo-name">{t('all.title')}</span>
+      <span className="vcs-overview-repo-meta">
+        {formatPlural(t, 'all.count', allRepositories.count, locale)}
+        {currentTag(allRepositories.active)}
+      </span>
+    </div>
+  )
 
   const repositoryRow = ({ path, name }: Pick<RepositoryInfo, 'path' | 'name'>, summary: RepositorySummary) => {
     const view = summary.status === 'ready' ? summary.view : null
@@ -385,7 +409,7 @@ export function OverviewPane({
           {relativePath === '.' ? name : relativePath.slice(slash + 1)}
         </span>
         <span className="vcs-overview-repo-meta">
-          {currentTag(path)}
+          {currentTag(path === currentRepo)}
           {view !== null && fetch !== null ? (
             <>
               {view.remotes.length > 1 ? <span className="vcs-overview-tag">{formatPlural(t, 'overview.remotes', view.remotes.length, locale)}</span> : null}
@@ -467,7 +491,7 @@ export function OverviewPane({
       >
         <span className="vcs-overview-quiet-name">
           <span className="vcs-overview-repo-name">{view.relativePath === '.' ? view.name : view.relativePath.split('/').at(-1)}</span>
-          {currentTag(view.path)}
+          {currentTag(view.path === currentRepo)}
         </span>
         <span className="vcs-overview-facts">{view.remotes.length === 0 ? t('overview.noRemote') : `${main?.branch ?? main?.head?.slice(0, 7) ?? ''} ≡ ${view.remotes[0]}`}</span>
       </div>
@@ -557,6 +581,7 @@ export function OverviewPane({
       >
         {/* Keep repository keys at the same level as they move between sections. */}
         {[
+          allRow,
           data.error === null ? null : <p key="read-error" className="vcs-note" role="alert">{errorMessage(t, data.error)}</p>,
           loud.length + failed.length > 0 ? heading('overview.attention', loud.length + failed.length) : null,
           ...loud.flatMap(rowsWithPointers),

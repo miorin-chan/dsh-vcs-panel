@@ -68,3 +68,12 @@
 .vcs-graph-dot-working {
   stroke-width: 2;
 }
+
+.vcs-graph-dot-burst {
+  fill: none;
+  stroke-width: 2;
+}
+
+.vcs-graph-dot-batch {
+  stroke: none;
+}

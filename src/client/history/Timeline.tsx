@@ -10,7 +10,7 @@
  * width, and refs, id, author, and time share the second line.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useMemo } from 'react'
 import type { ButtonHTMLAttributes, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import type { StashEntry } from '../../lib/stash-types.js'
@@ -21,16 +21,16 @@ import { hasSeveralAuthors } from './commits.js'
 import { worktreeSummary } from './timeline-model.js'
 import type { TimelineRow, WorktreeStatus } from './timeline-model.js'
 import { errorMessage, formatCommitTime, formatCount, formatPlural, shortChangeId, shortSha } from '../format.js'
-import { DOWN, findAncestor, FORWARD, hasClass, isDiscreteActionButton, isEditableTarget, movement, unmodified, UP } from '../keys.js'
+import { findAncestor, hasClass } from '../keys.js'
 import type { ElementLike } from '../keys.js'
 import { RefBadge, UntrackedStat, WorkingCopyBadge } from '../ui.jsx'
 import type { RefActivation, RefView } from '../ui.jsx'
 import { Bar, TimelineSkeleton } from '../skeleton.jsx'
+import { useTimelineNavigation } from './useTimelineNavigation.js'
+import type { TimelineControl } from './useTimelineNavigation.js'
 
 /** Fixed row height in CSS pixels. */
 export const ROW_HEIGHT = DEFAULT_ROW_HEIGHT
-/** Rows drawn beyond each viewport edge. */
-const OVERSCAN = 10
 /** Ref badges shown on a row before the rest are left to the detail. */
 const ROW_REFS = 3
 
@@ -108,25 +108,6 @@ interface RefMenuEvent extends RefActivation {
   currentTarget: Element | null
 }
 
-/** The keyboard event fields the timeline reads; both DOM and React events carry them. */
-export interface TimelineKeyEvent {
-  key: string
-  isComposing?: boolean | undefined
-  shiftKey: boolean
-  altKey?: boolean | undefined
-  ctrlKey?: boolean | undefined
-  metaKey?: boolean | undefined
-  target: EventTarget | null
-  preventDefault(): void
-  getModifierState?: ((...args: never[]) => boolean) | undefined
-}
-
-/** The imperative handle the detail pane sends timeline keys to. */
-export interface TimelineControl {
-  restoreFocus: () => boolean
-  handleKeyDown: (event: TimelineKeyEvent) => boolean
-}
-
 /** The timeline's props. */
 export interface TimelineProps {
   rows: readonly TimelineRow<TimelineCommit>[]
@@ -197,59 +178,15 @@ export function Timeline({
   loading, loadingMore, error, hasMore, truncated, stashesTruncated, onLoadMore, onRetry,
   initialScrollTop = 0, onScrollOffset, canLoadMore = true,
 }: TimelineProps) {
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const [scrollTop, setScrollTop] = useState(0)
-  const [viewport, setViewport] = useState(0)
-  const restoreRef = useRef<number | null>(initialScrollTop)
-  const onScrollOffsetRef = useRef(onScrollOffset)
-  onScrollOffsetRef.current = onScrollOffset
   const commits = useMemo(() => timelineRows.flatMap(row => row.kind === 'commit' ? [row.commit] : []), [timelineRows])
-
-  useLayoutEffect(() => {
-    const element = scrollRef.current
-    if (element === null) return undefined
-    const measure = () => { setViewport(element.clientHeight) }
-    measure()
-    if (typeof ResizeObserver === 'undefined') return undefined
-    const observer = new ResizeObserver(measure)
-    observer.observe(element)
-    return () => { observer.disconnect() }
-  }, [])
-
-  // The first page may arrive after mount, when there is nothing to scroll
-  // yet; apply the saved offset once commits are there.
-  useEffect(() => {
-    if (restoreRef.current === null || commits.length === 0) return
-    const element = scrollRef.current
-    if (element === null) return
-    element.scrollTop = restoreRef.current
-    setScrollTop(element.scrollTop)
-    onScrollOffsetRef.current?.(element.scrollTop)
-    restoreRef.current = null
-  }, [commits.length])
-
-  // Keep the selected row in view; appending a page must not move the list.
-  useLayoutEffect(() => {
-    const element = scrollRef.current
-    if (element === null || selectedRow < 0 || element.clientHeight <= 0) return
-    const top = selectedRow * ROW_HEIGHT
-    const bottom = top + ROW_HEIGHT
-    let nextTop = element.scrollTop
-    if (top < element.scrollTop) nextTop = top
-    else if (bottom > element.scrollTop + element.clientHeight) nextTop = Math.max(0, bottom - element.clientHeight)
-    if (nextTop !== element.scrollTop) {
-      element.scrollTop = nextTop
-      setScrollTop(nextTop)
-      onScrollOffsetRef.current?.(nextTop)
-    }
-  }, [selectedRow])
-
   const rowCount = timelineRows.length
   const gutter = graphWidth(layout)
-  const first = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
-  const last = Math.min(rowCount, Math.ceil((scrollTop + viewport) / ROW_HEIGHT) + OVERSCAN)
   const showAuthor = useMemo(() => hasSeveralAuthors(commits), [commits])
   const focusRow = rowCount === 0 ? -1 : Math.min(rowCount - 1, selectedRow >= 0 ? selectedRow : 0)
+  const { scrollRef, scrollTop, viewport, indices, onScroll, onKeyDown } = useTimelineNavigation({
+    rowCount, focusRow, selectedRow, readyToRestore: commits.length > 0, initialScrollTop, onScrollOffset,
+    onMove, onOpen, control,
+  })
   const now = Date.now()
 
   const renderRow = (index: number) => {
@@ -364,92 +301,6 @@ export function Timeline({
     )
   }
 
-  const indices: number[] = []
-  if (focusRow >= 0 && focusRow < first) indices.push(focusRow)
-  for (let index = first; index < last; index += 1) indices.push(index)
-  if (focusRow >= last && focusRow < rowCount) indices.push(focusRow)
-  const rows = indices.map(renderRow)
-
-  const pageStep = Math.max(1, Math.floor((viewport > 0 ? viewport : ROW_HEIGHT * 8) / ROW_HEIGHT) - 1)
-
-  /** Keys of the timeline: move, page, jump to ends, or open the selected node's files. */
-  const runKeyDown = useCallback((event: TimelineKeyEvent) => {
-    if (!unmodified(event)) return false
-    if (event.isComposing === true || isEditableTarget(event.target)) return false
-    if (event.key === 'Enter' && isDiscreteActionButton(event.target, scrollRef.current)) return false
-    const direction: string | null = movement(event)
-    if (direction === DOWN) {
-      event.preventDefault()
-      onMove(1)
-      return true
-    }
-    if (direction === UP) {
-      event.preventDefault()
-      onMove(-1)
-      return true
-    }
-    if (event.key === 'PageDown') {
-      event.preventDefault()
-      onMove(pageStep)
-      return true
-    }
-    if (event.key === 'PageUp') {
-      event.preventDefault()
-      onMove(-pageStep)
-      return true
-    }
-    if (event.key === 'Home') {
-      event.preventDefault()
-      onMove(-Math.max(1, rowCount))
-      return true
-    }
-    if (event.key === 'End') {
-      event.preventDefault()
-      onMove(Math.max(1, rowCount))
-      return true
-    }
-    if (direction === FORWARD || event.key === 'Enter') {
-      event.preventDefault()
-      onOpen()
-      return true
-    }
-    return false
-  }, [onMove, onOpen, pageStep, rowCount])
-
-  const restoreFocus = useCallback(() => {
-    const scroll = scrollRef.current
-    if (scroll === null) return false
-    // The selected row can be outside a restored reading position. Focus the
-    // timeline without moving that position just to mount the selected row.
-    const target = scroll.querySelector<HTMLElement>(`[data-timeline-index="${focusRow}"]`) ?? scroll
-    target.focus({ preventScroll: true })
-    return true
-  }, [focusRow])
-
-  useLayoutEffect(() => {
-    if (control === undefined || control === null) return undefined
-    control.current = {
-      restoreFocus,
-      handleKeyDown(event: TimelineKeyEvent) {
-        if (!runKeyDown(event)) return false
-        // `document.activeElement` is typed `Element`, but every element a
-        // browser can focus is an `HTMLElement` and test stubs expose `dataset`.
-        const active: HTMLElement | null = typeof document === 'undefined'
-          ? null
-          : document.activeElement as HTMLElement | null
-        if (active === null || active?.dataset?.timelineIndex === undefined || !scrollRef.current?.contains(active)) {
-          restoreFocus()
-        }
-        return true
-      },
-    }
-    return () => { control.current = null }
-  }, [control, restoreFocus, runKeyDown])
-
-  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    runKeyDown(event)
-  }
-
   return (
     <div className="vcs-timeline">
       <div className="vcs-timeline-viewport">
@@ -461,13 +312,10 @@ export function Timeline({
           tabIndex={-1}
           data-zone="timeline"
           onKeyDown={onKeyDown}
-          onScroll={event => {
-            setScrollTop(event.currentTarget.scrollTop)
-            onScrollOffset?.(event.currentTarget.scrollTop)
-          }}
+          onScroll={onScroll}
         >
           <div className="vcs-timeline-rows" style={{ height: `${rowCount * ROW_HEIGHT}px` }}>
-            {rows}
+            {indices.map(renderRow)}
           </div>
           {loading && commits.length === 0 ? (
             <TimelineSkeleton

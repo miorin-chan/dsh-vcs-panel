@@ -1,4 +1,6 @@
 import test, { after } from 'node:test'
+import type { TestContext } from 'node:test'
+
 import assert from 'node:assert/strict'
 import { execFileSync, spawn as spawnProcess } from 'node:child_process'
 import {
@@ -20,6 +22,7 @@ import { tmpdir } from 'node:os'
 
 import { apply, createHandlers, createTurnTracker, normalizeConfig } from '../index.js'
 import { OVERVIEW_GRAPH_MAX } from '../lib/overview.js'
+import { GitBackend } from '../lib/vcs/git.js'
 import { parseGitWorktrees } from '../lib/worktrees.js'
 
 // Keep the fixtures independent of the user's global git configuration.
@@ -825,6 +828,19 @@ test('watch with no repository streams repository discovery and handles reader c
   assert.deepEqual(await stream.domain('repositories'), { domains: ['repositories'] })
   await stream.cancel()
   assert.equal((await stream.next()).event, 'closed')
+})
+
+test('watch invalidates aggregate history once when a changed Agent turn ends', async t => {
+  const { handler, params, event } = watchFixture(t)
+  const stream = await watchStream(t, handler, params)
+  event('tool/call', { turn: 1, name: 'edit', callId: 'other-repo', arguments: '{"path":"../other/file.txt"}' })
+  event('tool/result', { turn: 1, message: { source: { callId: 'other-repo' } } })
+  assert.equal(await stream.next(250), null, 'the unselected repository does not invalidate the current working tree')
+  event('turn/end', { turn: 1 })
+  assert.deepEqual(await stream.domain('activity'), { domains: ['activity'] })
+  event('turn/end', { turn: 1 })
+  event('turn/end', { turn: 2 })
+  assert.equal(await stream.next(250), null, 'duplicate or unchanged ends do not announce another refresh')
 })
 
 test('watch observes external Jujutsu operation heads and snapshots a hidden changed turn once across streams', { skip: !HAS_JJ, timeout: 12_000 }, async t => {
@@ -3123,6 +3139,7 @@ test('apply registers every GET and POST route inside the fence and honors enabl
   assert.deepEqual(routes.filter(r => r.path !== REPOSITORY_CONFIG_ROUTE && r.path !== REPOSITORY_PREVIEW_ROUTE).map(r => r.path), [
     '/api/vcs.repositories',
     '/api/vcs.overview',
+    '/api/vcs.activity',
     '/api/vcs.watch',
     '/api/vcs.status',
     '/api/vcs.branches',
@@ -5790,4 +5807,257 @@ test('stash apply reports races honestly and keeps the stash when conflict or dr
     assert.equal(await readFile(join(f.repo, 'draft/note.txt'), 'utf8'), 'untracked\n')
     assert.equal(git(f.repo, ['rev-parse', 'stash']), sha)
   })
+})
+
+/** Reuse the actual read handlers and filesystem boundary with a disposable session root. */
+function activityFixture(t: TestContext, options: Record<string, unknown> = {}) {
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'vcs-activity-')))
+  t.after(() => rmSync(scratch, { recursive: true, force: true }))
+  const cwd = join(scratch, 'session')
+  mkdirSync(cwd)
+  const ctx = createHost({
+    sessions: { get: (id: string) => id === 'activity' ? { header: { cwd } } : undefined },
+    ...options,
+  })
+  const routes = createHandlers(ctx)
+  const read = (params = {}) => call(routes.activity, route('/api/vcs.activity', { sessionId: 'activity', ...params }))
+  return { scratch, cwd, ctx, routes, read }
+}
+
+/** A commit whose author time is deliberately different from its committer time. */
+function timedGit(cwd: string, args: string[], time: number) {
+  return execFileSync('git', args, {
+    cwd, env: { ...GIT_ENV, GIT_AUTHOR_DATE: `@${time + 600} +0000`, GIT_COMMITTER_DATE: `@${time} +0000` },
+    encoding: 'utf8',
+  }).trim()
+}
+
+function activityCommit(cwd: string, time: number, subject: string) {
+  timedGit(cwd, ['commit', '-q', '--allow-empty', '-m', subject], time)
+  return git(cwd, ['rev-parse', 'HEAD'])
+}
+
+test('activity validates every cursor and limit before executing a backend command', async t => {
+  let commands = 0
+  const { cwd, read } = activityFixture(t, {
+    subprocess: {
+      resolveExecutable: async () => { commands += 1; throw new Error('unexpected executable resolution') },
+      spawn() { commands += 1; throw new Error('unexpected backend command') },
+    },
+  })
+  initRepo(cwd)
+  for (const until of ['-1', '1.5', '1e3', 'abc', '', '9007199254740992', ' 1', ['1', '2']]) {
+    const { status, body } = await read({ until })
+    assert.equal(status, 400, JSON.stringify(until))
+    assert.deepEqual(body, { error: { code: 'bad-request', message: 'until must be a non-negative safe integer.' } })
+    assert.equal(commands, 0)
+  }
+  for (const limit of ['0', '301', 'x', '1.5', '1e2', '', ['1', '2']]) {
+    const { status, body } = await read({ limit })
+    assert.equal(status, 400, JSON.stringify(limit))
+    assert.deepEqual(body, { error: { code: 'bad-request', message: 'limit must be an integer from 1 to 300.' } })
+    assert.equal(commands, 0)
+  }
+})
+
+test('activity merges local histories in discovery order at ties and never splits a read second across pages', async t => {
+  const { cwd, read, routes } = activityFixture(t)
+  const epoch = 1_700_000_000
+  const repo = ['alpha', 'beta', 'gamma'].map(name => join(cwd, name))
+  repo.forEach(path => initRepo(path))
+  for (const [index, path] of repo.entries()) activityCommit(path, epoch + index, `first ${index}`)
+  for (const [index, path] of repo.entries()) activityCommit(path, epoch + 5, `tie ${index}`)
+  const newest = activityCommit(repo[1], epoch + 7, 'newest')
+  const catalog = (await call(routes.repositories, route('/api/vcs.repositories', { sessionId: 'activity' }))).body.repositories
+  const full = await read({ limit: 300 })
+  assert.equal(full.status, 200)
+  assert.equal(full.body.entries[0].commit.sha, newest)
+  assert.equal(full.body.entries[0].commit.authorTime, (epoch + 607) * 1000)
+  assert.equal(full.body.entries[0].commit.committerTime, (epoch + 7) * 1000)
+  assert.deepEqual(full.body.entries.map(entry => entry.time - epoch), [7, 5, 5, 5, 2, 1, 0])
+  assert.deepEqual(full.body.entries.slice(1, 4).map(entry => entry.repo), catalog.map(entry => entry.path))
+  assert.deepEqual(full.body.failures, [])
+  assert.equal(full.body.next, null)
+  assert.deepEqual((await read()).body, full.body, 'omitting limit reads a default-sized first page')
+  assert.deepEqual((await read({ until: Number.MAX_SAFE_INTEGER })).body, full.body)
+
+  const first = await read({ limit: 3 })
+  assert.equal(first.body.entries.length, 4, 'the nominal cut landed inside the three-repository tie')
+  assert.equal(first.body.next, epoch + 4)
+  const bounded = await read({ limit: 300, until: epoch + 5 })
+  assert.equal(bounded.body.entries[0].time, epoch + 5, 'the upper bound includes the entire second')
+  assert.deepEqual(bounded.body.entries, full.body.entries.slice(1))
+
+  for (const limit of [1, 2, 3, 4, 7]) {
+    const entries = []
+    let cursor: number | null = null
+    for (let pages = 0; ; pages += 1) {
+      assert.ok(pages <= 7, 'pagination must terminate')
+      const { status, body } = await read({ limit, ...(cursor === null ? {} : { until: cursor }) })
+      assert.equal(status, 200)
+      assert.deepEqual(body.failures, [])
+      entries.push(...body.entries)
+      if (body.next === null) break
+      assert.ok(cursor === null || body.next < cursor)
+      cursor = body.next
+    }
+    assert.deepEqual(entries, full.body.entries, `all pages match the full read with limit=${limit}`)
+  }
+})
+
+test('Git activity reads local branches, detached registered heads and bounded stashes, but not remote-only history', async t => {
+  const { cwd, scratch, read, routes } = activityFixture(t)
+  initRepo(cwd)
+  const base = activityCommit(cwd, 0, 'epoch base')
+  const bare = join(scratch, 'origin.git')
+  git(scratch, ['init', '--bare', '-q', bare])
+  git(cwd, ['remote', 'add', 'origin', bare])
+  git(cwd, ['push', '-q', 'origin', 'main'])
+  git(cwd, ['switch', '-qc', 'publish'])
+  const remote = activityCommit(cwd, 12, 'remote only')
+  git(cwd, ['push', '-q', 'origin', 'HEAD:refs/heads/remote-only'])
+  git(cwd, ['switch', '-q', 'main'])
+  git(cwd, ['branch', '-D', 'publish'])
+  git(cwd, ['fetch', '-q', 'origin'])
+  assert.equal(git(cwd, ['rev-parse', 'origin/remote-only']), remote)
+
+  writeFileSync(join(cwd, 'state.txt'), 'saved work\n')
+  git(cwd, ['add', 'state.txt'])
+  writeFileSync(join(cwd, 'untracked.txt'), 'untracked work\n')
+  timedGit(cwd, ['stash', 'push', '-qu', '-m', 'save for later'], 5)
+  const [stash, stashBase, index, untracked] = git(cwd, ['log', '-1', '--format=%H %P', 'refs/stash', '--']).split(' ')
+  assert.equal(stashBase, base)
+
+  const detached = join(cwd, 'detached')
+  git(cwd, ['worktree', 'add', '-q', '--detach', detached, base])
+  const head = activityCommit(detached, 10, 'detached but local')
+  const unborn = join(cwd, 'unborn')
+  initRepo(unborn)
+  const catalog = (await call(routes.repositories, route('/api/vcs.repositories', { sessionId: 'activity' }))).body.repositories
+  assert.deepEqual(catalog.map(repo => repo.path), [cwd, unborn], 'linked checkouts are grouped')
+  assert.ok(catalog[0].worktrees.some(tree => tree.path === detached && tree.head === head))
+
+  const { status, body } = await read()
+  assert.equal(status, 200)
+  assert.deepEqual(body.failures, [], 'a repository without commits is not a failure')
+  assert.equal(body.next, null)
+  assert.deepEqual(body.entries.map(entry => [entry.kind, entry.repo, entry.time, (entry.commit ?? entry.stash).sha]), [
+    ['commit', cwd, 10, head], ['stash', cwd, 5, stash], ['commit', cwd, 0, base],
+  ])
+  const baseRow = body.entries.at(-1)
+  assert.ok(baseRow.commit.refs.some(ref => ref.kind === 'remote' && ref.remote === 'origin' && ref.branch === 'main'))
+  assert.deepEqual([body.entries[1].stash.index, body.entries[1].stash.untracked], [index, untracked])
+  for (const sha of [remote, stash, index, untracked]) assert.ok(!body.entries.some(entry => entry.commit?.sha === sha))
+  assert.deepEqual((await read({ until: 5 })).body.entries, body.entries.slice(1))
+  assert.deepEqual((await read({ until: 0 })).body.entries, [baseRow], 'Git raw UTC epoch dates are exact even at zero')
+
+  const expected = (await read({ limit: 1 })).body
+  const damaged = join(cwd, 'damaged')
+  mkdirSync(join(damaged, '.git'), { recursive: true })
+  const after = (await read({ limit: 1 })).body
+  assert.deepEqual(after, { ...expected, failures: [{ repo: damaged, error: { code: 'not-a-repo' } }] },
+    'a broken nested marker must not read its containing Git repository')
+})
+
+test('activity isolates a missing Jujutsu executable from successful Git reads', async t => {
+  const { cwd, read } = activityFixture(t, {
+    subprocess: {
+      ...fakeSubprocess,
+      resolveExecutable(command: string) {
+        if (command === 'jj') return Promise.reject(new Error('not installed'))
+        return fakeSubprocess.resolveExecutable(command)
+      },
+    },
+  })
+  const gitRepo = join(cwd, 'git')
+  initRepo(gitRepo)
+  activityCommit(gitRepo, 42, 'local')
+  const missing = join(cwd, 'missing')
+  mkdirSync(join(missing, '.jj'), { recursive: true })
+  const { status, body } = await read()
+  assert.equal(status, 200)
+  assert.deepEqual(body.entries.map(entry => entry.repo), [gitRepo])
+  assert.deepEqual(body.failures, [{ repo: missing, error: { code: 'vcs-missing' } }])
+  assert.equal(body.next, null)
+})
+
+test('activity limits concurrent repositories and cancels queued reads', { timeout: 10_000 }, async t => {
+  const { ctx, cwd } = activityFixture(t)
+  for (let index = 0; index < 5; index += 1) initRepo(join(cwd, String(index)))
+  const backend = new GitBackend(ctx)
+  const started: string[] = []
+  const fourth = Promise.withResolvers<void>()
+  const unblock = Promise.withResolvers<void>()
+  backend.activity = async (root, _request, signal) => {
+    started.push(root)
+    if (started.length === 4) fourth.resolve()
+    await unblock.promise
+    signal.throwIfAborted()
+    return { entries: [], exhausted: true }
+  }
+  const routeHandler = createHandlers(ctx, { backends: { get: () => backend, list: () => [backend] } }).activity
+  const controller = new AbortController()
+  const pending = routeHandler(new Request('http://127.0.0.1/api/vcs.activity?sessionId=activity', { signal: controller.signal }))
+  await fourth.promise
+  assert.equal(started.length, 4)
+  controller.abort()
+  unblock.resolve()
+  await assert.rejects(pending, { name: 'AbortError' })
+  assert.equal(started.length, 4, 'the queued fifth repository never starts')
+})
+
+test('Jujutsu activity keeps described local history, bounds by committer second and leaves the op log unchanged', { skip: !HAS_JJ }, async t => {
+  const env = { ...JJ_ENV }
+  const commands: string[][] = []
+  const { cwd, scratch, read } = activityFixture(t, {
+    subprocess: {
+      ...fakeSubprocess,
+      spawn(spec) {
+        commands.push(spec.argv)
+        return fakeSubprocess.spawn({ ...spec, env: { ...spec.env, HOME: env.HOME, JJ_CONFIG: env.JJ_CONFIG } })
+      },
+    },
+  })
+  env.HOME = scratch
+  env.JJ_CONFIG = join(scratch, 'jj.toml')
+  const run = (args: string[], time?: number) => execFileSync('jj', [
+    ...(time === undefined ? [] : ['--config', `debug.commit-timestamp="${new Date(time * 1000).toISOString()}"`]),
+    ...args,
+  ], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  const epoch = 1_700_000_000
+  const head = () => run(['--ignore-working-copy', 'log', '-G', '-r', '@', '-T', 'commit_id'])
+  const op = () => run(['--ignore-working-copy', '--at-op=@', 'op', 'log', '-G', '-n', '1', '-T', 'id'])
+  run(['git', 'init', '--no-colocate'])
+  run(['describe', '-m', 'described parent'], epoch)
+  const parent = head()
+  run(['new', '-m', 'described workspace'], epoch + 2)
+  const described = head()
+  const shown = (await read()).body.entries
+  assert.deepEqual(shown.map(entry => [entry.commit.sha, entry.time]), [[described, epoch + 2], [parent, epoch]])
+  assert.equal(shown[0].commit.workingCopy, true)
+  assert.equal(shown[0].commit.empty, true)
+  assert.ok(shown[0].commit.changeId)
+
+  run(['new'], epoch + 3)
+  const placeholder = head()
+  run(['bookmark', 'create', 'placeholder'])
+  run(['new'], epoch + 4)
+  writeFileSync(join(cwd, 'dirty.txt'), 'recorded but not described\n')
+  run(['status'], epoch + 5)
+  const undescribed = head()
+  writeFileSync(join(cwd, 'unrecorded.txt'), 'must not snapshot\n')
+  const before = op()
+  const all = await read()
+  assert.equal(all.status, 200)
+  assert.deepEqual(all.body.failures, [])
+  assert.deepEqual(all.body.entries.map(entry => entry.commit.sha), [described, parent])
+  for (const excluded of [placeholder, undescribed, '0'.repeat(40)]) {
+    assert.ok(all.body.entries.every(entry => entry.commit.sha !== excluded))
+  }
+  assert.equal((await read({ until: epoch + 2 })).body.entries[0].commit.sha, described)
+  assert.deepEqual((await read({ until: epoch + 1 })).body.entries.map(entry => entry.commit.sha), [parent])
+  assert.deepEqual((await read({ until: Number.MAX_SAFE_INTEGER })).body, all.body)
+  assert.equal(head(), undescribed)
+  assert.equal(op(), before)
+  assert.ok(commands.filter(argv => argv.includes('log')).every(argv => argv.includes('--ignore-working-copy')))
 })

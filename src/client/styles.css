@@ -1145,6 +1145,105 @@ select.vcs-repository-kind {
   min-width: 100%;
 }
 
+.vcs-timeline[data-scope='all'] .vcs-timeline-scroll {
+  overflow-anchor: none;
+}
+
+.vcs-activity-day {
+  position: absolute;
+  inset-inline: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  box-sizing: border-box;
+  padding-right: 10px;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.vcs-activity-day-title,
+.vcs-activity-day-sticky {
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+
+.vcs-activity-day-meta {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.vcs-activity-day-sticky {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 1;
+  box-sizing: border-box;
+  height: 24px;
+  padding-right: 10px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-base);
+  font-size: 11px;
+  line-height: 23px;
+  pointer-events: none;
+}
+
+.vcs-activity-day > span,
+.vcs-activity-day-sticky,
+.vcs-activity-names,
+.vcs-activity-repo-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vcs-activity-repo {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 45%;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.vcs-activity-repo-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--vcs-activity-color);
+}
+
+.vcs-activity-row[data-kind='member'] .vcs-activity-repo {
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+
+.vcs-activity-toggle {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 3px 0 1px;
+  border: 0;
+  border-radius: var(--dsw-radius-sm, 6px);
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.vcs-activity-toggle:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.vcs-timeline .vcs-activity-failures {
+  flex: none;
+}
+
+.vcs-activity-read-only {
+  display: inline-flex;
+  color: var(--dsw-alias-label-secondary);
+}
+
 .vcs-timeline-row {
   position: absolute;
   right: 0;
@@ -1190,6 +1289,12 @@ select.vcs-repository-kind {
   flex: none;
 }
 
+/* The repository name identifies an activity row: it keeps its width up to its
+   45% cap, and the author and then the SHA (still in the detail) yield first. */
+.vcs-timeline-meta > .vcs-activity-repo {
+  flex: none;
+}
+
 /* Let non-HEAD ref pills yield before pushing the +N counter and SHA off the row;
    the checked-out HEAD pill keeps its width (capped) so current branch stays readable. */
 .vcs-timeline-meta > .vcs-ref:not(.vcs-ref-more, .vcs-ref-head) {
@@ -1211,6 +1316,17 @@ select.vcs-repository-kind {
 
 .vcs-timeline-meta > :is(.vcs-timeline-author, .vcs-timeline-time) {
   flex: 0 100 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vcs-activity-row .vcs-timeline-meta > .vcs-timeline-time {
+  flex: none;
+}
+
+.vcs-activity-row .vcs-timeline-meta > .vcs-timeline-sha {
+  flex: 0 10 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1381,6 +1497,27 @@ select.vcs-repository-kind {
   border-bottom: 0.5px solid var(--dsw-alias-border-l1);
   overflow: hidden;
   white-space: nowrap;
+}
+
+.vcs-detail-toolbar .vcs-activity-open {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 45%;
+  font-size: 11px;
+}
+
+.vcs-activity-open .vcs-activity-repo {
+  max-width: none;
+}
+
+.vcs-activity-open .vcs-icon,
+.vcs-activity-read-only .vcs-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
 }
 
 .vcs-detail-title {
@@ -3027,6 +3164,29 @@ select.vcs-repository-kind {
   align-items: center;
   column-gap: 4px;
   margin-top: 4px;
+}
+
+.vcs-overview-repo.vcs-overview-all {
+  margin-bottom: 8px;
+}
+
+.vcs-overview-all::after {
+  position: absolute;
+  inset: auto 8px -5px;
+  height: 1px;
+  background: var(--dsw-alias-border-l1);
+  content: '';
+  pointer-events: none;
+}
+
+.vcs-overview-list .vcs-overview-all .vcs-overview-repo-name {
+  font-weight: 600;
+}
+
+.vcs-overview-all .vcs-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .vcs-overview-repo:hover,

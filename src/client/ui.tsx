@@ -9,6 +9,7 @@
 import { useEffect, useRef } from 'react'
 import type { ButtonHTMLAttributes, MouseEventHandler, ReactNode } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
+import type { VcsRef } from '../lib/log.js'
 
 import { formatCount } from './format.js'
 import { motionAt, PERIOD, REDUCED_PERIOD, segmentEasing, startTurning, stopTurning } from './turning.js'
@@ -63,7 +64,7 @@ export interface TurningProps {
  * The reference kind a badge states. `head` is the detached-HEAD marker a log
  * row or the commit header shows beside the other refs.
  */
-export type RefKind = 'head' | 'branch' | 'remote' | 'tag' | 'stash'
+export type RefKind = VcsRef['kind'] | 'stash'
 
 /** One reference as a badge renders it. */
 export interface RefView {
@@ -443,6 +444,36 @@ export function OverviewIcon({ open }: { open?: boolean }) {
       {open ? <rect x="2" y="3" width="4" height="10" rx="0.6" fill="currentColor" opacity="0.55" /> : null}
       <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1" />
       <path d="M6.5 2.5v11" stroke="currentColor" strokeWidth="1" />
+    </svg>
+  )
+}
+
+/** Stacked repositories in the overview's aggregate row. */
+export function AllRepositoriesIcon() {
+  return (
+    <svg className="vcs-icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.3">
+      <rect x="5.5" y="2" width="8.5" height="7.5" rx="1.4" />
+      <rect x="3.8" y="4.2" width="8.5" height="7.5" rx="1.4" fill="var(--dsw-alias-bg-base)" />
+      <rect x="2" y="6.5" width="8.5" height="7.5" rx="1.4" fill="var(--dsw-alias-bg-base)" />
+    </svg>
+  )
+}
+
+/** Open the same entry in the repository's timeline. */
+export function OpenRepositoryIcon() {
+  return (
+    <svg className="vcs-icon" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M4 12 12 4m-5 0h5v5" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+/** A read-only scope. */
+export function LockIcon() {
+  return (
+    <svg className="vcs-icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.3">
+      <rect x="3.5" y="7" width="9" height="6.5" rx="1.4" />
+      <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
     </svg>
   )
 }

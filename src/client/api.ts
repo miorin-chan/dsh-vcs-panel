@@ -10,6 +10,8 @@
  */
 
 import type { BranchOpAction } from './branch.js'
+import type { ActivityAnswer, ActivityRequest } from '../lib/activity.js'
+import type { CommitNode as HistoryCommit, VcsRef } from '../lib/log.js'
 import type { OverviewRepository } from './overview/model.js'
 import type { StashBlockInfo, StashCheck, StashDetailAnswer, StashEntry, StashMode, StashPaths, StashRequest, StashResult } from '../lib/stash-types.js'
 import { stashFailureFields } from './stash.js'
@@ -194,17 +196,7 @@ export interface RepositoriesAnswer {
   configError?: string
 }
 
-/** One reference a commit points at. */
-export interface VcsRef {
-  name: string
-  kind: 'branch' | 'remote' | 'tag' | 'head'
-  /** Whether this is the checked-out branch. */
-  current?: boolean
-  /** The remote part of a split remote-branch reference. */
-  remote?: string
-  /** The branch part of a split remote-branch reference. */
-  branch?: string
-}
+export type { VcsRef } from '../lib/log.js'
 
 /** One row the change tree renders. */
 export interface FileEntry {
@@ -384,21 +376,7 @@ export interface OversizedComparison {
 export type FileComparison = TextComparison | BinaryComparison | OversizedComparison
 
 /** One commit row of a history page. */
-export interface CommitNode {
-  sha: string
-  parents: string[]
-  refs: VcsRef[]
-  author: string
-  authorTime: number
-  subject: string
-  changeId?: string
-  committer?: string
-  committerTime?: number
-  message?: string
-  empty?: boolean
-  conflict?: boolean
-  /** True when this row stands for one checkout's working copy. */
-  workingCopy?: boolean
+export interface CommitNode extends HistoryCommit {
   /** The checkouts whose working copy sits on this commit. */
   workingCopies?: WorktreeInfo[]
 }
@@ -647,6 +625,8 @@ export interface Api {
   diff(repo: string, target: DiffTarget, signal?: AbortSignal): Promise<FileComparison>
   /** One page of commits. */
   log(repo: string, page?: LogQuery, signal?: AbortSignal): Promise<LogAnswer>
+  /** One page of local history from all discovered repositories. */
+  activity(page?: Partial<Pick<ActivityRequest, 'until' | 'limit'>>, signal?: AbortSignal): Promise<ActivityAnswer>
   /** One commit's metadata and changed files. */
   commit(repo: string, sha: string, signal?: AbortSignal): Promise<CommitAnswer>
   stash(repo: string, sha: string, signal?: AbortSignal): Promise<StashDetailAnswer>
@@ -922,6 +902,10 @@ export function createApi(sessionId: string, options: ApiOptions = {}): Api {
 
     log(repo, page = {}, signal) {
       return get('/api/vcs.log', { repo, worktree: page.worktrees, ref: page.ref, skip: page.skip, limit: page.limit }, signal)
+    },
+
+    activity({ until, limit } = {}, signal) {
+      return get('/api/vcs.activity', { until, limit }, signal)
     },
 
     commit(repo, sha, signal) {

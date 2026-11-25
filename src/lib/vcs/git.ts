@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { FsTarget } from '@deepseek-ai/dsh-fs'
 
+import type { ActivityRepositoryAnswer, ActivityRequest } from '../activity.js'
 import { TIMEOUT_MS } from '../command.js'
 import type { RunOptions } from '../command.js'
 import {
@@ -946,36 +947,14 @@ export class GitBackend {
     const limit = clamp(page.limit, 1, LOG_PAGE_MAX)
     const skip = clamp(page.skip, 0, LOG_SKIP_MAX)
 
-    const args = [
-      '--no-pager',
-      'log',
-      '--no-color',
-      '--topo-order',
-      '--decorate=full',
-      `--format=${LOG_FORMAT}`,
-      `--max-count=${limit}`,
-      `--skip=${skip}`,
-    ]
+    const args = ['--topo-order', `--format=${LOG_FORMAT}`, `--max-count=${limit}`, `--skip=${skip}`]
     const firstPage = () => skip === 0 ? listStashes(this.git, root, signal) : {}
     if (ref === 'all') args.push('--exclude=refs/stash', '--all')
     else if (page.heads === undefined) args.push('HEAD')
     else if (page.heads.length === 0) return { ...await firstPage(), commits: [], truncated: false, nextSkip: null }
     else args.push(...new Set(page.heads), '--')
-    const [result, stashPage] = await Promise.all([this.git.run(args, { cwd: root, signal }), firstPage()])
-    if (result.lossy) throw outputTooLarge()
-    if (result.exitCode !== 0) {
-      // An unborn branch has no HEAD to walk; that is an empty history, not a
-      // failure. Every other complaint is a real read failure.
-      if (ref === 'HEAD' && /unknown revision|does not have any commits|bad revision|ambiguous argument/iu.test(result.stderr)) {
-        return { ...stashPage, commits: [], truncated: false, nextSkip: null }
-      }
-      throw new VcsError('internal', 'The history could not be read.')
-    }
-
-    const parsed = parseLog(result.stdout)
-    const commits = parsed.some(commit => commit.refs.some(ref => ref.kind === 'remote'))
-      ? annotateRemoteRefs(parsed, await remoteNames(this.git, root, signal))
-      : parsed
+    const [commits, stashPage] = await Promise.all([this.#readLog(root, args, signal, ref === 'HEAD'), firstPage()])
+    if (commits === null) return { ...stashPage, commits: [], truncated: false, nextSkip: null }
     const truncated = skip + commits.length >= LOG_SKIP_MAX
     return {
       ...stashPage,
@@ -983,6 +962,43 @@ export class GitBackend {
       truncated,
       nextSkip: commits.length === 0 ? null : skip + commits.length,
     }
+  }
+
+  async activity(root: string, { until, limit, heads }: ActivityRequest, signal: AbortSignal): Promise<ActivityRepositoryAnswer> {
+    // A damaged marker must not make Git walk up into a containing repository.
+    if (await this.commonDir(root, signal) === null) throw new VcsError('not-a-repo', 'The repository is not available.')
+    const args = ['--date-order', '--no-show-signature', `--format=${LOG_FORMAT}%x00%ct`, `--max-count=${limit}`]
+    // The timezone makes this Git's exact raw date format. Without it, small
+    // epoch values such as @0 are interpreted as approximate dates.
+    if (until !== null) args.push(`--until=@${until} +0000`)
+    args.push('--branches', ...heads, '--')
+    const commits = await this.#readLog(root, args, signal) ?? []
+    const { stashes, stashesTruncated } = await listStashes(this.git, root, signal)
+    const entries: ActivityRepositoryAnswer['entries'] = []
+    for (const commit of commits) {
+      const time = (commit.committerTime ?? NaN) / 1000
+      if (Number.isSafeInteger(time) && (until === null || time <= until)) entries.push({ kind: 'commit', time, commit })
+    }
+    for (const stash of stashes) {
+      if (until === null || stash.time <= until) entries.push({ kind: 'stash', time: stash.time, stash })
+    }
+    return { entries, exhausted: commits.length < limit && !stashesTruncated }
+  }
+
+  async #readLog(root: string, args: string[], signal: AbortSignal, allowUnborn = false) {
+    const result = await this.git.run(['--no-pager', 'log', '--no-color', '--decorate=full', ...args], { cwd: root, signal })
+    if (result.lossy) throw outputTooLarge()
+    if (result.exitCode !== 0) {
+      // An unborn branch has no HEAD to walk; that is an empty history, not a
+      // failure. Every other complaint is a real read failure.
+      if (allowUnborn && /unknown revision|does not have any commits|bad revision|ambiguous argument/iu.test(result.stderr)) return null
+      throw new VcsError('internal', 'The history could not be read.')
+    }
+
+    const parsed = parseLog(result.stdout)
+    return parsed.some(commit => commit.refs.some(ref => ref.kind === 'remote'))
+      ? annotateRemoteRefs(parsed, await remoteNames(this.git, root, signal))
+      : parsed
   }
 
   /**

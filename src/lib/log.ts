@@ -16,34 +16,44 @@ export const LOG_SKIP_MAX = 10_000
 /** Fields: commit, parents, author, author epoch seconds, subject, full decoration. */
 export const LOG_FORMAT = '%H%x00%P%x00%an%x00%at%x00%s%x00%D'
 
-/** One ref a commit row or ref list shows. */
-export interface Ref {
-  /** Short display name: `main`, `origin/main`, `v1`, or `HEAD`. */
+/** One ref a commit row or ref list shows, shared by the backends and client. */
+export interface VcsRef {
   name: string
-  /** Which kind of ref this is. */
-  kind: 'head' | 'branch' | 'remote' | 'tag'
-  /** True when this is the checked-out branch. */
-  current?: true
+  kind: 'head' | 'branch' | 'remote' | 'tag' | 'bookmark'
+  current?: boolean
   /** Configured remote name, on a split remote-tracking ref. */
   remote?: string
   /** Branch part below the remote name, on a split remote-tracking ref. */
   branch?: string
+  conflict?: boolean
 }
 
-/** One formatted `git log` record, as the timeline renders it. */
-export interface LogCommit {
-  /** Full commit id. */
+/** The commit row both history reads return. Times on the node are in milliseconds. */
+export interface CommitNode {
   sha: string
-  /** Full parent commit ids. */
   parents: string[]
-  /** Ref badges pointing at this commit. */
-  refs: Ref[]
-  /** Author name. */
+  refs: VcsRef[]
   author: string
-  /** Author time in epoch milliseconds. */
   authorTime: number
-  /** First subject line. */
   subject: string
+  changeId?: string
+  committer?: string
+  committerTime?: number
+  message?: string
+  workingCopy?: boolean
+  empty?: boolean
+  conflict?: boolean
+}
+
+/** One Git ref decoration. */
+export interface Ref extends VcsRef {
+  kind: 'head' | 'branch' | 'remote' | 'tag'
+  current?: true
+}
+
+/** One formatted `git log` record. */
+export interface LogCommit extends CommitNode {
+  refs: Ref[]
 }
 
 /**
@@ -167,7 +177,7 @@ export function parseLog(text: string): LogCommit[] {
     if (line === '') continue
     const fields = line.split(NUL)
     if (fields.length < 6) continue
-    const [sha, parents, author, seconds, subject, decoration] = fields
+    const [sha, parents, author, seconds, subject, decoration, committerSeconds] = fields
     if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(sha)) continue
     commits.push({
       sha,
@@ -176,6 +186,7 @@ export function parseLog(text: string): LogCommit[] {
       author,
       authorTime: Number(seconds) * 1000,
       subject,
+      ...committerSeconds !== undefined && { committerTime: Number(committerSeconds) * 1000 },
     })
   }
   return commits

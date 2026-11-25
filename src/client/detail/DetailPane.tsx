@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { KeyboardEvent as ReactKeyboardEvent, MutableRefObject } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, MutableRefObject, ReactNode } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   Api, ApiFailure, CommitDetail, CommitNode, RepositoryCapabilities, StageHistoryEntry, StatusData,
@@ -345,7 +345,7 @@ export interface DetailPaneProps {
   onLeaveNav: () => void
   onSelectCommit: (sha: string) => void
   isLoaded: (sha: string) => boolean
-  onMissing: () => void
+  onMissing?: () => void
   onSettled?: (hasRows: boolean) => void
   revision: number
   backgroundDiffRevision: number | undefined
@@ -366,6 +366,7 @@ export interface DetailPaneProps {
   workingCopies?: readonly WorkingCopyLabel[]
   snapshotError?: ApiFailure | null
   showCurrentHead?: boolean
+  toolbarStart?: ReactNode
   t: Translate
   locale?: string
 }
@@ -384,6 +385,7 @@ export function DetailPane({
   revision, backgroundDiffRevision, cache, detailCache, initialAnchor, onReading, control, capabilities, onRefActions,
   onStashActions, onSaveStash, onStage, stageDisabled, t, locale,
   onStageHistory, onInteractionChange, worktree = null, workingCopies = [], snapshotError = null, showCurrentHead = true,
+  toolbarStart,
 }: DetailPaneProps) {
   const isWorktree = worktree !== null
   const selectedStash = capabilities?.stashOps === true ? stashSha(node) : null
@@ -431,7 +433,7 @@ export function DetailPane({
       setReading(next)
     }).catch((error: ApiFailure) => {
       if (error?.name === 'AbortError' || controller.signal.aborted) return
-      if (error?.code === (selectedStash === null ? 'not-found' : 'stash-missing')) onMissing()
+      if (error?.code === (selectedStash === null ? 'not-found' : 'stash-missing')) onMissing?.()
       setReading({ status: 'error', detail: null, truncated: false, error })
     })
     return () => { controller.abort() }
@@ -631,6 +633,7 @@ export function DetailPane({
     <div className="vcs-detail" ref={rootRef}>
       <div className="vcs-detail-toolbar" data-stage-tools={stageHistory !== undefined ? '' : undefined}>
         {singleColumn ? <IconButton label={t('detail.back')} onClick={onBack}><BackIcon /></IconButton> : null}
+        {toolbarStart}
         {isWorktree ? (
           <>
             <strong className="vcs-detail-title" title={worktree?.path}>{worktree?.label}</strong>

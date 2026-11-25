@@ -86,7 +86,10 @@ export function leaveTiles(
   const frame = root.getBoundingClientRect()
   const timeline = root.querySelector<HTMLElement>('.vcs-sidebar')
   const source = tiles.find(tile => tile.path === current)
-  if (source !== undefined && timeline !== null) moveFrom(timeline, timeline.getBoundingClientRect(), source.box, 0.55, 0)
+  if (timeline !== null) {
+    if (source !== undefined) moveFrom(timeline, timeline.getBoundingClientRect(), source.box, 0.55, 0)
+    else if (current === null) slideIn(timeline, 0)
+  }
   tiles.filter(tile => tile.path !== current).forEach(({ path, box, copy }, index) => {
     const row = rows.get(path)
     const x = (row?.left ?? frame.left - EDGE_OFFSET) - box.left
@@ -105,11 +108,11 @@ export function clearMotionGhosts(root: HTMLElement | null): void {
  * @param root - the panel root, which positions the copy.
  * @param element - the element leaving, such as the detail pane.
  */
-export function fadeOutInPlace(root: HTMLElement | null, element: HTMLElement | null): void {
+export function fadeOutInPlace(root: HTMLElement | null, element: HTMLElement | null, offset = 48): void {
   if (root === null || element === null || reducedMotion() || typeof element.animate !== 'function') return
   const frame = root.getBoundingClientRect()
   const box = element.getBoundingClientRect()
-  fadeGhost(root, element.cloneNode(true) as HTMLElement, frame, box, 48, 0, 0, '3')
+  fadeGhost(root, element.cloneNode(true) as HTMLElement, frame, box, offset, 0, 0, '3')
 }
 
 function fadeGhost(
@@ -134,8 +137,8 @@ function fadeGhost(
  * Bring an element back in from the side after the layout returned.
  * @param element - the element returning, such as the detail pane.
  */
-export function slideIn(element: HTMLElement | null): void {
+export function slideIn(element: HTMLElement | null, offset = 32): void {
   if (element === null || reducedMotion() || typeof element.animate !== 'function') return
-  element.animate([{ opacity: 0, transform: 'translateX(32px)' }, { opacity: 1, transform: 'none' }],
+  element.animate([{ opacity: 0, transform: translate(offset, 0) }, { opacity: 1, transform: 'none' }],
     { duration: 320, delay: 140, easing: EASE, fill: 'backwards' })
 }

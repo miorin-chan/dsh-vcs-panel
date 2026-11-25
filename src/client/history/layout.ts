@@ -31,6 +31,7 @@ export interface GraphPath {
   points: GraphPoint[]
   color: number
   dashed?: boolean
+  neutral?: boolean
 }
 
 /** One quadratic merge edge from a commit to a lane already waiting for a parent. */
@@ -42,20 +43,22 @@ export interface GraphLink {
 }
 
 /** The dot styles the timeline draws. */
-export type GraphDotType = 'default' | 'head' | 'merge' | 'worktree' | 'stash' | 'working'
+export type GraphDotType = 'default' | 'head' | 'merge' | 'worktree' | 'stash' | 'working' | 'burst' | 'batch'
 
 /** One commit dot. */
 export interface GraphDot {
   center: GraphPoint
   color: number
   type: GraphDotType
+  neutral?: boolean
 }
 
 /** The lane graph for one loaded history page. */
 export interface GraphLayout {
   paths: GraphPath[]
   links: GraphLink[]
-  dots: GraphDot[]
+  /** Indexed by row; a section header has no node. */
+  dots: (GraphDot | null)[]
   commitLeftMargin: number[]
 }
 

@@ -24,7 +24,7 @@ import type {
 import type { ApiFailure } from './api.js'
 import type { MenuPoint, Notice, RefEntry } from './useRepoActions.js'
 import {
-  Arrow, BranchIcon, CheckIcon, Chevron, FilterIcon, IconButton, MoreIcon, OverviewIcon, PlusIcon, RefreshIcon,
+  Arrow, BranchIcon, CheckIcon, Chevron, FilterIcon, IconButton, LockIcon, MoreIcon, OverviewIcon, PlusIcon, RefreshIcon,
   RefBadge, SyncIcon, TileIcon, TimelineBesideIcon, Turning, WorkingCopyBadge,
 } from './ui.jsx'
 import { errorMessage, formatCount, formatPlural, sessionRelativePath, shortChangeId } from './format.js'
@@ -793,6 +793,8 @@ export interface TopBarProps {
   /** Whether the repository button has opened the overview column. */
   overviewOpen?: boolean
   onOverview: () => void
+  /** Repository count when looking at the read-only aggregate timeline. */
+  allRepositoryCount?: number | null
   /** Whether the repositories are tiled; with `onTile`, the first right-side button toggles it. */
   tiled?: boolean
   onTile?: () => void
@@ -810,7 +812,7 @@ export function TopBar({
   branchesTruncated = false, onLoadBranches = () => {}, onSwitchBranch = () => {}, onBranchActions = () => {},
   onRestoreFocus = () => {}, switching = false, branchBusy = null, tagBusy = null, commitBusy = null, notice,
   twoColumns = true, twoColumnsFit = true, onTwoColumns = () => {}, overviewOpen = false, onOverview, tiled = false,
-  onTile, tileControls = null, t, locale,
+  onTile, tileControls = null, allRepositoryCount = null, t, locale,
 }: TopBarProps) {
   // Work on data already on screen shows as one thin bar under the header,
   // whether the user asked for it (refresh, sync, switch, a branch, tag, or
@@ -851,7 +853,8 @@ export function TopBar({
   const branchOwnsFilterIndicator = !showsWorkingCopy && branchText !== '' && branchSwitchable
   const capacity = capabilities
   const branchOps = capacity?.branchOps === true
-  const repositoryName = repository?.name ?? t('top.noRepository')
+  const all = allRepositoryCount !== null
+  const repositoryName = all ? t('all.title') : repository?.name ?? t('top.noRepository')
   const relativePath = repository == null ? '.' : sessionRelativePath(cwd, repository.path)
   const overviewTitle = t(overviewOpen ? 'overview.hide' : 'overview.show')
   const repositoryButton = (
@@ -860,8 +863,9 @@ export function TopBar({
         type="button"
         className="vcs-picker-button vcs-repo-button vcs-overview-toggle"
         aria-pressed={overviewOpen}
-        aria-label={repository == null ? repositoryName : t('top.repositoryLabel', { name: repositoryName })}
-        title={relativePath === '.' ? overviewTitle : `${relativePath}\n${overviewTitle}`}
+        aria-label={all || repository == null ? repositoryName : t('top.repositoryLabel', { name: repositoryName })}
+        title={all ? formatPlural(t, 'all.count', allRepositoryCount, locale)
+          : relativePath === '.' ? overviewTitle : `${relativePath}\n${overviewTitle}`}
         onMouseDown={event => { event.stopPropagation() }}
         onClick={event => { event.stopPropagation(); onOverview() }}
       >
@@ -897,7 +901,7 @@ export function TopBar({
         </IconButton>
       )}
       <IconButton
-        label={t(capabilities?.snapshots === true ? 'top.refreshSnapshots' : 'top.refresh')}
+        label={t(!all && capabilities?.snapshots === true ? 'top.refreshSnapshots' : 'top.refresh')}
         title={refreshing ? t('top.refreshing') : undefined}
         onClick={() => { onRefresh() }}
         busy={refreshing}
@@ -919,7 +923,7 @@ export function TopBar({
   return (
     <div className="vcs-topbar">
       {repositoryButton}
-      {worktrees.length > 0 ? (
+      {!all && worktrees.length > 0 ? (
         <WorktreePicker
           key={repository?.path}
           worktrees={worktrees}
@@ -939,7 +943,7 @@ export function TopBar({
           locale={locale}
         />
       ) : null}
-      {showsWorkingCopy ? (
+      {all ? null : showsWorkingCopy ? (
         workingCopy === null || workingCopy === undefined ? null : (
           <span className="vcs-working-copy" title={t('top.workingCopyTitle')}>
             <WorkingCopyBadge labels={[activeWorkspace === undefined ? '@' : workingCopyLabel(activeWorkspace, worktrees.length > 1)]}
@@ -983,7 +987,8 @@ export function TopBar({
           {syncable ? null : <AheadBehind ahead={branch?.ahead ?? 0} behind={branch?.behind ?? 0} />}
         </span>
       )}
-      {syncable ? <SyncButton branch={branch} syncing={syncing} onSync={onSync} t={t} locale={locale} /> : null}
+      {!all && syncable ? <SyncButton branch={branch} syncing={syncing} onSync={onSync} t={t} locale={locale} /> : null}
+      {all ? <span className="vcs-activity-read-only" role="img" aria-label={t('all.readOnly')} title={t('all.readOnly')}><LockIcon /></span> : null}
       <span className="vcs-sr-only" role="status">{notice?.tone === 'info' ? notice.text : ''}</span>
       {notice === null || notice === undefined ? null : (
         <p
