@@ -1,7 +1,7 @@
 /**
- * The panel header, left to right: repository and worktree menus, working-state
- * facts with sync and branch switching, the panel's message, then the column
- * layout toggle, the read-only marker, and refresh.
+ * The panel header, left to right: overview, repository and worktree menus,
+ * working-state facts with sync and branch switching, the panel's message,
+ * then the repository tiling, column layout, and refresh buttons.
  *
  * A backend with a separate working tree shows its branch; when it can sync,
  * the ahead/behind counts sit on the sync button beside the branch, so the
@@ -24,7 +24,7 @@ import type {
 import type { ApiFailure } from './api.js'
 import type { MenuPoint, Notice, RefEntry } from './useRepoActions.js'
 import {
-  Arrow, BranchIcon, CheckIcon, Chevron, FilterIcon, IconButton, LockIcon, MoreIcon, OverviewIcon, PlusIcon, RefreshIcon,
+  Arrow, BranchIcon, CheckIcon, Chevron, FilterIcon, IconButton, MoreIcon, OverviewIcon, PlusIcon, RefreshIcon,
   RefBadge, SettingsIcon, SyncIcon, TileIcon, TimelineBesideIcon, Turning, WorkingCopyBadge,
 } from './ui.jsx'
 import { errorMessage, formatCount, formatPlural, sessionRelativePath, shortChangeId } from './format.js'
@@ -924,7 +924,7 @@ export interface TopBarProps {
   /** Whether the overview column is open; with `onOverview`, the leading button toggles it. */
   overviewOpen?: boolean
   onOverview?: () => void
-  /** Whether the repositories are tiled; with `onTile`, the second button toggles it. */
+  /** Whether the repositories are tiled; with `onTile`, the first right-side button toggles it. */
   tiled?: boolean
   onTile?: () => void
   /** While tiled, the state buttons that replace the repository, worktree, branch, and sync controls. */
@@ -984,85 +984,67 @@ export function TopBar({
   const branchOwnsFilterIndicator = !showsWorkingCopy && branchText !== '' && branchSwitchable
   const capacity = capabilities
   const branchOps = capacity?.branchOps === true
-  let readonlyLabel = t('top.readonly')
-  let readonlyHint = t('top.readonlyHint')
-  if (capacity?.sync === true) {
-    if (branchOps) {
-      if (capacity.commitOps === true && capacity.tagOps === true) {
-        readonlyLabel = t('top.readonlySyncRefs')
-        readonlyHint = t('top.readonlyHintSyncRefs')
-      } else if (capacity.tagOps === true) {
-        readonlyLabel = t('top.readonlySyncBranchTag')
-        readonlyHint = t('top.readonlyHintSyncBranchTag')
-      } else {
-        readonlyLabel = t('top.readonlySyncBranch')
-        readonlyHint = t('top.readonlyHintSyncBranch')
-      }
-    } else if (capacity.branchSwitch === true) {
-      readonlyLabel = t('top.readonlySyncSwitch')
-      readonlyHint = t('top.readonlyHintSyncSwitch')
-    } else {
-      readonlyLabel = t('top.readonlySync')
-      readonlyHint = t('top.readonlyHintSync')
-    }
-  } else if (capacity?.snapshots === true) {
-    readonlyHint = t('top.readonlyHintSnapshots')
-  } else if (checkedPaths.length > 1) {
-    readonlyHint = t('top.readonlyHintWorktrees')
-  }
-  if (capacity?.stageOps === true) {
-    readonlyLabel = t('stage.writeLabel')
-    readonlyHint = `${readonlyHint} ${t('stage.indexHint')}`
-  }
-  if (capacity?.worktreeCreate === true || capacity?.worktreeRemove === true || capacity?.worktreeForget === true) {
-    readonlyLabel = t('worktree.writes')
-    readonlyHint = readonlyHint === t('top.readonlyHint')
-      ? t('worktree.writesHint')
-      : `${t('worktree.writesHint')} ${readonlyHint}`
-  }
-  const layoutButtons = onOverview === undefined || onTile === undefined ? null : (
-    <>
+  const overviewButton = onOverview === undefined ? null : (
+    <IconButton
+      key="overview"
+      label={t('overview.toggle')}
+      pressed={overviewOpen}
+      title={t(overviewOpen ? 'overview.hide' : 'overview.show')}
+      onClick={onOverview}
+      className="vcs-overview-toggle"
+    >
+      <OverviewIcon open={overviewOpen} />
+    </IconButton>
+  )
+  const headerActions = (
+    <div key="actions" className="vcs-topbar-actions">
+      {onTile === undefined ? null : (
+        <IconButton
+          key="tile"
+          label={t('tile.toggle')}
+          pressed={tiled}
+          title={t(tiled ? 'tile.off' : 'tile.on')}
+          onClick={onTile}
+          className="vcs-tile-toggle"
+        >
+          <TileIcon tiled={tiled} />
+        </IconButton>
+      )}
+      {tiled ? null : (
+        <IconButton
+          label={t('top.twoColumns')}
+          pressed={twoColumns}
+          title={constrainedColumnsTitle ?? columnsAction}
+          description={constrainedColumnsTitle}
+          onClick={() => { onTwoColumns(!twoColumns) }}
+          className="vcs-columns-toggle"
+        >
+          <TimelineBesideIcon beside={twoColumns && twoColumnsFit} />
+        </IconButton>
+      )}
       <IconButton
-        label={t('overview.toggle')}
-        pressed={overviewOpen}
-        title={t(overviewOpen ? 'overview.hide' : 'overview.show')}
-        onClick={onOverview}
-        className="vcs-overview-toggle"
+        label={t(capabilities?.snapshots === true ? 'top.refreshSnapshots' : 'top.refresh')}
+        title={refreshing ? t('top.refreshing') : undefined}
+        onClick={() => { onRefresh() }}
+        busy={refreshing}
       >
-        <OverviewIcon open={overviewOpen} />
+        <Turning turning={refreshing}><RefreshIcon /></Turning>
       </IconButton>
-      <IconButton
-        label={t('tile.toggle')}
-        pressed={tiled}
-        title={t(tiled ? 'tile.off' : 'tile.on')}
-        onClick={onTile}
-        className="vcs-tile-toggle"
-      >
-        <TileIcon tiled={tiled} />
-      </IconButton>
-    </>
+    </div>
   )
   if (tiled) {
     return (
       <div className="vcs-topbar" data-tiled="true">
-        {layoutButtons}
+        {overviewButton}
         {tileControls}
-        <span className="vcs-topbar-spacer" />
-        <IconButton
-          label={t(capabilities?.snapshots === true ? 'top.refreshSnapshots' : 'top.refresh')}
-          title={refreshing ? t('top.refreshing') : undefined}
-          onClick={() => { onRefresh() }}
-          busy={refreshing}
-        >
-          <Turning turning={refreshing}><RefreshIcon /></Turning>
-        </IconButton>
+        {headerActions}
         <ProgressLine busy={busy} label={t('top.refreshing')} />
       </div>
     )
   }
   return (
     <div className="vcs-topbar">
-      {layoutButtons}
+      {overviewButton}
       <RepositoryPicker
         repositories={repositories}
         cwd={cwd}
@@ -1150,33 +1132,7 @@ export function TopBar({
           {notice.text}
         </p>
       )}
-      <span className="vcs-topbar-spacer" />
-      <IconButton
-        label={t('top.twoColumns')}
-        pressed={twoColumns}
-        title={constrainedColumnsTitle ?? columnsAction}
-        description={constrainedColumnsTitle}
-        onClick={() => { onTwoColumns(!twoColumns) }}
-        className="vcs-columns-toggle"
-      >
-        <TimelineBesideIcon beside={twoColumns && twoColumnsFit} />
-      </IconButton>
-      <span
-        className="vcs-readonly"
-        role="img"
-        aria-label={readonlyLabel}
-        title={readonlyHint}
-      >
-        <LockIcon />
-      </span>
-      <IconButton
-        label={t(capabilities?.snapshots === true ? 'top.refreshSnapshots' : 'top.refresh')}
-        title={refreshing ? t('top.refreshing') : undefined}
-        onClick={() => { onRefresh() }}
-        busy={refreshing}
-      >
-        <Turning turning={refreshing}><RefreshIcon /></Turning>
-      </IconButton>
+      {headerActions}
       <ProgressLine
         busy={busy}
         label={worktreeBusy

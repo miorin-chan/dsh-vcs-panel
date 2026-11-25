@@ -2492,6 +2492,39 @@ test('Timeline +N overflow pill pairs with clickable/keyboard DetailPane ref bad
   }
 })
 
+test('TopBar keeps the tile toggle first in the right-hand actions in both layouts', async () => {
+  const harness = createHarness()
+  const restore = harness.installGlobals()
+  try {
+    const { TopBar } = await loadClientModule('src/client/TopBar.tsx', harness)
+    let tiled = false
+    const render = () => harness.mount(harness.react.createElement(TopBar, {
+      repositories: [], refreshing: false, onRefresh: () => {},
+      onOverview: () => {}, tiled, onTile: () => { tiled = !tiled }, t,
+    }))
+    const header = () => harness.document.body.querySelector('.vcs-topbar')
+    const actions = () => header().querySelector('.vcs-topbar-actions').children
+    const labels = () => actions().map(button => button.attributes.get('aria-label'))
+    render()
+    assert.equal(header().children[0].attributes.get('aria-label'), 'overview.toggle')
+    assert.equal(header().querySelector('.vcs-readonly'), null)
+    assert.deepEqual(labels(), ['tile.toggle', 'top.twoColumns', 'top.refresh'])
+    assert.equal(actions()[0].attributes.get('aria-pressed'), 'false')
+    harness.keyClick(actions()[0])
+    render()
+    assert.equal(header().children[0].attributes.get('aria-label'), 'overview.toggle')
+    assert.deepEqual(labels(), ['tile.toggle', 'top.refresh'])
+    assert.equal(actions()[0].attributes.get('aria-pressed'), 'true')
+    harness.keyClick(actions()[0])
+    render()
+    assert.deepEqual(labels(), ['tile.toggle', 'top.twoColumns', 'top.refresh'])
+    assert.equal(actions()[0].attributes.get('aria-pressed'), 'false')
+  } finally {
+    harness.unmount()
+    restore()
+  }
+})
+
 test('TopBar repository rows filter in place and return keyboard focus to the trigger on Escape', async () => {
   const harness = createHarness({ width: 300 })
   const restore = harness.installGlobals()
@@ -3852,7 +3885,6 @@ test('VcsView combines Git worktree and range choices and isolates diffs by work
     assert.match(textOf(body.querySelector('.vcs-timeline')), /topic-only commit/u)
     assert.equal(body.querySelector('.vcs-branch-button'), null)
     assert.equal(body.querySelector('.vcs-sync'), null)
-    assert.equal(body.querySelector('.vcs-readonly').attributes.get('title'), 'worktree.writesHint top.readonlyHintWorktrees')
     harness.keyDown(ranges()[1], 'Escape')
     await harness.settle()
     assert.equal(harness.document.activeElement, button)

@@ -31,7 +31,7 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
   and colored by what needs attention: unsaved changes, commits only this machine has,
   divergence, falling behind, merged, stashed, or an operation in progress.
   Click a pointer to read it in the timeline.
-  The next button (`T`) tiles the repository groups as columns of pointers;
+  The first button in the right-hand group (`T`) tiles the repository groups as columns of pointers;
   `1`–`7` step through one state, and `Enter` opens the focused pointer.
   Repositories under the session folder that discovery leaves out are listed and can be added in one step.
 - **Worktrees on one graph.** In **Worktrees**, check Git worktrees or Jujutsu workspaces

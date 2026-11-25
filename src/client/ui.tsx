@@ -305,16 +305,6 @@ export function WorkingCopyBadge({ labels, title }: WorkingCopyBadgeProps) {
   )
 }
 
-/** Padlock glyph for the read-only marker. */
-export function LockIcon() {
-  return (
-    <svg className="vcs-icon" viewBox="0 0 16 16" aria-hidden="true">
-      <rect x="3.5" y="7" width="9" height="6.5" rx="1.4" fill="none" stroke="currentColor" strokeWidth="1.3" />
-      <path d="M5.5 7V5.2a2.5 2.5 0 0 1 5 0V7" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-    </svg>
-  )
-}
-
 /** Git branch glyph. */
 export function BranchIcon() {
   return (

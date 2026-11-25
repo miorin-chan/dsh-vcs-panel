@@ -997,8 +997,13 @@ select.vcs-repository-kind {
   color: var(--dsw-alias-state-warn-primary);
 }
 
-.vcs-topbar-spacer {
-  flex: 1;
+/* The trailing buttons wrap as a group and stay aligned to the end. */
+.vcs-topbar-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  column-gap: inherit;
+  margin-inline-start: auto;
 }
 
 /* The counts and the action that settles them, as one control. */
@@ -1037,17 +1042,6 @@ select.vcs-repository-kind {
 /* Running is not unavailable: keep full contrast and the hover look while the icon turns. */
 .vcs-sync[aria-busy='true'] {
   opacity: 1;
-}
-
-.vcs-readonly {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  color: var(--dsw-alias-label-secondary);
-  cursor: help;
 }
 
 /* Main two-column body ---------------------------------------------------- */
