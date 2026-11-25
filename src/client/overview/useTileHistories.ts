@@ -42,7 +42,9 @@ export function useTileHistories(api: Api, paths: readonly string[], active: boo
       while (next < wanted.length && !controller.signal.aborted) {
         const path = wanted[next]
         next += 1
-        setHistories(previous => new Map(previous).set(path, { status: 'loading', commits: previous.get(path)?.commits ?? [] }))
+        // Keep a drawn skeleton (and keyboard focus) in place during rereads.
+        setHistories(previous => previous.get(path)?.status === 'ready' ? previous
+          : new Map(previous).set(path, { status: 'loading', commits: [] }))
         try {
           const answer = await api.log(path, { ref: 'all', limit: COLUMN_PAGE }, controller.signal)
           if (controller.signal.aborted) return

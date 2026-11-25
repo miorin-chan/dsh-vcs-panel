@@ -19,7 +19,7 @@ import {
   type WorktreeCreateRequest, type WorktreeInfo, type WorktreeRemovalAction, type WorktreeRequest,
 } from './api.js'
 import { worktreeActionReason } from './worktrees.js'
-import { branchActions, remoteBranchActions, type BranchMenuAction, type BranchOpAction, type RemoteBranchAction } from './branch.js'
+import { branchActions, remoteBranchActions, type BranchMenuAction, type BranchOpAction } from './branch.js'
 import { COMMIT_ACTION_META, commitActions, type CommitAction, type CommitDialogKind } from './commit.js'
 import { tagActions, type TagAction } from './tag.js'
 import { commitBranchRelation, reachableCommits } from './history/commits.js'
@@ -38,10 +38,7 @@ export interface RepoWrite {
   action: string
 }
 
-/** In-flight writes by repository root. */
-type InFlightWrites = Record<string, RepoWrite>
-
-/** A notice the top bar states. */
+/** A result notice in the top bar or tiled action bar. */
 export interface Notice {
   tone: 'error' | 'info'
   text: string
@@ -130,6 +127,14 @@ interface WorktreeMenuTarget extends RefMenuTargetBase {
   commitBased: boolean
   actions: WorktreeRemovalAction[]
 }
+
+/** An existing action and its explicit target, independent of menu placement. */
+export type RepoAction =
+  | { domain: 'sync'; kind: 'sync'; branch: string }
+  | { domain: 'branch'; kind: BranchMenuAction; branch: string; remote?: string; local?: string; receiver?: string }
+  | { domain: 'tag'; kind: TagAction; tag: string }
+  | { domain: 'commit'; kind: CommitAction; sha: string; subject: string }
+  | { domain: 'worktree'; kind: WorktreeRemovalAction; tree: WorktreeInfo }
 
 /** One branch confirmation dialog. */
 export interface BranchDialogRequest {
@@ -239,12 +244,12 @@ export interface UseRepoActionsParams {
   /** The active BCP 47 locale. */
   locale?: string
   /** Ask the panel to re-read after a write. */
-  refresh: (requester?: string) => void
+  refresh: (requester: string, repo: string) => void
   onWorktreeChange: (repo: string, createdPath?: string) => void
   /** Reset the reading position after the checked-out commit moved. */
   resetReadingForNewHead: () => void
   /** State one notice, or clear it. */
-  setNotice: (notice: Notice | null) => void
+  setNotice: (notice: Notice | null, repo: string) => void
   /** Drop the header's branch listing. */
   clearBranches: () => void
   /** Cancel the header's branch read. */
@@ -257,6 +262,7 @@ export interface RepoActions {
   dialog: RepoDialogRequest | null
   dialogError: ReturnType<typeof failureOf> | null
   tagRemotes: TagRemotesState
+  inFlight: ReadonlyMap<string, RepoWrite>
   repoBusy: boolean
   dialogWriting: boolean
   syncing: boolean
@@ -279,6 +285,7 @@ export interface RepoActions {
   onRefActions: (reference: RefEntry, event: RefActionEvent, returnElement?: HTMLElement | null) => void
   closeMenu: (restoreFocus: boolean) => void
   chooseMenuAction: (action: string) => void
+  openAction: (action: RepoAction, restore?: () => void) => boolean
   confirmDialog: (values: DialogConfirmValues) => void
   cancelDialog: () => void
 }
@@ -307,7 +314,7 @@ export function useRepoActions({
   commits, commitIndex, head, rootRef, onRestoreFocus, t, locale,
   refresh, onWorktreeChange, resetReadingForNewHead, setNotice, clearBranches, abortBranches,
 }: UseRepoActionsParams): RepoActions {
-  const [inFlight, setInFlight] = useState<InFlightWrites>({})
+  const [inFlight, setInFlight] = useState<ReadonlyMap<string, RepoWrite>>(new Map())
   const inFlightRef = useRef<Map<string, RepoWrite>>(new Map())
   const [menu, setMenu] = useState<RefMenuTarget | null>(null)
   const [dialog, setDialog] = useState<RepoDialogRequest | null>(null)
@@ -326,7 +333,7 @@ export function useRepoActions({
   const reachability = useMemo<CommitReachability>(() => reachableCommits(commits, head), [commits, head])
 
   const selectedRepo = stateRef.current.repo
-  const activeWrite = selectedRepo === null ? null : (inFlight[selectedRepo] ?? null)
+  const activeWrite = selectedRepo === null ? null : (inFlight.get(selectedRepo) ?? null)
   const repoBusy = activeWrite !== null
   const dialogWriting = activeWrite !== null && dialog !== null
     && activeWrite.domain === dialog.domain && activeWrite.action === dialog.kind
@@ -384,7 +391,7 @@ export function useRepoActions({
   /**
    * Run one write operation under the repository's client-side single-flight guard.
    * Calls `onSettled` before releasing the in-flight entry so follow-up state (such
-   * as handover from `sync` to `refresh('sync')`) commits in the same render.
+   * as the transition from sync to refresh) commits in the same render.
    * Returns `{ started: false }` if the repo is missing or already busy.
    */
   const runRepoWrite = useCallback(async <T,>(
@@ -397,7 +404,7 @@ export function useRepoActions({
     if (repo === null || inFlightRef.current.has(repo)) return { started: false }
     const entry: RepoWrite = { domain, action }
     inFlightRef.current.set(repo, entry)
-    setInFlight(prev => ({ ...prev, [repo]: entry }))
+    setInFlight(prev => new Map(prev).set(repo, entry))
     try {
       let result: RepoWriteSettled<T>
       try {
@@ -411,9 +418,8 @@ export function useRepoActions({
     } finally {
       inFlightRef.current.delete(repo)
       setInFlight(prev => {
-        if (!(repo in prev)) return prev
-        const next = { ...prev }
-        delete next[repo]
+        const next = new Map(prev)
+        next.delete(repo)
         return next
       })
     }
@@ -451,34 +457,35 @@ export function useRepoActions({
   const sync = useCallback(async (): Promise<void> => {
     const repo = writeRootRef.current
     if (capabilities?.sync !== true || repo === null || inFlightRef.current.has(repo)) return
-    setNotice(null)
+    setNotice(null, repo)
     await runRepoWrite(repo, 'sync', 'sync', () => api.sync(repo), run => {
       const outcome: Notice = run.ok
         ? { tone: 'info', text: syncMessage(t, run.value, locale) }
         : { tone: 'error', text: errorMessage(t, run.error) }
-      if (sessionRef.current === sessionId && stateRef.current.repo === repo) {
-        refresh('sync')
-        setNotice(outcome)
+      if (sessionRef.current === sessionId) {
+        refresh('sync', repo)
+        setNotice(outcome, repo)
       }
     })
-  }, [api, capabilities, locale, refresh, runRepoWrite, sessionId, sessionRef, setNotice, stateRef, t])
+  }, [api, capabilities, locale, refresh, runRepoWrite, sessionId, sessionRef, setNotice, t])
 
   /** Check out one local branch, resetting reading state on success. */
   const switchBranch = useCallback(async (branch: string): Promise<void> => {
     const repo = writeRootRef.current
     if (capabilities?.branchSwitch !== true || repo === null || inFlightRef.current.has(repo)) return
-    setNotice(null)
+    setNotice(null, repo)
     abortBranches()
     const run = await runRepoWrite(repo, 'switch', 'switch', () => api.switchBranch(repo, branch))
-    if (!run.started || sessionRef.current !== sessionId || stateRef.current.repo !== repo) return
+    if (!run.started || sessionRef.current !== sessionId) return
     if (!run.ok) {
-      setNotice({ tone: 'error', text: errorMessage(t, run.error) })
+      refresh('switch', repo)
+      setNotice({ tone: 'error', text: errorMessage(t, run.error) }, repo)
       return
     }
     if (writeRootRef.current === repo) resetReadingForNewHead()
-    clearBranches()
-    refresh('switch')
-    setNotice({ tone: 'info', text: switchMessage(t, run.value, branch) })
+    if (stateRef.current.repo === repo) clearBranches()
+    refresh('switch', repo)
+    setNotice({ tone: 'info', text: switchMessage(t, run.value, branch) }, repo)
   }, [abortBranches, api, capabilities, clearBranches, refresh, resetReadingForNewHead, runRepoWrite, sessionId, sessionRef, setNotice, stateRef, t])
 
   /** Open the local or remote branch actions menu. */
@@ -599,21 +606,26 @@ export function useRepoActions({
     const repo = writeRootRef.current
     if (capabilities?.branchOps !== true || repo === null || inFlightRef.current.has(repo)) return
     setDialogError(null)
-    setNotice(null)
+    setNotice(null, repo)
     const run = await runRepoWrite(repo, 'branch', action, () => api.branchOp(repo, action, { branch, ...options }))
-    if (!run.started || sessionRef.current !== sessionId || stateRef.current.repo !== repo) return
+    if (!run.started || sessionRef.current !== sessionId) return
     if (!run.ok) {
-      if (action === 'push') setNotice({ tone: 'error', text: errorMessage(t, run.error) })
-      else setDialogError(run.error)
+      if (action === 'push') {
+        refresh('branch', repo)
+        setNotice({ tone: 'error', text: errorMessage(t, run.error) }, repo)
+      } else if (stateRef.current.repo === repo) setDialogError(run.error)
       return
     }
-    setDialog(null)
-    setDialogError(null)
-    clearBranches()
-    if (action === 'checkout-remote' && writeRootRef.current === repo) resetReadingForNewHead()
-    refresh('branch')
-    setNotice({ tone: 'info', text: branchOpMessage(t, action, branch, run.value) })
-    if (action !== 'push') restoreFocus(false)
+    const current = stateRef.current.repo === repo
+    if (current) {
+      setDialog(null)
+      setDialogError(null)
+      clearBranches()
+      if (action === 'checkout-remote' && writeRootRef.current === repo) resetReadingForNewHead()
+    }
+    refresh('branch', repo)
+    setNotice({ tone: 'info', text: branchOpMessage(t, action, branch, run.value) }, repo)
+    if (current && action !== 'push') restoreFocus(false)
   }, [api, capabilities, clearBranches, refresh, resetReadingForNewHead, restoreFocus, runRepoWrite, sessionId, sessionRef, setNotice, stateRef, t])
 
   /** Execute one tag action (`delete` or `push`). */
@@ -621,7 +633,7 @@ export function useRepoActions({
     const repo = writeRootRef.current
     if (capabilities?.tagOps !== true || repo === null || inFlightRef.current.has(repo)) return
     setDialogError(null)
-    setNotice(null)
+    setNotice(null, repo)
     const run = await runRepoWrite(repo, 'tag', action, () => api.tagOp(repo, action, { tag, ...options }))
     if (!run.started || sessionRef.current !== sessionId || stateRef.current.repo !== repo) return
     if (!run.ok) {
@@ -631,8 +643,8 @@ export function useRepoActions({
     setDialog(null)
     setDialogError(null)
     setTagRemotes(idleRemotes())
-    refresh('tag')
-    setNotice({ tone: 'info', text: tagOpMessage(t, action, tag, run.value) })
+    refresh('tag', repo)
+    setNotice({ tone: 'info', text: tagOpMessage(t, action, tag, run.value) }, repo)
     restoreFocus(false)
   }, [api, capabilities, refresh, restoreFocus, runRepoWrite, sessionId, sessionRef, setNotice, stateRef, t])
 
@@ -641,26 +653,25 @@ export function useRepoActions({
     const repo = writeRootRef.current
     if (capabilities?.commitOps !== true || repo === null || inFlightRef.current.has(repo)) return
     setDialogError(null)
-    setNotice(null)
+    setNotice(null, repo)
     const run = await runRepoWrite(repo, 'commit', action, () => api.commitOp(repo, action, { sha: target.sha, ...values }))
-    if (!run.started || sessionRef.current !== sessionId || stateRef.current.repo !== repo) return
+    if (!run.started || sessionRef.current !== sessionId) return
+    const current = stateRef.current.repo === repo
     if (!run.ok) {
-      setDialogError(run.error)
+      if (current) setDialogError(run.error)
       return
     }
-    setDialog(null)
-    setDialogError(null)
-    clearBranches()
-    if (
-      action === 'checkout'
-      || (action === 'reset' && values.mode === 'hard')
-      || (action === 'branch' && values.checkout === true)
-    ) {
-      if (writeRootRef.current === repo) resetReadingForNewHead()
+    if (current) {
+      setDialog(null)
+      setDialogError(null)
+      clearBranches()
+      if (writeRootRef.current === repo && (
+        action === 'checkout' || (action === 'reset' && values.mode === 'hard') || (action === 'branch' && values.checkout === true)
+      )) resetReadingForNewHead()
     }
-    refresh('commit')
-    setNotice({ tone: 'info', text: commitOpMessage(t, action, target, run.value) })
-    restoreFocus(false)
+    refresh('commit', repo)
+    setNotice({ tone: 'info', text: commitOpMessage(t, action, target, run.value) }, repo)
+    if (current) restoreFocus(false)
   }, [api, capabilities, clearBranches, refresh, resetReadingForNewHead, restoreFocus, runRepoWrite, sessionId, sessionRef, setNotice, stateRef, t])
 
   /** Run any index action under the same guard and refresh both staging groups. */
@@ -674,13 +685,13 @@ export function useRepoActions({
     const needsRefresh = (run: RepoWriteSettled<unknown>): boolean => (
       run.ok || ['stale-diff', 'stage-history-stale', 'stage-history-unavailable'].includes(run.error.code ?? '')
     )
-    setNotice(null)
+    setNotice(null, repo)
     const result = await runRepoWrite(repo, 'stage', action, () => execute(repo), run => {
       if (sessionRef.current !== sessionId || writeRootRef.current !== repo) return
-      if (needsRefresh(run)) refresh('stage')
+      if (needsRefresh(run)) refresh('stage', repo)
       setNotice(run.ok
         ? { tone: 'info', text: t(successKey) }
-        : { tone: 'error', text: errorMessage(t, run.error) })
+        : { tone: 'error', text: errorMessage(t, run.error) }, repo)
     })
     return result.started && needsRefresh(result)
   }, [capabilities, refresh, runRepoWrite, sessionId, sessionRef, setNotice, t])
@@ -691,68 +702,94 @@ export function useRepoActions({
   const stageHistory = useCallback((action: string, id: string): Promise<boolean> => runStageWrite(action, repo => api.stageHistory(repo, action, id),
     action === 'undo' ? 'stage.undone' : 'stage.redone'), [api, runStageWrite])
 
-  /** Handle selecting an item from the shared actions menu. */
-  const chooseMenuAction = useCallback((action: string): void => {
-    const target = menu
-    if (target === null || target.disabledActions?.[action] !== undefined) return
+  /** Open the existing confirmation or run the action directly, with or without a menu. */
+  const openAction = useCallback((action: RepoAction, restore?: () => void): boolean => {
+    const repo = stateRef.current.repo
+    // A write already in flight only disables the dialog's confirm button, as
+    // the menu always did; direct buttons are disabled before they get here.
+    if (repo === null || capabilities === null
+      || (action.domain !== 'worktree' && writeRootRef.current !== repo)) return false
+    const current = checkedOutBranch(statusData)
+    let request: RepoDialogRequest | undefined
+    let run: (() => Promise<void>) | undefined
+    switch (action.domain) {
+      case 'sync':
+        if (capabilities.sync !== true || current !== action.branch || statusData?.branch?.upstream == null) return false
+        run = sync
+        break
+      case 'branch': {
+        const { kind, branch, remote, local, receiver } = action
+        if (capabilities.branchOps !== true || (receiver !== undefined && receiver !== current)) return false
+        if (kind === 'checkout') {
+          if (capabilities.branchSwitch !== true) return false
+          run = () => switchBranch(branch)
+        } else if (kind === 'push') run = () => runBranchAction(kind, branch)
+        else request = { domain: 'branch', kind, branch, current, remote, local }
+        break
+      }
+      case 'tag':
+        if (capabilities.tagOps !== true) return false
+        request = { domain: 'tag', kind: action.kind, tag: action.tag }
+        break
+      case 'commit':
+        if (capabilities.commitOps !== true) return false
+        request = {
+          domain: 'commit', kind: COMMIT_ACTION_META[action.kind].dialogKind,
+          sha: action.sha, shortSha: shortSha(action.sha), current, subject: action.subject,
+        }
+        break
+      case 'worktree':
+        if ((action.kind === 'remove' ? capabilities.worktreeRemove : capabilities.worktreeForget) !== true) return false
+        request = { domain: 'worktree', kind: action.kind, repo, tree: action.tree, commitBased: capabilities.workingCopy === 'commit' }
+        break
+    }
     setMenu(null)
-    if (target.domain === 'worktree') {
-      const repo = stateRef.current.repo
-      if (repo === null || (action !== 'forget' && action !== 'remove')) return
-      setDialogError(null)
-      setDialog({ domain: 'worktree', kind: action, repo, tree: target.tree, commitBased: target.commitBased })
-      return
-    }
-    // The menu hands back one of its own action ids; the per-domain dialog
-    // narrows it to the action type that dialog accepts.
-    if (target.domain === 'branch') {
-      if (target.kind === 'remote') {
-        const current = checkedOutBranch(statusData)
-        setDialog({
-          domain: 'branch',
-          kind: action as RemoteBranchAction,
-          branch: target.name,
-          current,
-          ...(action === 'checkout-remote'
-            ? { remote: target.remote, local: target.shortBranch }
-            : { remote: target.remote }),
-        })
-        setDialogError(null)
-        return
-      }
-      if (action === 'checkout' || action === 'push') {
-        restoreFocus(false)
-        if (action === 'checkout') void switchBranch(target.name)
-        else void runBranchAction('push', target.name)
-        return
-      }
-      setDialog({
-        domain: 'branch',
-        kind: action as BranchOpAction,
-        branch: target.name,
-        current: checkedOutBranch(statusData),
-      })
-      setDialogError(null)
-      return
-    }
-    if (target.domain === 'tag') {
-      setDialog({ domain: 'tag', kind: action as TagAction, tag: target.name })
-      setDialogError(null)
-      setTagRemotes(idleRemotes())
-      if (action === 'push') loadTagRemotes()
-      return
-    }
-    const kind = COMMIT_ACTION_META[action as CommitAction]?.dialogKind ?? (action as CommitDialogKind)
-    setDialog({
-      domain: 'commit',
-      kind,
-      sha: target.sha,
-      shortSha: shortSha(target.sha),
-      current: checkedOutBranch(statusData),
-      subject: target.subject ?? '',
-    })
     setDialogError(null)
-  }, [loadTagRemotes, menu, restoreFocus, runBranchAction, stateRef, statusData, switchBranch])
+    if (run !== undefined) {
+      // Direct controls already hold focus; only the closed menu needs to return it.
+      if (restore === undefined) restoreFocus(false)
+      else menuReturnRef.current = null
+      void run()
+    } else if (request !== undefined) {
+      if (restore !== undefined) menuReturnRef.current = { element: null, domain: request.domain, restore }
+      setDialog(request)
+      if (request.domain === 'tag') {
+        setTagRemotes(idleRemotes())
+        if (request.kind === 'push') loadTagRemotes()
+      }
+    }
+    return true
+  }, [capabilities, loadTagRemotes, restoreFocus, runBranchAction, stateRef, statusData, switchBranch, sync])
+
+  /** Translate one enabled menu item into the same explicit target used by direct buttons. */
+  const chooseMenuAction = useCallback((action: string): void => {
+    if (menu === null || menu.disabledActions?.[action] !== undefined) return
+    const chosen = <T extends string,>(kinds: readonly T[]) => kinds.find(kind => kind === action)
+    switch (menu.domain) {
+      case 'branch': {
+        const kind = chosen(menu.actions)
+        if (kind !== undefined) openAction({
+          domain: 'branch', kind, branch: menu.name, remote: menu.remote, local: kind === 'checkout-remote' ? menu.shortBranch : undefined,
+        })
+        break
+      }
+      case 'tag': {
+        const kind = chosen(menu.actions)
+        if (kind !== undefined) openAction({ domain: 'tag', kind, tag: menu.name })
+        break
+      }
+      case 'commit': {
+        const kind = chosen(menu.actions)
+        if (kind !== undefined) openAction({ domain: 'commit', kind, sha: menu.sha, subject: menu.subject })
+        break
+      }
+      case 'worktree': {
+        const kind = chosen(menu.actions)
+        if (kind !== undefined) openAction({ domain: 'worktree', kind, tree: menu.tree })
+        break
+      }
+    }
+  }, [menu, openAction])
 
   /** Submit the open confirmation dialog. */
   const confirmDialog = useCallback((values: DialogConfirmValues): void => {
@@ -781,24 +818,26 @@ export function useRepoActions({
     const repo = dialog.repo
     if (request === undefined || inFlightRef.current.has(repo)) return
     setDialogError(null)
-    setNotice(null)
+    setNotice(null, repo)
     void runRepoWrite(repo, 'worktree', request.action, () => api.worktree(repo, request), run => {
       if (sessionRef.current !== sessionId) return
       if (run.ok || ['worktree-partial', 'worktree-stale'].includes(run.error.code ?? '')) {
         onWorktreeChange(repo, run.ok && request.action === 'create' ? run.value.path : undefined)
       }
-      if (stateRef.current.repo !== repo) return
+      const current = stateRef.current.repo === repo
       if (!run.ok) {
-        setDialogError(run.error)
+        if (current) setDialogError(run.error)
         return
       }
-      abortBranches()
-      clearBranches()
-      setDialog(null)
+      if (current) {
+        abortBranches()
+        clearBranches()
+        setDialog(null)
+      }
       const key = request.action === 'create' ? 'worktree.created'
         : request.action === 'forget' ? 'worktree.forgotten' : 'worktree.removed'
-      setNotice({ tone: 'info', text: t(key, { path: run.value.path }), domain: 'worktree' })
-      restoreFocus()
+      setNotice({ tone: 'info', text: t(key, { path: run.value.path }), domain: 'worktree' }, repo)
+      if (current) restoreFocus()
     })
   }, [abortBranches, api, clearBranches, dialog, onWorktreeChange, restoreFocus, runRepoWrite, sessionId, sessionRef, setNotice, stateRef, t])
 
@@ -820,6 +859,7 @@ export function useRepoActions({
     dialog,
     dialogError,
     tagRemotes,
+    inFlight,
     repoBusy,
     dialogWriting,
     syncing: activeWrite?.domain === 'sync',
@@ -842,6 +882,7 @@ export function useRepoActions({
     onRefActions,
     closeMenu,
     chooseMenuAction,
+    openAction,
     confirmDialog,
     cancelDialog,
   }

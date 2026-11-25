@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { createApi } from '../lib/client/api.js'
 import { buildNodeRows } from '../lib/client/detail/tree.js'
 import { budgetFolds, mergedWorktreeGroups, streamSections } from '../lib/client/detail/detail.js'
+import { storageKey } from '../lib/client/state.js'
 import { GIT_CAPABILITIES, GIT_WORKTREE_CAPABILITIES, JUJUTSU_CAPABILITIES } from '../lib/vcs/capabilities.js'
 
 const require = createRequire(import.meta.url)
@@ -93,6 +94,12 @@ class FakeElement {
   }
 
   select() {}
+
+  scrollIntoView() {}
+
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null
+  }
 
   get isConnected() {
     let cursor = this
@@ -302,6 +309,12 @@ function createHarness({ width = 1000 } = {}) {
     },
     useCallback(fn, deps) {
       return react.useMemo(() => fn, deps)
+    },
+    useImperativeHandle(ref, create, deps) {
+      react.useLayoutEffect(() => {
+        assignRef(ref, create())
+        return () => { assignRef(ref, null) }
+      }, deps === undefined ? undefined : [...deps, ref])
     },
     useLayoutEffect(create, deps) {
       const inst = activeInstance
@@ -2245,6 +2258,341 @@ function textOf(node) {
   if (Array.isArray(node)) return node.map(textOf).join('')
   return (node.children ?? []).map(textOf).join('')
 }
+
+const tileAlpha = '/fixture/alpha'
+const tileBeta = '/fixture/beta'
+const tileMain = '1'.repeat(40)
+const tileTopic = '2'.repeat(40)
+const tileLoose = '3'.repeat(40)
+
+function tileTree(path, options = {}) {
+  return {
+    path, branch: 'main', head: tileMain, primary: true, dirty: 0, operation: null, locked: false,
+    ...options,
+  }
+}
+
+function tilePointer(name, sha, options = {}) {
+  return {
+    kind: 'branch', name, sha, checkout: null, subject: name, time: null, isBase: false, base: 'origin/main',
+    ahead: 0, behind: 0, unique: 0, upstream: null, ...options,
+  }
+}
+
+function tileRepo(path, pointers, checkouts = [tileTree(path)], track = { ahead: 0, behind: 0 }) {
+  return {
+    path, name: path.split('/').at(-1), vcs: 'git', registered: true, supported: true, remotes: ['origin'],
+    fetchedAt: null, tags: 0, truncated: false, baselines: [], checkouts,
+    pointers: [...pointers, tilePointer('main', tileMain, { isBase: true, upstream: 'origin/main', track, checkout: path })],
+  }
+}
+
+/** Exercise the real panel and route payloads with controllable status, writes, and rereads. */
+async function withTiledGit(repositories, { initialWorktrees = [], expanded = [], commits = [tileTopic, tileMain, tileLoose], write }, run) {
+  const harness = createHarness()
+  const restore = harness.installGlobals()
+  const savedFetch = globalThis.fetch
+  const savedStorage = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
+  const sessionId = 'tiled-git'
+  const store = new Map([[storageKey(sessionId), JSON.stringify({
+    repo: repositories[0].path, repositoryScope: 'all', tiled: true, tileExpanded: expanded, worktrees: initialWorktrees,
+  })]])
+  Object.defineProperty(globalThis, 'sessionStorage', {
+    value: { getItem: key => store.get(key) ?? null, setItem: (key, value) => { store.set(key, value) } },
+    configurable: true,
+  })
+  const json = (answer, status = 200) => Response.json(answer, { status })
+  const reads = { overview: [], log: [], status: [] }
+  const writes = []
+  const waits = { status: new Map(), overview: null }
+
+  globalThis.fetch = async (url, init) => {
+    const query = new URL(url, 'http://127.0.0.1')
+    const path = query.searchParams.get('repo')
+    const worktree = query.searchParams.get('worktree')
+    const current = repositories.find(repo => repo.path === path)
+    if (init?.method === 'POST') {
+      const body = JSON.parse(init.body)
+      writes.push([query.pathname, body])
+      return write(query.pathname, body, json)
+    }
+    switch (query.pathname) {
+      case '/api/vcs.repositories':
+        return json({ cwd: '/fixture', repositories: repositories.map(repo => ({
+          path: repo.path, name: repo.name, vcs: repo.vcs, capabilities: repo.capabilities ?? GIT_CAPABILITIES,
+          worktrees: repo.checkouts.map(tree => ({ ...tree, name: tree.path.split('/').at(-1), canRemove: !tree.primary })),
+        })) })
+      case '/api/vcs.overview': {
+        reads.overview.push(path)
+        await waits.overview
+        const selected = path === null ? repositories : [current]
+        return new Response([
+          { type: 'scope', cwd: '/fixture', repositories: selected.length },
+          ...selected.map(repository => ({ type: 'repository', repository })),
+          { type: 'done' },
+        ].map(line => JSON.stringify(line)).join('\n'))
+      }
+      case '/api/vcs.status': {
+        reads.status.push([path, worktree])
+        await waits.status.get(worktree ?? path)
+        const tree = current.checkouts.find(item => item.path === (worktree ?? path))
+        const pointer = current.pointers.find(item => item.kind === 'branch' && item.name === tree?.branch)
+        return json({
+          repo: { path: tree.path, name: current.name }, vcs: current.vcs, capabilities: current.capabilities ?? GIT_CAPABILITIES,
+          defaultNode: tree.head, groups: { staged: [], unstaged: [], untracked: [] }, total: 0,
+          branch: {
+            name: tree.branch, oid: tree.head, detached: tree.branch === null, unborn: false,
+            upstream: pointer?.upstream ?? null, ahead: pointer?.track?.ahead ?? 0, behind: pointer?.track?.behind ?? 0,
+          },
+        })
+      }
+      case '/api/vcs.log':
+        reads.log.push(path)
+        return json({ commits: commits.map(sha => ({ sha, parents: [], refs: [], subject: sha })) })
+      default:
+        return json({})
+    }
+  }
+  try {
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
+    harness.mount(harness.react.createElement(VcsView, { sessionId, t, locale: 'en-US' }))
+    await harness.settle()
+    const body = harness.document.body
+    const columns = () => body.querySelectorAll('.vcs-tile-column').map(column => column.dataset.repository)
+    const chip = (repo, name) => body.querySelectorAll('[data-pointer-id]').find(element => element.dataset.pointerId.startsWith(`${repo}\0`)
+      && element.dataset.pointerId.endsWith(`\0${name}`))
+    const bar = () => body.querySelector('.vcs-tile-actionbar')
+    const action = kind => bar()?.querySelector(`[data-tile-action="${kind}"]`)
+    const dialog = () => body.querySelector('[role="dialog"]')
+    const submit = () => dialog().props.onSubmit({ preventDefault() {} })
+    const escape = async () => {
+      harness.keyDown(harness.document.activeElement, 'Escape')
+      await harness.settle()
+      assert.equal(dialog(), null)
+    }
+    await run({
+      harness, body, columns, chip, bar, action, dialog, submit, escape, reads, writes, waits,
+      current: () => body.querySelector('.vcs-tile-column[data-current]')?.dataset.repository,
+      persisted: () => JSON.parse(store.get(storageKey(sessionId))),
+    })
+  } finally {
+    harness.unmount()
+    restore()
+    globalThis.fetch = savedFetch
+    if (savedStorage === undefined) delete globalThis.sessionStorage
+    else Object.defineProperty(globalThis, 'sessionStorage', savedStorage)
+  }
+}
+
+test('tiled direct actions wait for another repository’s status and share the existing dialogs', async () => {
+  const remote = tilePointer('origin/next', tileLoose, { kind: 'remote', remote: 'origin', branch: 'next' })
+  const topic = tilePointer('topic', tileTopic, { ahead: 2, unique: 2, upstream: 'origin/topic' })
+  await withTiledGit([tileRepo(tileAlpha, []), tileRepo(tileBeta, [topic, remote])], {
+    expanded: [tileAlpha], write: () => assert.fail('the cancelled dialogs must not write'),
+  }, async ({ harness, body, columns, bar, chip, action, dialog, escape, reads, waits, writes, current }) => {
+    assert.equal(current(), tileAlpha)
+    const order = columns()
+    const betaStatus = Promise.withResolvers()
+    waits.status.set(tileBeta, betaStatus.promise)
+    harness.keyDown(body.querySelector('.vcs-root'), '2', { code: 'Digit2' })
+    await harness.settle()
+    const selected = chip(tileBeta, 'topic')
+    assert.equal(harness.document.activeElement, selected)
+    assert.equal(selected.props.tabIndex, 0)
+    assert.equal(harness.keyDown(selected, 'Tab').prevented, false)
+    const merge = action('merge')
+    const buttons = bar().querySelectorAll('.vcs-button')
+    assert.deepEqual(buttons.map(textOf), ['branch.push', 'tile.mergeInto:{"name":"main"}', 'tile.actions', 'tile.openTimeline ↵'])
+    assert.equal(textOf(body.querySelector('.vcs-state-position')), '1/1')
+
+    merge.focus()
+    harness.keyClick(merge)
+    await harness.settle()
+    assert.equal(current(), tileBeta)
+    assert.deepEqual(columns(), order)
+    assert.equal(textOf(body.querySelector('.vcs-state-position')), '1/1')
+    assert.ok(reads.status.some(([repo, worktree]) => repo === tileBeta && worktree === null))
+    assert.equal(dialog(), null)
+    assert.equal(body.querySelector('.vcs-ref-ops'), null)
+
+    betaStatus.resolve()
+    await harness.settle()
+    assert.match(textOf(dialog()), /branch\.mergeText:\{"branch":"topic","current":"main"\}/u)
+    await escape()
+    assert.equal(harness.document.activeElement, merge)
+
+    harness.mouseClick(buttons[2])
+    await harness.settle()
+    const items = body.querySelector('.vcs-ref-ops').querySelectorAll('[data-ops-item]')
+    assert.ok(items.some(item => textOf(item) === 'branch.rename'))
+    harness.mouseClick(items.find(item => textOf(item).startsWith('branch.merge:')))
+    await harness.settle()
+    assert.match(textOf(dialog()), /branch\.mergeText:\{"branch":"topic","current":"main"\}/u)
+    await escape()
+
+    harness.mouseClick(chip(tileBeta, 'origin/next'))
+    const checkout = action('checkout-remote')
+    harness.mouseClick(checkout)
+    await harness.settle()
+    assert.equal(dialog().querySelector('[id="vcs-branch-name"]').props.value, 'next')
+    assert.match(textOf(dialog()), /branch\.checkoutRemoteText:\{"branch":"origin\/next","remote":"origin"\}/u)
+    await escape()
+    assert.equal(harness.document.activeElement, checkout)
+    assert.deepEqual(writes, [])
+  })
+})
+
+test('direct writes preserve the worktree filter, lock only their repository, and refresh after switching away', async () => {
+  const alphaSibling = '/fixture/alpha-tree'
+  const alpha = tileRepo(tileAlpha, [tilePointer('unpublished', tileLoose, { unique: 2, ahead: 2 })],
+    [tileTree(tileAlpha), tileTree(alphaSibling, { primary: false, branch: null, head: tileLoose })], { ahead: 1, behind: 0 })
+  const publish = tilePointer('publish', tileTopic, { ahead: 2, unique: 2, upstream: 'origin/publish' })
+  const beta = tileRepo(tileBeta, [publish])
+  const pushing = Promise.withResolvers()
+  await withTiledGit([alpha, beta], {
+    initialWorktrees: [alphaSibling],
+    write: async (route, request, json) => {
+      if (route === '/api/vcs.branch') {
+        await pushing.promise
+        publish.unique = 0
+        return json({ upstream: 'origin/publish', pushed: true })
+      }
+      if (route === '/api/vcs.sync') {
+        alpha.pointers.find(item => item.name === 'main').track.ahead = 0
+        return json({ upstream: 'origin/main', pushed: 1 })
+      }
+      assert.equal(route, '/api/vcs.switch')
+      return json({ branch: request.branch })
+    },
+  }, async ({ harness, body, bar, chip, action, dialog, reads, writes, current, persisted }) => {
+    harness.mouseClick(chip(tileAlpha, 'unpublished'))
+    assert.equal(action('push').attributes.get('title'), 'top.syncNoUpstream')
+    assert.equal(action('push').attributes.get('aria-disabled'), 'true')
+    harness.keyClick(action('push'))
+    assert.deepEqual(writes, [])
+
+    harness.mouseClick(chip(tileBeta, 'publish'))
+    harness.mouseClick(action('push'))
+    await harness.settle()
+    assert.deepEqual(writes, [['/api/vcs.branch', { sessionId: 'tiled-git', repo: tileBeta, action: 'push', branch: 'publish' }]])
+    assert.equal(dialog(), null)
+    assert.equal(action('merge').attributes.get('title'), 'branch.pushing')
+    assert.equal(action('push').attributes.get('aria-disabled'), 'true')
+    harness.mouseClick(action('push'))
+    assert.equal(writes.length, 1)
+
+    harness.mouseClick(chip(tileAlpha, 'main'))
+    assert.equal(action('sync').attributes.get('aria-disabled'), undefined)
+    harness.mouseClick(action('sync'))
+    await harness.settle()
+    assert.equal(writes.length, 2)
+    assert.deepEqual(writes[1], ['/api/vcs.sync', { sessionId: 'tiled-git', repo: tileAlpha }])
+    assert.equal(dialog(), null)
+    assert.equal(current(), tileAlpha)
+    assert.deepEqual(persisted().worktrees, [alphaSibling])
+    assert.ok(reads.status.some(([repo, worktree]) => repo === tileAlpha && worktree === alphaSibling))
+    assert.match(textOf(bar().querySelector('.vcs-notice')), /^sync\.pushed\.one/u)
+
+    const overviewReads = reads.overview.length
+    const betaLogs = reads.log.filter(path => path === tileBeta).length
+    pushing.resolve()
+    await harness.settle()
+    assert.equal(current(), tileAlpha)
+    assert.ok(reads.overview.length > overviewReads)
+    assert.ok(reads.log.filter(path => path === tileBeta).length > betaLogs)
+    assert.match(textOf(bar().querySelector('.vcs-notice')), /^sync\.pushed\.one/u, 'background result does not replace Alpha’s')
+    const published = chip(tileBeta, 'publish')
+    assert.equal(published.dataset.state, 'synced')
+    harness.mouseClick(published)
+    assert.match(textOf(bar().querySelector('.vcs-notice')), /^branch\.pushed:/u)
+
+    harness.mouseClick(action('checkout'))
+    await harness.settle()
+    assert.deepEqual(writes[2], ['/api/vcs.switch', { sessionId: 'tiled-git', repo: tileBeta, branch: 'publish' }])
+    assert.equal(dialog(), null)
+    assert.equal(body.querySelector('.vcs-ref-ops'), null)
+    assert.match(textOf(bar().querySelector('.vcs-notice')), /^switch\.done:/u)
+  })
+})
+
+test('a vanished tiled pointer hands focus to the next chip or the column header after refresh', async () => {
+  const loosePath = '/fixture/detached'
+  const uniquePath = '/fixture/unique'
+  const uniqueHead = '4'.repeat(40)
+  const retired = tilePointer('retired', tileTopic, { behind: 2 })
+  const loose = tilePointer(loosePath, tileLoose, { kind: 'detached', checkout: loosePath })
+  const unique = tilePointer(uniquePath, uniqueHead, { kind: 'detached', checkout: uniquePath, unique: 1, ahead: 1 })
+  const alpha = tileRepo(tileAlpha, [retired, loose, unique], [
+    tileTree(tileAlpha),
+    tileTree(loosePath, { head: tileLoose, branch: null, primary: false }),
+    tileTree(uniquePath, { head: uniqueHead, branch: null, primary: false }),
+  ])
+  await withTiledGit([alpha], {
+    commits: [uniqueHead, tileTopic, tileMain, tileLoose],
+    write: (route, request, json) => {
+      if (route === '/api/vcs.commit-op') return json({ branch: request.name, sha: request.sha })
+      if (route === '/api/vcs.branch') {
+        if (!request.force) return json({ error: { code: 'branch-unmerged', message: 'Not fully merged' } }, 409)
+        alpha.pointers = alpha.pointers.filter(item => item !== retired)
+        return json({ branch: 'retired' })
+      }
+      assert.equal(route, '/api/vcs.worktree')
+      alpha.pointers = alpha.pointers.filter(item => item !== loose)
+      alpha.checkouts = alpha.checkouts.filter(tree => tree.path !== loosePath)
+      return json({ path: loosePath })
+    },
+  }, async ({ harness, body, bar, chip, action, dialog, submit, reads, waits, writes }) => {
+    harness.mouseClick(chip(tileAlpha, uniquePath))
+    const create = action('create-branch')
+    harness.mouseClick(create)
+    await harness.settle()
+    assert.match(textOf(dialog()), /commit\.createBranchTitle/u)
+    dialog().querySelector('[id="vcs-new-branch-name"]').props.onChange({ currentTarget: { value: 'keep' } })
+    submit()
+    await harness.settle()
+    assert.deepEqual(writes[0], ['/api/vcs.commit-op', { sessionId: 'tiled-git', repo: tileAlpha, action: 'branch', sha: uniqueHead, name: 'keep' }])
+    assert.equal(harness.document.activeElement, create, 'the still-present opener gets focus after a successful dialog')
+
+    harness.mouseClick(chip(tileAlpha, 'retired'))
+    harness.mouseClick(action('delete'))
+    await harness.settle()
+    submit()
+    await harness.settle()
+    assert.equal(writes[1][1].force, undefined)
+    assert.match(textOf(dialog()), /error\.branchUnmerged.*branch\.deleteAnyway/u)
+    assert.equal(textOf(harness.document.activeElement), 'branch.cancel')
+    assert.notEqual(chip(tileAlpha, 'retired'), undefined)
+    submit()
+    await harness.settle()
+    assert.equal(writes[2][1].force, true)
+    assert.equal(dialog(), null)
+    assert.equal(chip(tileAlpha, 'retired'), undefined)
+    assert.equal(harness.document.activeElement, chip(tileAlpha, 'main'))
+    assert.match(textOf(bar().querySelector('.vcs-notice')), /^branch\.deleted:/u)
+
+    harness.mouseClick(chip(tileAlpha, loosePath))
+    const remove = action('remove')
+    harness.mouseClick(remove)
+    await harness.settle()
+    assert.equal(textOf(dialog().querySelector('.vcs-dialog-title')), 'worktree.removeWorktree')
+    const reread = Promise.withResolvers()
+    waits.overview = reread.promise
+    const logCount = reads.log.length
+    submit()
+    await harness.settle()
+    assert.deepEqual(writes[3], ['/api/vcs.worktree', {
+      sessionId: 'tiled-git', repo: tileAlpha, action: 'remove', worktree: loosePath, expectedBranch: null, expectedHead: tileLoose,
+    }])
+    assert.equal(dialog(), null)
+    assert.equal(harness.document.activeElement, remove, 'closing before the overview settles still restores the pressed button')
+    reread.resolve()
+    await harness.settle()
+    assert.ok(reads.log.length > logCount)
+    assert.equal(chip(tileAlpha, loosePath), undefined)
+    assert.equal(harness.document.activeElement, body.querySelector('.vcs-tile-head'))
+    assert.match(textOf(bar().querySelector('.vcs-notice')), /^worktree\.removed:/u)
+  })
+})
 
 /** Install a minimal fake `window` object with dispatchable resize/scroll listeners. */
 function installFakeWindow(innerWidth = 1000, innerHeight = 800) {

@@ -3541,7 +3541,25 @@ select.vcs-repository-kind {
 
 .vcs-tile-actionbar-buttons {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.vcs-tile-direct-action {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.vcs-tile-direct-action > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vcs-tile-actionbar > .vcs-notice {
+  flex-basis: 100%;
 }
 
 .vcs-button-primary {

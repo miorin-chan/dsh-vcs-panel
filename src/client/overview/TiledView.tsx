@@ -6,13 +6,18 @@
  * action bar acts on the focused one, and the rail shows where the viewport is.
  */
 
-import { useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent, Ref, WheelEvent as ReactWheelEvent } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 
-import { formatPlural } from '../format.js'
+import { BRANCH_ACTION_META } from '../branch.js'
+import { COMMIT_ACTION_META } from '../commit.js'
+import { formatCount, formatPlural } from '../format.js'
 import { resolveColor } from '../history/layout.js'
 import type { RepositoryRow } from '../TopBar.jsx'
+import type { Notice, RepoWrite } from '../useRepoActions.js'
+import { tileDirectActions } from './directActions.js'
+import type { TileDirectAction } from './directActions.js'
 import type { FilterId, LaneStep, PointerView, RepositoryView, Skeleton } from './model.js'
 import { elementWithData, FILTERS, LOUD_STATES, matchesFilter, STATE_RANK } from './model.js'
 import { STATE_KEYS, FILTER_KEYS } from './labels.js'
@@ -52,11 +57,14 @@ export interface TiledViewProps {
   filter: FilterId | null
   focus: string | null
   narrow: boolean
-  onFocusPointer: (pointer: PointerView) => void
+  inFlight: ReadonlyMap<string, RepoWrite>
+  notices: ReadonlyMap<string | null, Notice>
+  onFocusPointer: (id: string | null) => void
   onOpenTimeline: (path: string, pointer: PointerView | null) => void
   onExpand: (path: string) => void
   onCollapse: (path: string) => void
   onPointerActions: (pointer: PointerView, point: { clientX: number, clientY: number }, element: HTMLElement | null) => void
+  onDirectAction: (pointer: PointerView, action: TileDirectAction['action'], restore: () => void) => void
   onAddUnlisted: (paths: string[]) => void
   control: Ref<TiledControl | null>
   t: Translate
@@ -115,7 +123,7 @@ function PointerChip({ pointer, focused, hit, onFocus, onActions, t, locale }: {
   pointer: PointerView
   focused: boolean
   hit: boolean
-  onFocus: (pointer: PointerView) => void
+  onFocus: TiledViewProps['onFocusPointer']
   onActions: TiledViewProps['onPointerActions']
   t: Translate
   locale?: string
@@ -135,10 +143,10 @@ function PointerChip({ pointer, focused, hit, onFocus, onActions, t, locale }: {
       data-pointer-id={pointer.id}
       tabIndex={focused ? 0 : -1}
       title={`${pointer.display} · ${t(STATE_KEYS[pointer.state])}`}
-      onClick={() => { onFocus(pointer) }}
+      onClick={() => { onFocus(pointer.id) }}
       onContextMenu={event => {
         event.preventDefault()
-        onFocus(pointer)
+        onFocus(pointer.id)
         onActions(pointer, event, event.currentTarget)
       }}
     >
@@ -178,7 +186,7 @@ function ColumnHead({ column, quiet, onCollapse, onOpen, t, locale }: {
     fetch === null || view?.remotes.length === 0 ? null : fetch.text,
   ].filter((part): part is string => part !== null)
   return (
-    <header className="vcs-tile-head">
+    <header className="vcs-tile-head" tabIndex={-1}>
       <div className="vcs-tile-title">
         <h3 title={column.entry.path}>{column.entry.name}</h3>
         {quiet ? (
@@ -226,7 +234,7 @@ function ColumnBody({ column, focus, filter, cwd, onFocus, onActions, t, locale 
   focus: string | null
   filter: FilterId | null
   cwd: string | null
-  onFocus: (pointer: PointerView) => void
+  onFocus: TiledViewProps['onFocusPointer']
   onActions: TiledViewProps['onPointerActions']
   t: Translate
   locale?: string
@@ -280,13 +288,25 @@ function ColumnBody({ column, focus, filter, cwd, onFocus, onActions, t, locale 
   )
 }
 
-/** The bar under the columns for the focused pointer. */
-function ActionBar({ pointer, view, cwd, onOpen, onActions, t, locale }: {
+function actionLabel(action: TileDirectAction['action'], t: Translate): string {
+  switch (action.domain) {
+    case 'sync': return t('tile.sync')
+    case 'branch': return action.receiver === undefined
+      ? t(BRANCH_ACTION_META[action.kind].labelKey) : t('tile.mergeInto', { name: action.receiver })
+    case 'commit': return t(COMMIT_ACTION_META[action.kind].labelKey)
+    case 'worktree': return t('worktree.removeWorktree')
+  }
+}
+
+/** The selected pointer's facts and buttons. */
+function ActionBar({ pointer, view, cwd, directActions, onOpen, onActions, onDirectAction, t, locale }: {
   pointer: PointerView
   view: RepositoryView
   cwd: string | null
+  directActions: readonly TileDirectAction[]
   onOpen: () => void
   onActions: (element: HTMLElement) => void
+  onDirectAction: (action: TileDirectAction['action'], element: HTMLElement) => void
   t: Translate
   locale?: string
 }) {
@@ -306,7 +326,7 @@ function ActionBar({ pointer, view, cwd, onOpen, onActions, t, locale }: {
   facts.push(pointer.sha.slice(0, 7))
   const hasActions = pointer.kind !== 'stash' && (pointer.kind !== 'detached' || pointer.occupant !== null)
   return (
-    <div className="vcs-tile-actionbar" role="region" aria-label={t('tile.selected')}>
+    <>
       <span className="vcs-tile-actionbar-who" data-state={pointer.state}>
         <KindGlyph kind={pointer.kind} />
         <span>
@@ -315,6 +335,30 @@ function ActionBar({ pointer, view, cwd, onOpen, onActions, t, locale }: {
         </span>
       </span>
       <span className="vcs-tile-actionbar-buttons">
+        {directActions.map(({ action, disabledReason }) => {
+          const label = actionLabel(action, t)
+          const reason = disabledReason === undefined ? undefined : t(disabledReason)
+          const title = reason ?? (action.domain === 'sync' && typeof pointer.upstream === 'string'
+            ? `${t('top.syncLabel', {
+              upstream: pointer.upstream,
+              ahead: formatCount(pointer.track?.ahead ?? 0, locale),
+              behind: formatCount(pointer.track?.behind ?? 0, locale),
+            })}\n${t('top.syncHint')}` : label)
+          return (
+            <button
+              key={action.kind}
+              type="button"
+              className="vcs-button vcs-tile-direct-action"
+              data-tile-action={action.kind}
+              title={title}
+              aria-disabled={reason === undefined ? undefined : true}
+              aria-description={reason}
+              onClick={event => { if (reason === undefined) onDirectAction(action, event.currentTarget) }}
+            >
+              <span>{label}</span>
+            </button>
+          )
+        })}
         {hasActions ? (
           <button type="button" className="vcs-button" onClick={event => { onActions(event.currentTarget) }}>{t('tile.actions')}</button>
         ) : null}
@@ -322,16 +366,55 @@ function ActionBar({ pointer, view, cwd, onOpen, onActions, t, locale }: {
           {t('tile.openTimeline')} <kbd aria-hidden="true">↵</kbd>
         </button>
       </span>
-    </div>
+    </>
   )
 }
 
+/** The opener and the pointers below it in this column's pre-write order. */
+interface ActionOrigin {
+  repo: string
+  pointerId: string
+  button: HTMLElement
+  successors: string[]
+}
+
 export function TiledView({
-  columns, unlisted, cwd, currentRepo, expanded, filter, focus, narrow, onFocusPointer, onOpenTimeline, onExpand,
-  onCollapse, onPointerActions, onAddUnlisted, control, t, locale,
+  columns, unlisted, cwd, currentRepo, expanded, filter, focus, narrow, inFlight, notices, onFocusPointer, onOpenTimeline, onExpand,
+  onCollapse, onPointerActions, onDirectAction, onAddUnlisted, control, t, locale,
 }: TiledViewProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const actionOriginRef = useRef<ActionOrigin | null>(null)
+  const focusSelectionRef = useRef({ focus, onFocusPointer })
+  focusSelectionRef.current = { focus, onFocusPointer }
   const [viewport, setViewport] = useState({ left: 0, width: 1, total: 1 })
+
+  const renderedColumn = (repo: string) => elementWithData(scrollerRef.current, 'data-repository', repo)
+  const restoreActionFocus = (origin: ActionOrigin) => {
+    if (actionOriginRef.current !== origin || focusSelectionRef.current.focus !== origin.pointerId || scrollerRef.current === null) return
+    if (origin.button.isConnected) {
+      origin.button.focus({ preventScroll: true })
+      return
+    }
+    const column = renderedColumn(origin.repo)
+    const chips = new Map(Array.from(column?.querySelectorAll<HTMLElement>('[data-pointer-id]') ?? [],
+      chip => [chip.dataset.pointerId, chip]))
+    const same = chips.get(origin.pointerId)
+    const next = origin.successors.find(id => chips.has(id))
+    const target = same ?? (next === undefined ? null : chips.get(next)) ?? column?.querySelector<HTMLElement>('.vcs-tile-head')
+    actionOriginRef.current = null
+    target?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+    target?.focus({ preventScroll: true })
+    if (same === undefined) focusSelectionRef.current.onFocusPointer(next ?? null)
+  }
+
+  // A dialog can close before the refreshed overview reports the deletion.
+  // Follow a focused opener that vanishes on that render, but do not take
+  // focus back if the user has already moved elsewhere.
+  const origin = actionOriginRef.current
+  const openerHadFocus = origin !== null && origin.button.ownerDocument.activeElement === origin.button
+  useLayoutEffect(() => {
+    if (openerHadFocus && origin !== null && !origin.button.isConnected) restoreActionFocus(origin)
+  })
 
   const measure = () => {
     const scroller = scrollerRef.current
@@ -387,7 +470,9 @@ export function TiledView({
 
   const focused = focus === null ? null : columns.flatMap(column => column.view?.pointers ?? []).find(pointer => pointer.id === focus)
     ?? unlisted.flatMap(view => view.pointers).find(pointer => pointer.id === focus) ?? null
-  const focusedView = focused === null ? null : columns.find(column => column.view?.path === focused.repo)?.view ?? null
+  const focusedColumn = focused === null ? undefined : columns.find(column => column.view?.path === focused.repo)
+  const focusedView = focusedColumn?.view ?? null
+  const notice = notices.get(focused?.repo ?? currentRepo)
 
   const stop = (event: ReactMouseEvent) => { event.stopPropagation() }
 
@@ -447,19 +532,43 @@ export function TiledView({
           </aside>
         ) : null}
       </div>
-      {focused !== null && focusedView !== null ? (
-        <ActionBar
-          pointer={focused}
-          view={focusedView}
-          cwd={cwd}
-          onOpen={() => { onOpenTimeline(focused.repo, focused) }}
-          onActions={element => {
-            const box = element.getBoundingClientRect()
-            onPointerActions(focused, { clientX: box.left, clientY: box.top - 4 }, element)
-          }}
-          t={t}
-          locale={locale}
-        />
+      {focusedView !== null || notice !== undefined ? (
+        <div className="vcs-tile-actionbar" role="region" aria-label={t('tile.selected')}>
+          {focused !== null && focusedColumn !== undefined && focusedView !== null ? (
+            <ActionBar
+              key={focused.id}
+              pointer={focused}
+              view={focusedView}
+              cwd={cwd}
+              directActions={tileDirectActions(focused, focusedView, focusedColumn.entry.capabilities, inFlight.get(focused.repo), focusedColumn.entry)}
+              onOpen={() => { onOpenTimeline(focused.repo, focused) }}
+              onActions={element => {
+                const box = element.getBoundingClientRect()
+                onPointerActions(focused, { clientX: box.left, clientY: box.top - 4 }, element)
+              }}
+              onDirectAction={(action, button) => {
+                const chips = Array.from(renderedColumn(focused.repo)?.querySelectorAll<HTMLElement>('[data-pointer-id]') ?? [])
+                const index = chips.findIndex(chip => chip.dataset.pointerId === focused.id)
+                const opener = {
+                  repo: focused.repo, pointerId: focused.id, button,
+                  successors: index < 0 ? [] : chips.slice(index + 1).map(chip => chip.dataset.pointerId ?? ''),
+                }
+                actionOriginRef.current = opener
+                button.focus({ preventScroll: true })
+                onDirectAction(focused, action, () => { restoreActionFocus(opener) })
+              }}
+              t={t}
+              locale={locale}
+            />
+          ) : null}
+          {notice === undefined ? null : (
+            <p
+              className={notice.tone === 'info' ? 'vcs-notice vcs-notice-info' : 'vcs-notice'}
+              role={notice.tone === 'info' ? 'status' : 'alert'}
+              title={notice.text}
+            >{notice.text}</p>
+          )}
+        </div>
       ) : null}
       <div
         className="vcs-tile-rail"

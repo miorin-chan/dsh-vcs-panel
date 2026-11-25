@@ -26,7 +26,7 @@ import type {
   CommitActionsHandler, RefActionsHandler, TimelineCommit, TimelineControl, TimelineWorktree,
 } from './history/Timeline.jsx'
 import type { RepositoryRow } from './TopBar.jsx'
-import type { Notice } from './useRepoActions.js'
+import type { MenuPoint, Notice } from './useRepoActions.js'
 import type { WorktreeChoice } from './worktrees.js'
 import {
   attachWorkingCopies, checkedWorktrees, preferredViewNode, repositoryWorktrees, sharedRefs,
@@ -62,6 +62,8 @@ import {
   FILTERS,
   buildSkeleton, columnOrder, filterCounts, pointerTarget, repositoryView, stepIndex, tileOrder, traversal,
 } from './overview/model.js'
+import { tileDirectActions } from './overview/directActions.js'
+import type { TileDirectAction } from './overview/directActions.js'
 import { useOverview } from './overview/useOverview.js'
 import { historyOf, useTileHistories } from './overview/useTileHistories.js'
 import { OverviewPane } from './overview/OverviewPane.jsx'
@@ -408,6 +410,12 @@ interface TileTraversal {
 
 const NO_TRAVERSAL: TileTraversal = Object.freeze({ filter: null, index: -1, focus: null })
 
+/** A pointer's request waiting for its repository to become current and readable. */
+type PointerActionRequest = { pointer: PointerView } & (
+  | { kind: 'menu'; point: MenuPoint; element: HTMLElement | null }
+  | { kind: 'direct'; action: TileDirectAction['action']; restore: () => void }
+)
+
 /**
  * Render the version control panel for one Session.
  * @param props - standard Sidebar tab props plus the active UI locale, visibility, and a one-shot request to land keyboard focus in the panel.
@@ -434,6 +442,7 @@ export function VcsView({
   const [log, setLog] = useState<HistoryLog>(idleLog)
   const [manual, setManual] = useState<Revisions>(INITIAL_REVISIONS)
   const [background, setBackground] = useState<Revisions>(INITIAL_REVISIONS)
+  const [overviewWriteRevision, setOverviewWriteRevision] = useState(0)
   const [settledRepositoriesKey, setSettledRepositoriesKey] = useState<string | null>(null)
   const [settledHistoryKey, setSettledHistoryKey] = useState<string | null>(null)
   const [detailInteracting, setDetailInteracting] = useState(false)
@@ -446,8 +455,18 @@ export function VcsView({
   const [singleView, setSingleView] = useState<'timeline' | 'detail'>('timeline')
   const [dirChildren, setDirChildren] = useState<Record<string, readonly UntrackedChild[]>>({})
   const [loadingDirs, setLoadingDirs] = useState<Record<string, boolean>>({})
-  // The top bar's message, right of the branch and sync: `{ tone: 'error' | 'info', text }`.
-  const [notice, setNotice] = useState<Notice | null>(null)
+  // Results stay with their repository when a write outlives its selection.
+  const [notices, setNotices] = useState<ReadonlyMap<string | null, Notice>>(new Map())
+  const notice = notices.get(state.repo) ?? null
+  const setNotice = useCallback((next: Notice | null, repo: string | null = stateRef.current.repo) => {
+    setNotices(previous => {
+      if (next === null && !previous.has(repo)) return previous
+      const updated = new Map(previous)
+      if (next === null) updated.delete(repo)
+      else updated.set(repo, next)
+      return updated
+    })
+  }, [])
   // Local branches for the header menu, loaded when the menu opens.
   const [branches, setBranches] = useState<BranchListingState>({ status: 'idle', list: [], truncated: false, error: null })
   // Bumped after the Sidebar host focuses its pane, so the settle effect retries.
@@ -501,13 +520,20 @@ export function VcsView({
   const worktrees = useMemo(() => repositoryWorktrees(repoInfo), [repoInfo])
   const checkedTrees = useMemo(() => checkedWorktrees(worktrees, state.worktrees), [worktrees, state.worktrees])
   const checkedPaths = checkedTrees.map(tree => tree.path)
-  const statusPathsKey = JSON.stringify(checkedPaths.length > 0 ? checkedPaths : state.repo === null ? [] : [state.repo])
-  const statusScope = JSON.stringify([sessionId, state.repo, manual.working, statusPathsKey])
+  const statusPaths = checkedPaths.length > 0 ? checkedPaths : state.repo === null ? [] : [state.repo]
+  const statusPathsKey = JSON.stringify(statusPaths)
+  // Tiled Git actions address the repository entry, independently of which
+  // worktrees the stacked timeline shows.
+  const tileAnchorActions = state.tiled && repoInfo?.capabilities.workingCopy === 'row'
+  const statusReadPathsKey = tileAnchorActions && state.repo !== null && !statusPaths.includes(state.repo)
+    ? JSON.stringify([state.repo, ...statusPaths]) : statusPathsKey
+  const statusScope = JSON.stringify([sessionId, state.repo, manual.working, statusReadPathsKey])
   const statusKey = JSON.stringify([statusScope, background.working])
   const repositoriesScope = JSON.stringify([sessionId, manual.repositories])
   const repositoriesKey = JSON.stringify([repositoriesScope, background.repositories])
   const statusPath = checkedPaths[0] ?? state.repo
   const status = statuses[statusPath] ?? IDLE_STATUS
+  const actionStatus = tileAnchorActions && state.repo !== null ? statuses[state.repo] ?? IDLE_STATUS : status
   const missingTool = status.status === 'error' && status.error?.code === 'vcs-missing'
   const showCurrentHead = checkedPaths.length === 0 || (checkedPaths.length === 1 && checkedPaths[0] === state.repo)
   const baseCapabilities = repoInfo?.capabilities ?? status.data?.capabilities ?? null
@@ -686,13 +712,20 @@ export function VcsView({
   }, [resetDirectories, update])
 
   /** Refresh the domains affected by the explicit action. */
-  const refresh = useCallback((requester = 'refresh'): void => {
+  const refresh = useCallback((requester = 'refresh', targetRepo = stateRef.current.repo): void => {
+    setNotice(null, targetRepo)
+    if (targetRepo !== stateRef.current.repo) {
+      // The existing foreground refresh already rereads both tile models. A
+      // write in another repository needs those reads without resetting this timeline.
+      setOverviewWriteRevision(previous => previous + 1)
+      if (requester === 'worktree') setBackground(previous => advanceRevisions(previous, ['repositories']))
+      return
+    }
     const domains = requester === 'stage' ? ['working']
       : requester === 'tag' ? ['history']
         : requester === 'repositories' ? ['repositories']
           : requester === 'refresh' || requester === 'worktree' ? Object.keys(INITIAL_REVISIONS) : ['working', 'history']
     setRefreshing(requester)
-    setNotice(null)
     if (domains.includes('working')) {
       resetDirectories()
       diffCacheRef.current.clear()
@@ -703,7 +736,7 @@ export function VcsView({
       commitCacheRef.current.clear()
     }
     setManual(previous => advanceRevisions(previous, domains))
-  }, [resetDirectories])
+  }, [resetDirectories, setNotice])
 
   const onWorktreeChange = useCallback((repo: string, createdPath?: string) => {
     if (createdPath !== undefined) {
@@ -711,7 +744,7 @@ export function VcsView({
       pending.add(createdPath)
       createdWorktreesRef.current.set(repo, pending)
     }
-    refresh('worktree')
+    refresh('worktree', repo)
   }, [refresh])
 
   const refreshInBackground = useCallback((domains: readonly string[]) => {
@@ -746,11 +779,11 @@ export function VcsView({
   const actions = useRepoActions({
     api,
     sessionId,
-    repo: showCurrentHead ? state.repo : null,
+    repo: showCurrentHead || tileAnchorActions ? state.repo : null,
     stateRef,
     sessionRef,
-    statusData: status.data,
-    capabilities,
+    statusData: actionStatus.data,
+    capabilities: tileAnchorActions ? baseCapabilities : capabilities,
     commits,
     commitIndex,
     head: anchorHead,
@@ -837,7 +870,7 @@ export function VcsView({
     pageControllerRef.current?.abort()
     pageControllerRef.current = null
     setSingleView('timeline')
-    setNotice(null)
+    if (!current.tiled) setNotice(null, nextRepo)
     resetDirectories()
     diffCacheRef.current.clear()
     commitCacheRef.current.clear()
@@ -858,7 +891,7 @@ export function VcsView({
       anchor: null,
       ref,
     })
-  }, [abortBranches, clearBranches, resetActionsUi, resetDirectories, selectDiscoveredWorktrees, update])
+  }, [abortBranches, clearBranches, resetActionsUi, resetDirectories, selectDiscoveredWorktrees, setNotice, update])
 
   const toggleRepositoryGroup = (path: string) => {
     update({ expandedRepositories: expandedRepositories.includes(path)
@@ -920,8 +953,8 @@ export function VcsView({
   const [overviewPhase, setOverviewPhase] = useState<'closed' | 'opening' | 'open' | 'closing'>(
     () => (state.overview && !state.tiled ? 'open' : 'closed'),
   )
-  const [menuRequest, setMenuRequest] = useState(0)
-  const pendingMenuRef = useRef<{ pointer: PointerView, point: { clientX: number, clientY: number }, element: HTMLElement | null } | null>(null)
+  const [pointerRequestTick, setPointerRequestTick] = useState(0)
+  const pendingPointerActionRef = useRef<{ sessionId: string; request: PointerActionRequest } | null>(null)
   const pendingRevealRef = useRef<string | null>(null)
   const revealGroupRef = useRef<string | null>(null)
   const fullscreenRequestedRef = useRef(false)
@@ -933,7 +966,7 @@ export function VcsView({
 
   const overviewData = useOverview(api, {
     active: state.overview || state.tiled,
-    reloadKey: JSON.stringify([sessionId, manual.repositories, manual.history, manual.working]),
+    reloadKey: JSON.stringify([sessionId, manual.repositories, manual.history, manual.working, overviewWriteRevision]),
     repo: state.repo,
     repoKey: JSON.stringify([state.repo, background.history, background.working]),
   })
@@ -947,7 +980,9 @@ export function VcsView({
 
   const tilePathsKey = JSON.stringify(visibleRepositories.map(entry => entry.path))
   const tilePaths = useMemo(() => parseJson<string[]>(tilePathsKey), [tilePathsKey])
-  const tileHistories = useTileHistories(api, tilePaths, state.tiled, JSON.stringify([manual.history, background.history]))
+  const tileHistories = useTileHistories(
+    api, tilePaths, state.tiled, JSON.stringify([sessionId, manual.history, background.history, overviewWriteRevision]),
+  )
   const skeletons = useMemo(() => {
     const result = new Map<string, ReturnType<typeof buildSkeleton>>()
     for (const [path, history] of tileHistories) {
@@ -1128,7 +1163,7 @@ export function VcsView({
       setFocusTick(value => value + 1)
     }
     if (overviewDrawer) update({ overview: false })
-  }, [overviewDrawer, repositories.list, selectNode, singleColumn, switchRepo, t, update])
+  }, [overviewDrawer, repositories.list, selectNode, setNotice, singleColumn, switchRepo, t, update])
 
   const selectOverviewRepository = useCallback((path: string, keyboard: boolean) => {
     const entry = repositories.list.find(item => item.path === path)
@@ -1151,14 +1186,19 @@ export function VcsView({
     }
   }, [repositories.list, switchRepo, update])
 
-  /** Open a pointer's existing actions menu; another repository becomes current first. */
-  const openPointerActions = useCallback((pointer: PointerView, point: { clientX: number, clientY: number }, element: HTMLElement | null) => {
-    const entry = repositories.list.find(item => item.path === pointer.repo)
-    if (entry === undefined || pointer.kind === 'stash') return
-    pendingMenuRef.current = { pointer, point: { clientX: point.clientX, clientY: point.clientY }, element }
-    if (stateRef.current.repo !== entry.path) selectOverviewRepository(entry.path, false)
-    setMenuRequest(value => value + 1)
-  }, [repositories.list, selectOverviewRepository])
+  /** Both menu and direct actions first bring the pointer's repository into scope. */
+  const requestPointerAction = useCallback((request: PointerActionRequest) => {
+    const { pointer } = request
+    if (pointer.kind === 'stash' || !repositories.list.some(entry => entry.path === pointer.repo)) return
+    pendingPointerActionRef.current = null
+    if (stateRef.current.repo !== pointer.repo) selectOverviewRepository(pointer.repo, false)
+    pendingPointerActionRef.current = { sessionId, request }
+    setPointerRequestTick(value => value + 1)
+  }, [repositories.list, selectOverviewRepository, sessionId])
+
+  const openPointerActions = useCallback((pointer: PointerView, point: MenuPoint, element: HTMLElement | null) => {
+    requestPointerAction({ kind: 'menu', pointer, point: { clientX: point.clientX, clientY: point.clientY }, element })
+  }, [requestPointerAction])
 
   /** Step to the next or previous pointer of one state; a spine holding it opens. */
   const stepTraversal = useCallback((filter: FilterId, direction: 1 | -1) => {
@@ -1175,10 +1215,10 @@ export function VcsView({
     }
   }, [tileColumns, tileTraversal.filter, tileTraversal.index, update, viewByPath])
 
-  const focusTilePointer = useCallback((pointer: PointerView) => {
+  const focusTilePointer = useCallback((id: string | null) => {
     setTileTraversal(previous => {
-      const index = previous.filter === null ? -1 : tileHits.findIndex(hit => hit.id === pointer.id)
-      return { filter: previous.filter, index: index >= 0 ? index : previous.index, focus: pointer.id }
+      const index = previous.filter === null ? -1 : tileHits.findIndex(hit => hit.id === id)
+      return { filter: previous.filter, index: index >= 0 ? index : Math.min(previous.index, tileHits.length - 1), focus: id }
     })
   }, [tileHits])
 
@@ -1293,7 +1333,7 @@ export function VcsView({
   useEffect(() => {
     if (!repositoryReady || waitingForRepositories) return undefined
     const controller = new AbortController()
-    const paths = parseJson<string[]>(statusPathsKey)
+    const paths = parseJson<string[]>(statusReadPathsKey)
     const foreground = lastStatusScope.current !== statusScope
     const snapshot = snapshots && foreground && refreshingRef.current === 'refresh'
     if (foreground) setStatuses(previous => Object.fromEntries(paths.map((path): [string, StatusEntry] => {
@@ -1341,7 +1381,7 @@ export function VcsView({
       }
     })
     return () => { controller.abort() }
-  }, [api, background.working, repositoryReady, siblingApi, snapshots, state.repo, statusKey, statusPathsKey, statusScope, waitingForRepositories])
+  }, [api, background.working, repositoryReady, siblingApi, snapshots, state.repo, statusKey, statusReadPathsKey, statusScope, waitingForRepositories])
 
   useEffect(() => {
     if (!repositoryReady || detailInteracting) return
@@ -1427,7 +1467,7 @@ export function VcsView({
     api,
     repo: repositoryReady ? state.repo : null,
     vcs: repositoryReady ? repoInfo?.vcs ?? null : null,
-    pathsKey: repositoryReady ? statusPathsKey : '[]',
+    pathsKey: repositoryReady ? statusReadPathsKey : '[]',
     visible: visible && settledRepositoriesKey !== null && sessionRef.current === sessionId,
     blocked: actions.repoBusy || hasOpenOverlay || refreshing !== null,
     repositories: settledRepositoriesKey !== repositoriesKey,
@@ -1451,11 +1491,13 @@ export function VcsView({
     setRepositories({ status: 'loading', list: [], truncated: false, worktreesTruncated: false, error: null })
     resetDirectories()
     setSingleView('timeline')
-    setNotice(null)
+    setNotices(new Map())
     setRepositoryManagement(null)
     clearBranches()
     abortBranches()
     resetActionsUi()
+    pendingPointerActionRef.current = null
+    setTileTraversal(NO_TRAVERSAL)
     navZoneRef.current = 'timeline'
     pendingReadyFocusRef.current = false
     pendingRestoreFocusRef.current = false
@@ -1918,14 +1960,44 @@ export function VcsView({
     setNotice({ tone: 'info', text: t('overview.beyondHistory') })
   }, [commitIndex, currentHistory, loadMore, log.hasMore, log.loadingMore, log.status, state.node, t])
 
-  // Open the menu a pointer asked for once its repository is current and read.
+  // Open the menu or act directly once the pointer's repository is current and read.
   useEffect(() => {
-    const request = pendingMenuRef.current
-    if (request === null || state.repo !== request.pointer.repo || status.data === null || capabilities === null) return
-    pendingMenuRef.current = null
-    const { pointer, point, element } = request
+    const pending = pendingPointerActionRef.current
+    if (pending === null) return
+    const { request } = pending
+    const { pointer } = request
+    if (pending.sessionId !== sessionId || state.repo !== pointer.repo
+      || (request.kind === 'direct' && (!state.tiled || tileTraversal.focus !== pointer.id))) {
+      pendingPointerActionRef.current = null
+      return
+    }
+    if (actionStatus.status === 'error') {
+      pendingPointerActionRef.current = null
+      setNotice({ tone: 'error', text: errorMessage(t, actionStatus.error) }, pointer.repo)
+      return
+    }
+    const actionPath = tileAnchorActions ? state.repo : statusPath
+    if (actionStatus.status !== 'ready' || actionStatus.data?.repo?.path !== actionPath || baseCapabilities === null) return
+    pendingPointerActionRef.current = null
+    if (request.kind === 'direct') {
+      const view = viewByPath.get(pointer.repo)
+      const latest = view?.pointers.find(item => item.id === pointer.id)
+      const offered = view === undefined || latest === undefined ? undefined
+        : tileDirectActions(latest, view, baseCapabilities, actions.inFlight.get(pointer.repo), repoInfo ?? undefined)
+          .find(item => item.action.kind === request.action.kind)
+      if (offered === undefined || offered.disabledReason !== undefined || !actions.openAction(request.action, request.restore)) {
+        setNotice({ tone: 'info', text: t(offered?.disabledReason ?? 'tile.actionUnavailable') }, pointer.repo)
+        return
+      }
+      // A write can turn a loud column quiet. Keep it open for the result and
+      // for the pointer (or header) that will receive keyboard focus.
+      const expanded = stateRef.current.tileExpanded
+      if (!expanded.includes(pointer.repo)) update({ tileExpanded: [...expanded, pointer.repo] })
+      return
+    }
+    const { point, element } = request
     if (pointer.kind === 'branch') {
-      actions.openBranchActions({ kind: 'branch', name: pointer.name, current: status.data.branch?.name === pointer.name }, point, element)
+      actions.openBranchActions({ kind: 'branch', name: pointer.name, current: actionStatus.data.branch?.name === pointer.name }, point, element)
     } else if (pointer.kind === 'remote' && typeof pointer.remote === 'string' && typeof pointer.branch === 'string') {
       actions.openBranchActions({ kind: 'remote', name: pointer.name, remote: pointer.remote, branch: pointer.branch }, point, element)
     } else if (pointer.kind === 'detached') {
@@ -1934,7 +2006,8 @@ export function VcsView({
         actions.openWorktreeActions(tree, repoInfo?.enclosing === true ? state.repo : null, point, () => { element?.focus({ preventScroll: true }) })
       }
     }
-  }, [actions, capabilities, menuRequest, repoInfo, state.repo, status.data, worktrees])
+  }, [actions, actionStatus, baseCapabilities, pointerRequestTick, repoInfo, sessionId, setNotice, state.repo, state.tiled,
+    statusPath, t, tileAnchorActions, tileTraversal.focus, update, viewByPath, worktrees])
 
   /** Keep focus on the active navigation stop across primary clicks on discrete buttons. */
   const onMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -2266,7 +2339,7 @@ export function VcsView({
         t={t}
         locale={locale}
       />
-      {notice?.domain === 'worktree' ? (
+      {!state.tiled && notice?.domain === 'worktree' ? (
         <p className="vcs-note vcs-worktree-path" role="status">{notice.text}</p>
       ) : null}
       {repositories.truncated ? <p className="vcs-note">{formatPlural(t, 'repositories.truncated', repositories.list.length, locale)}</p> : null}
@@ -2302,11 +2375,14 @@ export function VcsView({
             filter={tileTraversal.filter}
             focus={tileTraversal.focus}
             narrow={narrow}
+            inFlight={actions.inFlight}
+            notices={notices}
             onFocusPointer={focusTilePointer}
             onOpenTimeline={(path, pointer) => { openFromTile(path, pointer) }}
             onExpand={path => { update({ tileExpanded: [...state.tileExpanded.filter(item => item !== path), path] }) }}
             onCollapse={path => { update({ tileExpanded: state.tileExpanded.filter(item => item !== path) }) }}
             onPointerActions={openPointerActions}
+            onDirectAction={(pointer, action, restore) => { requestPointerAction({ kind: 'direct', pointer, action, restore }) }}
             onAddUnlisted={paths => { setAddingRepositories(paths) }}
             control={tiledControl}
             t={t}
