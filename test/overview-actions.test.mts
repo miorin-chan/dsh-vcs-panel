@@ -100,7 +100,7 @@ for (const { name, pointer, expected, capability } of rows) {
   })
 }
 
-test('unsaved or interrupted checkouts and stashes have no direct steps', () => {
+test('unsaved or interrupted checkouts have no direct steps', () => {
   assert.deepEqual(ids(fixture({ ...linked, ...unique }).actions()), ['push'])
   assert.deepEqual(fixture({ ...linked, ...unique }, { linked: { dirty: 2 } }).actions(), [])
   assert.deepEqual(fixture({ ...linked, ...unique }, { linked: { operation: 'rebase' } }).actions(), [])
@@ -108,7 +108,28 @@ test('unsaved or interrupted checkouts and stashes have no direct steps', () => 
   assert.deepEqual(ids(fixture(tracking).actions()), ['sync'])
   assert.deepEqual(fixture(tracking, { primary: { operation: 'bisect' } }).actions(), [])
   assert.deepEqual(ids(fixture(detached).actions()), ['remove'])
-  assert.deepEqual(fixture({ ...detached, kind: 'stash' }).actions(), [])
+})
+
+test('stash apply follows the merge receiver rule while drop only needs stash capability', () => {
+  const stash: OverviewPointer = {
+    kind: 'stash', name: 'stash@{2}', sha: topicSha, onto: mainSha, base: 'origin/main',
+    subject: 'saved edits', time: null, isBase: false, ahead: null, behind: null, unique: 1,
+  }
+  const target = { repo: root, sha: topicSha, selector: 'stash@{2}', base: mainSha, message: 'saved edits' }
+  assert.deepEqual(fixture(stash).actions(), [
+    { action: { domain: 'stash', kind: 'apply', stash: target } },
+    { action: { domain: 'stash', kind: 'drop', stash: target } },
+  ])
+  assert.deepEqual(ids(fixture({ ...stash, base: 'main' }).actions()), ['apply', 'drop'])
+  for (const options of [{ main: { isBase: false } }, { primary: { operation: 'merge' as const } },
+    { primary: { branch: null } }, { path: sibling }]) {
+    assert.deepEqual(ids(fixture(stash, options).actions()), ['drop'])
+  }
+  assert.deepEqual(ids(fixture({ ...stash, base: null }).actions()), ['drop'])
+  assert.deepEqual(fixture({ ...stash, onto: undefined }).actions(), [])
+  assert.deepEqual(fixture(stash).actions(JUJUTSU_CAPABILITIES), [])
+  assert.deepEqual(fixture(stash).actions(GIT_CAPABILITIES, { domain: 'stash', action: 'apply' }).map(item => item.disabledReason),
+    ['stash.working', 'stash.working'])
 })
 
 test('sync compares the primary branch to its own upstream and explains a missing upstream', () => {

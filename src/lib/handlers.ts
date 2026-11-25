@@ -30,6 +30,9 @@ import type { OverviewRepository } from './overview.js'
 import { WORKING_TREE_NODE } from './nodes.js'
 import { repositoryName, sameRepoPath, validateRelPath, validateSha } from './paths.js'
 import { RESET_MODES } from './ref-utils.js'
+import { requireStashSha } from './stash.js'
+import { STASH_MESSAGE_MAX } from './stash-types.js'
+import type { StashRequest } from './stash-types.js'
 import {
   discoverRepositories, previewRepositoryConfig, repositoryConfig as readRepositoryConfig, resolveSessionRepository,
   saveRepositoryConfig as persistRepositoryConfig,
@@ -83,6 +86,9 @@ export interface VcsRouteHandlers {
   diff: RouteHandler
   log: RouteHandler
   commit: RouteHandler
+  stash: RouteHandler
+  stashCheck: RouteHandler
+  stashOp: RouteHandler
   turn: RouteHandler
   sync: RouteHandler
   branches: RouteHandler
@@ -628,6 +634,9 @@ export function createHandlers(ctx: HandlersContext, {
 
     const scope = query.get('scope')
     if (scope === null || scope === '') throw badRequest('scope is required.')
+    if ((scope === 'stash' || scope === 'stash-untracked') && !repo.capabilities.stashOps) {
+      throw badRequest('This repository has no stash detail.')
+    }
     const rel = validateRelPath(query.get('path'))
     if (rel === undefined) throw badRequest('path must be a repository-relative file path.')
     const rawOldPath = query.get('oldPath')
@@ -708,6 +717,28 @@ export function createHandlers(ctx: HandlersContext, {
     return json(answer)
   }
 
+  async function stash(request: Request): Promise<Response> {
+    const query = new URL(request.url).searchParams
+    const { backend, root } = await requireRepository(query, request.signal)
+    if (!backend.capabilities.stashOps || backend.stash === undefined) throw badRequest('This repository has no stash detail.')
+    const sha = requireStashSha(query.get('sha'))
+    await backend.require(request.signal)
+    return json(await backend.stash(root, sha, request.signal))
+  }
+
+  async function stashCheck(request: Request): Promise<Response> {
+    const query = new URL(request.url).searchParams
+    const { backend, root } = await requireRepository(query, request.signal)
+    if (!backend.capabilities.stashOps || backend.stashCheck === undefined) throw badRequest('This repository has no stash actions.')
+    const sha = requireStashSha(query.get('sha'))
+    const mode = query.get('mode')
+    const index = query.get('index')
+    if (mode !== 'apply' && mode !== 'branch') throw badRequest('mode must be apply or branch.')
+    if (index !== '0' && index !== '1') throw badRequest('index must be 0 or 1.')
+    await backend.require(request.signal)
+    return json(await backend.stashCheck(root, sha, mode, index === '1', request.signal))
+  }
+
   /** Repository roots and stores with a write in flight. */
   const writing = new Set<string>()
   const creating = new Set<string>()
@@ -751,7 +782,7 @@ export function createHandlers(ctx: HandlersContext, {
       return json(result)
     } finally {
       for (const key of keys) writing.delete(key)
-      // Failed lifecycle commands can leave changes. Invalidate the initiator too.
+      // Failed lifecycle or stash commands can leave changes. Invalidate the initiator too.
       finish?.(succeeded || changed?.() ? domains : undefined, succeeded ? watchClientId(request.headers.get('X-VCS-Client')) : undefined)
     }
   }
@@ -1008,6 +1039,46 @@ export function createHandlers(ctx: HandlersContext, {
     })
   }
 
+  /** Handle `POST /api/vcs.stash`; resolve selectors and repeat preflight inside runWrite. */
+  async function stashOp(request: Request): Promise<Response> {
+    const { body, query } = await readWrite(request, 'Stash actions')
+    const repo = await requireRepository(query, request.signal)
+    const { backend, root } = repo
+    const run = backend.stashOp
+    if (!backend.capabilities.stashOps || run === undefined) throw badRequest('This repository has no stash actions.')
+
+    const { action, message, untracked, index, drop, name } = body
+    let target: StashRequest
+    if (action === 'push') {
+      if (typeof untracked !== 'boolean') throw badRequest('untracked must be a boolean.')
+      if (message !== undefined && (typeof message !== 'string' || message.length > STASH_MESSAGE_MAX
+        || /[\0\r\n\u2028\u2029]/u.test(message))) {
+        throw badRequest('message must be a single line of at most 1000 characters.')
+      }
+      target = { action, message, untracked }
+    } else if (action === 'apply') {
+      if (typeof index !== 'boolean' || typeof drop !== 'boolean') throw badRequest('index and drop must be booleans.')
+      target = { action, sha: requireStashSha(body.sha), index, drop }
+    } else if (action === 'branch') {
+      if (!isRefName(name)) throw new VcsError('branch-invalid', 'That name is not a valid branch name.')
+      target = { action, sha: requireStashSha(body.sha), name }
+    } else if (action === 'drop') {
+      target = { action, sha: requireStashSha(body.sha) }
+    } else throw badRequest('action must be push, apply, branch, or drop.')
+
+    await backend.require(request.signal)
+    let changed = false
+    return runWrite(repo, request, async () => {
+      try {
+        return await run.call(backend, root, target, request.signal)
+      } catch (error) {
+        changed = action !== 'drop' && error instanceof VcsError
+          && (error.code === 'stash-conflict' || error.code === 'stash-failed')
+        throw error
+      }
+    }, { domains: action === 'drop' ? [HISTORY] : REFS, considerHistory: true, changed: () => changed })
+  }
+
   /** Handle `POST /api/vcs.worktree` with a session-authorized repository as anchor. */
   async function worktreeOp(request: Request): Promise<Response> {
     const { body, query } = await readWrite(request, 'Worktree lifecycle', true)
@@ -1243,6 +1314,9 @@ export function createHandlers(ctx: HandlersContext, {
     diff: wrap(diff),
     log: wrap(log),
     commit: wrap(commit),
+    stash: wrap(stash),
+    stashCheck: wrap(stashCheck),
+    stashOp: wrap(stashOp),
     turn: wrap(turn),
     sync: wrap(sync),
     branches: wrap(branches),

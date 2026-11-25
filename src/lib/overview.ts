@@ -23,17 +23,17 @@ import type { Context } from '@deepseek-ai/cordis'
 
 import { outputTooLarge, VcsError } from './errors.js'
 import type { GitRunner } from './git.js'
-import { remoteNames } from './git-utils.js'
+import { gitDirectory, readGitOperation, remoteNames } from './git-utils.js'
+import type { GitOperation } from './git-utils.js'
 import { jjCommonDirAt } from './jujutsu-worktrees.js'
 import { isFullSha, repositoryName, sameRepoPath } from './paths.js'
+import { listStashes } from './stash.js'
 import { discoverGitWorktrees, gitCommonDirAt } from './worktrees.js'
 
 /** Most checkouts one repository's overview reads. */
 export const OVERVIEW_CHECKOUT_MAX = 51
 /** Most branches and remote branches one repository's overview lists. */
 export const OVERVIEW_REF_MAX = 2000
-/** Most stash entries one repository's overview lists. */
-export const OVERVIEW_STASH_MAX = 200
 /** Git's unpublished graph budget and Jujutsu's per-count limit. */
 export const OVERVIEW_GRAPH_MAX = 50_000
 /** Pointers per `%(is-base:)` listing, keeping argv short. */
@@ -45,16 +45,6 @@ const FALLBACK_CONCURRENCY = 4
 const AHEAD_BEHIND_VERSION: GitVersion = [2, 41, 0]
 const IS_BASE_VERSION: GitVersion = [2, 47, 0]
 
-/** Files whose presence in a checkout's Git directory marks an unfinished operation. */
-const OPERATION_FILES: ReadonlyArray<readonly [string, OverviewOperation]> = [
-  ['rebase-merge', 'rebase'],
-  ['rebase-apply', 'rebase'],
-  ['MERGE_HEAD', 'merge'],
-  ['CHERRY_PICK_HEAD', 'cherry-pick'],
-  ['REVERT_HEAD', 'revert'],
-  ['BISECT_LOG', 'bisect'],
-]
-
 /** Local default branches that count as a trunk when present. */
 const DEFAULT_BRANCHES = ['refs/heads/main', 'refs/heads/master']
 
@@ -62,7 +52,7 @@ const DEFAULT_BRANCHES = ['refs/heads/main', 'refs/heads/master']
 export type GitVersion = readonly [number, number, number]
 
 /** An unfinished operation in one checkout. */
-export type OverviewOperation = 'rebase' | 'merge' | 'cherry-pick' | 'revert' | 'bisect' | 'conflict'
+export type OverviewOperation = GitOperation | 'conflict'
 
 /** What kind of pointer a row is. */
 export type OverviewPointerKind = 'branch' | 'remote' | 'detached' | 'stash'
@@ -151,15 +141,6 @@ export interface RefRecord {
   upstream: string
   upstreamShort: string
   track: string
-  time: number | null
-  subject: string
-}
-
-/** One stash entry. */
-export interface StashRecord {
-  name: string
-  sha: string
-  onto: string | null
   time: number | null
   subject: string
 }
@@ -259,23 +240,6 @@ export function parseTrack(text: string): { ahead: number, behind: number, gone?
   const ahead = /ahead (\d+)/u.exec(text)
   const behind = /behind (\d+)/u.exec(text)
   return { ahead: ahead === null ? 0 : Number(ahead[1]), behind: behind === null ? 0 : Number(behind[1]) }
-}
-
-/** stash list fields, NUL-separated, one entry per line. */
-export const STASH_FORMAT = '%gd%x00%H%x00%P%x00%ct%x00%gs'
-
-/**
- * Parse `git stash list` in {@link STASH_FORMAT}.
- * @param stdout - command output.
- * @returns the entries, newest first.
- */
-export function parseStashList(stdout: string): StashRecord[] {
-  return stdout.split('\n').flatMap(line => {
-    const [name, sha, parents, time, ...subject] = line.split('\0')
-    if (name === undefined || !/^stash@\{\d+\}$/u.test(name) || !isFullSha(sha)) return []
-    const onto = parents?.split(' ')[0]
-    return [{ name, sha, onto: isFullSha(onto) ? onto : null, time: seconds(time), subject: subject.join('\0') }]
-  })
 }
 
 /**
@@ -387,24 +351,11 @@ async function occupancy(
 ): Promise<{ dirty: number | null, operation: OverviewOperation | null }> {
   const status = await git.run(['status', '--porcelain=v2', '-z', '--untracked-files=normal'], { cwd: path, signal })
   const dirty = status.exitCode === 0 && !status.lossy ? countStatusEntries(status.stdout) : null
-  const gitDir = await read(git, path, ['rev-parse', '--absolute-git-dir'], signal).catch(error => {
+  const operation = await gitDirectory(ctx, git, path, signal).then(directory =>
+    directory === null ? null : readGitOperation(ctx, directory, signal)).catch(error => {
     if (signal.aborted) throw error
     return null
   })
-  let operation: OverviewOperation | null = null
-  const directory = gitDir?.endsWith('\n') === true ? gitDir.slice(0, -1) : null
-  if (directory !== null && directory !== '') {
-    for (const [file, kind] of OPERATION_FILES) {
-      try {
-        if (await ctx.fs.lstat(join(directory, file), {}, signal) !== undefined) {
-          operation = kind
-          break
-        }
-      } catch (error) {
-        if (signal.aborted) throw error
-      }
-    }
-  }
   return { dirty, operation }
 }
 
@@ -555,12 +506,12 @@ export async function readGitOverview(options: GitOverviewOptions): Promise<Over
     })
   }
   if (checkouts.length === 0) throw new VcsError('not-a-repo', 'The repository could not be read.')
-  const [common, remoteList, refsOut, tagsOut, stashOut] = await Promise.all([
+  const [common, remoteList, refsOut, tagsOut, { stashes, stashesTruncated }] = await Promise.all([
     gitCommonDirAt(git, root, signal),
     remoteNames(git, root, signal),
     git.run(['for-each-ref', `--count=${OVERVIEW_REF_MAX + 1}`, `--format=${REF_FORMAT}`, 'refs/heads', 'refs/remotes'], { cwd: root, signal }),
     git.run(['for-each-ref', '--format=x', 'refs/tags'], { cwd: root, signal }),
-    git.run(['stash', 'list', `--max-count=${OVERVIEW_STASH_MAX + 1}`, `--format=${STASH_FORMAT}`], { cwd: root, signal }),
+    listStashes(git, root, signal),
     Promise.all(checkouts.map(tree => statusLimiter.run(async () => {
       Object.assign(tree, await occupancy(ctx, git, tree.path, signal))
     }))),
@@ -573,11 +524,7 @@ export async function readGitOverview(options: GitOverviewOptions): Promise<Over
     records = records.slice(0, OVERVIEW_REF_MAX)
   }
   const tags = tagsOut.exitCode === 0 && !tagsOut.lossy ? tagsOut.stdout.split('\n').filter(line => line !== '').length : 0
-  let stashes = stashOut.exitCode === 0 && !stashOut.lossy ? parseStashList(stashOut.stdout) : []
-  if (stashes.length > OVERVIEW_STASH_MAX) {
-    truncated = true
-    stashes = stashes.slice(0, OVERVIEW_STASH_MAX)
-  }
+  truncated ||= stashesTruncated
 
   // Counts are keyed by commit id: a ref name may hold characters a format atom
   // cannot quote, and two pointers on one commit share every count.
@@ -598,11 +545,14 @@ export async function readGitOverview(options: GitOverviewOptions): Promise<Over
     && (record.refname.startsWith('refs/heads/') || record.refname.startsWith('refs/remotes/')))
   const detached = checkouts.filter(tree => tree.branch === null && tree.head !== null)
   const commits = [...new Set([...refs.map(record => record.oid), ...detached.map(tree => tree.head as string)])]
+  // Direct stash apply uses the same trunk-receiver rule as merge. Count no
+  // distance for the stash itself; classify the snapshot's base commit.
+  const baseTips = [...new Set([...commits, ...stashes.map(stash => stash.base)])]
 
   const bases = candidates.length === 0 ? new Map<string, string>()
     : versionAtLeast(version, IS_BASE_VERSION)
-      ? await isBaseChoices(git, root, candidates, commits, signal)
-      : await nearestCandidates(git, root, candidates, commits, signal)
+      ? await isBaseChoices(git, root, candidates, baseTips, signal)
+      : await nearestCandidates(git, root, candidates, baseTips, signal)
   const baseOf = (commit: string): string | null => bases.get(commit) ?? candidates.at(-1) ?? null
 
   const modern = versionAtLeast(version, AHEAD_BEHIND_VERSION)
@@ -671,10 +621,14 @@ export async function readGitOverview(options: GitOverviewOptions): Promise<Over
       checkout: tree.path,
     })
   }
+  const seenStashes = new Set<string>()
   for (const stash of stashes) {
+    if (seenStashes.has(stash.sha)) continue
+    seenStashes.add(stash.sha)
+    const base = baseOf(stash.base)
     pointers.push({
-      kind: 'stash', name: stash.name, sha: stash.sha, time: stash.time, subject: stash.subject,
-      base: null, isBase: false, ahead: null, behind: null, unique: 1, onto: stash.onto,
+      kind: 'stash', name: stash.selector, sha: stash.sha, time: stash.time, subject: stash.message,
+      base: base === null ? null : shortRef(base), isBase: false, ahead: null, behind: null, unique: 1, onto: stash.base,
     })
   }
 

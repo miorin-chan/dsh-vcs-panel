@@ -9,6 +9,9 @@
 
 import type { OverviewCheckout, OverviewPointer, OverviewPointerKind, OverviewRepository } from '../../lib/overview.js'
 import { BOOKMARK_CONFLICT_KEY, OPERATION_KEYS } from './labels.js'
+import { stashNode, stashSha } from '../stash.js'
+import type { StashTarget } from '../stash.js'
+import { worktreePath } from '../state.js'
 
 export type { OverviewCheckout, OverviewPointer, OverviewRepository } from '../../lib/overview.js'
 
@@ -201,7 +204,7 @@ export function repositoryView(repository: OverviewRepository, cwd: string | nul
       && pointer.track?.ahead === 0 && pointer.track.behind === 0 && pointer.track.gone !== true) {
       level.push(pointer.upstream.split('/')[0])
     }
-    const id = pointerId(repository.path, pointer.kind, pointer.name)
+    const id = pointerId(repository.path, pointer.kind, pointer.kind === 'stash' ? pointer.sha : pointer.name)
     const view: PointerView = {
       ...pointer,
       id: pointer.kind === 'detached' && path == null && divergentNames.has(pointer.name) ? `${id}\u0000${pointer.sha}` : id,
@@ -524,18 +527,34 @@ export function columnOrder(skeleton: Skeleton | null, repository: RepositoryVie
 
 /**
  * The node the timeline selects for a pointer: its checkout's working tree when
- * it has unsaved changes, a stash's base commit, or the commit it names.
+ * it has unsaved changes, the stash node, or the commit it names.
  * @param pointer - the pointer.
  * @returns the commit id or the checkout to select.
  */
-export function pointerTarget(pointer: PointerView): { commit: string } | { worktree: string } | null {
+export function pointerTarget(pointer: PointerView): { commit: string } | { worktree: string } | { stash: string } {
+  if (pointer.kind === 'stash') return { stash: stashNode(pointer.sha) }
   const workingCopy = pointer.occupant?.workingCopy
   if (workingCopy !== undefined && (pointer.state === 'unsaved' || pointer.occupant?.operation === 'conflict' || /^0+$/u.test(pointer.sha))) {
     return { commit: workingCopy }
   }
   if (pointer.state === 'unsaved' && pointer.occupant !== null) return { worktree: pointer.occupant.path }
-  if (pointer.kind === 'stash') return pointer.onto === null || pointer.onto === undefined ? null : { commit: pointer.onto }
   return { commit: pointer.sha }
+}
+
+export function stashPointerTarget(pointer: PointerView): StashTarget | null {
+  return pointer.kind === 'stash' && pointer.onto != null
+    ? { repo: pointer.repo, sha: pointer.sha, selector: pointer.name, message: pointer.subject, base: pointer.onto }
+    : null
+}
+
+/** Match the timeline selection to the pointer itself, not a stash's base. */
+export function selectedPointerId(view: RepositoryView | undefined, node: string | null): string | null {
+  if (view === undefined || node === null) return null
+  const tree = worktreePath(node)
+  const stash = stashSha(node)
+  return view.list.find(pointer => tree !== null ? pointer.occupant?.path === tree
+    : stash !== null ? pointer.kind === 'stash' && pointer.sha === stash
+      : pointer.kind !== 'stash' && (pointer.sha === node || pointer.occupant?.workingCopy === node))?.id ?? null
 }
 
 /** Tiled columns in discovery order, or ranked by attention with quiet columns last. */

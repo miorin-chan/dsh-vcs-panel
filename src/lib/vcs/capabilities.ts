@@ -3,7 +3,7 @@
  *
  * Capabilities are data, not a backend id: the panel reads `workingCopy`,
  * `staging`, `changeId`, `snapshots`, `sync`, `branchSwitch`, `branchOps`,
- * `tagOps`, `commitOps`, and `ranges` to choose between the working-tree row and a
+ * `tagOps`, `commitOps`, `stashOps`, and `ranges` to choose between the working-tree row and a
  * working-copy commit, between staged/unstaged groups and one changes group,
  * whether to offer branch sync, branch actions, tag actions, and commit
  * actions, and between history ranges. A future backend only has to state the same answers; the
@@ -52,6 +52,8 @@ export interface VcsCapabilities {
   tagOps: boolean
   /** Whether commit rows can act on commits. */
   commitOps: boolean
+  /** Whether the repository has stash rows, detail and actions. */
+  stashOps: boolean
   worktreeCreate: boolean
   worktreeRemove: boolean
   worktreeForget: boolean
@@ -91,6 +93,7 @@ export const GIT_CAPABILITIES: VcsCapabilities = Object.freeze({
   tagOps: true,
   /** Commit rows can tag, branch, check out, pick, revert, drop, merge, rebase, and reset. */
   commitOps: true,
+  stashOps: true,
   worktreeCreate: true,
   worktreeRemove: true,
   worktreeForget: false,
@@ -110,6 +113,7 @@ export const GIT_WORKTREE_CAPABILITIES: VcsCapabilities = Object.freeze({
   branchOps: false,
   tagOps: false,
   commitOps: false,
+  stashOps: false,
   worktreeCreate: false,
   worktreeRemove: false,
 })
@@ -140,6 +144,7 @@ export const JUJUTSU_CAPABILITIES: VcsCapabilities = Object.freeze({
   tagOps: false,
   /** Commit actions rewrite Git history or the index; Jujutsu stays read-only. */
   commitOps: false,
+  stashOps: false,
   worktreeCreate: true,
   worktreeRemove: false,
   worktreeForget: true,

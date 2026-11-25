@@ -12,23 +12,25 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { KeyboardEvent as ReactKeyboardEvent, MutableRefObject } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
-  Api, ApiFailure, CommitDetail, CommitNode, RepositoryCapabilities, StageHistoryEntry, StatusData, VcsRef,
+  Api, ApiFailure, CommitDetail, CommitNode, RepositoryCapabilities, StageHistoryEntry, StatusData,
 } from '../api.js'
+import type { StashDetail, StashEntry } from '../../lib/stash-types.js'
+import { stashSaveReason, stashSha } from '../stash.js'
 import { sharedRefs } from '../worktrees.js'
-import { errorMessage, formatCount, formatDateTime, formatPlural, shortChangeId, shortSha } from '../format.js'
+import { errorMessage, formatCommitTime, formatCount, formatDateTime, formatPlural, shortChangeId, shortSha } from '../format.js'
 import { messageBody } from '../history/commits.js'
 import { worktreeSummary } from '../history/timeline-model.js'
 import {
   BackIcon, BranchIcon, Button, CheckIcon, CompareSplitIcon, CopyIcon, FoldIcon, IconButton,
-  NowrapIcon, RefBadge, StagingLayoutIcon, UntrackedStat, WorkingCopyBadge, WrapIcon,
+  NowrapIcon, RefBadge, StagingLayoutIcon, StashIcon, UntrackedStat, WorkingCopyBadge, WrapIcon,
 } from '../ui.jsx'
-import type { RefActivation } from '../ui.jsx'
+import type { RefActivation, RefView } from '../ui.jsx'
 import { MetaSkeleton, TreeSkeleton } from '../skeleton.jsx'
 import { buildNodeRows, summarizeEntries } from './tree.js'
 import type { DirRow, GroupRow, NavRow, UntrackedChild } from './tree.js'
 import {
-  SPLIT_MIN_WIDTH, allFileFolds, budgetFolds, commitGroups, commitSummary, comparisonBase,
-  expandedFileFolds, hasUnfoldedFile, mergedWorktreeGroups, streamSections, worktreeGroups,
+  SPLIT_MIN_WIDTH, allFileFolds, budgetFolds, commitSummary, comparisonBase,
+  expandedFileFolds, hasUnfoldedFile, mergedWorktreeGroups, revisionGroups, streamSections, worktreeGroups,
 } from './detail.js'
 import { ChangeTree } from './ChangeTree.jsx'
 import type { BulkFoldMode, ChangeStage, ChangeTreeControl, DiffFetchResult, RowExpansion } from './ChangeTree.js'
@@ -125,17 +127,19 @@ function ShaButton({ sha, t }: ShaButtonProps) {
   )
 }
 
-/** The commit read one detail pane holds. */
-export interface CommitState {
+type RevisionDetail = { kind: 'commit'; commit: CommitDetail } | { kind: 'stash'; stash: StashDetail }
+
+/** The immutable files and metadata of one commit or stash. */
+export interface RevisionState {
   status: 'idle' | 'loading' | 'refreshing' | 'ready' | 'error'
-  commit: CommitDetail | null
+  detail: RevisionDetail | null
   truncated: boolean
   error: ApiFailure | null
 }
 
 /** Props of the commit header block. */
 interface CommitHeaderProps {
-  commitState: CommitState
+  reading: RevisionState
   summary: CommitNode | null | undefined
   copyLabels: readonly string[]
   onSelectCommit: (sha: string) => void
@@ -145,9 +149,18 @@ interface CommitHeaderProps {
   locale?: string
 }
 
+function ParentLink({ sha, isLoaded, onSelectCommit, t }: Pick<CommitHeaderProps, 'isLoaded' | 'onSelectCommit' | 't'> & { sha: string }) {
+  return isLoaded(sha) ? (
+    <button type="button" className="vcs-parent vcs-parent-link"
+      title={t('commit.showParent', { sha: shortSha(sha) })} onClick={() => { onSelectCommit(sha) }}>
+      <code>{shortSha(sha)}</code>
+    </button>
+  ) : <code className="vcs-parent" title={sha}>{shortSha(sha)}</code>
+}
+
 /** The commit header block: subject, people, parents, and message body. */
-function CommitHeader({ commitState, summary, copyLabels, onSelectCommit, isLoaded, onRetry, t, locale }: CommitHeaderProps) {
-  const detail = commitState.commit
+function CommitHeader({ reading, summary, copyLabels, onSelectCommit, isLoaded, onRetry, t, locale }: CommitHeaderProps) {
+  const detail = reading.detail?.kind === 'commit' ? reading.detail.commit : null
   const subject = detail?.subject ?? summary?.subject ?? ''
   const body = messageBody(detail?.message)
   const changeId = detail?.changeId ?? summary?.changeId
@@ -159,9 +172,9 @@ function CommitHeader({ commitState, summary, copyLabels, onSelectCommit, isLoad
         <WorkingCopyBadge labels={copyLabels} title={t('commit.workingCopy')} />
         <h2 className="vcs-node-title">{subject === '' ? t('commit.noDescription') : subject}</h2>
       </div>
-      {commitState.status === 'error' ? (
+      {reading.status === 'error' ? (
         <div className="vcs-node-status">
-          <span>{t('commit.error')} {errorMessage(t, commitState.error)}</span>
+          <span>{t('commit.error')} {errorMessage(t, reading.error)}</span>
           <Button onClick={onRetry}>{t('error.retry')}</Button>
         </div>
       ) : detail === null || detail === undefined ? (
@@ -188,24 +201,50 @@ function CommitHeader({ commitState, summary, copyLabels, onSelectCommit, isLoad
             <dd>
               {parents.length === 0
                 ? <span className="vcs-dim">{t('commit.root')}</span>
-                : parents.map(parent => (isLoaded(parent) ? (
-                  <button
-                    key={parent}
-                    type="button"
-                    className="vcs-parent vcs-parent-link"
-                    title={t('commit.showParent', { sha: shortSha(parent) })}
-                    onClick={() => { onSelectCommit(parent) }}
-                  >
-                    <code>{shortSha(parent)}</code>
-                  </button>
-                ) : <code key={parent} className="vcs-parent" title={parent}>{shortSha(parent)}</code>))}
+                : parents.map(parent => <ParentLink key={parent} sha={parent} isLoaded={isLoaded} onSelectCommit={onSelectCommit} t={t} />)}
             </dd>
           </dl>
           {body === '' ? null : <pre className="vcs-commit-message">{body}</pre>}
           {files.length === 0 ? <p className="vcs-note">{t('commit.noFiles')}</p> : null}
-          {commitState.truncated ? <p className="vcs-note">{formatPlural(t, 'commit.filesTruncated', files.length, locale)}</p> : null}
+          {reading.truncated ? <p className="vcs-note">{formatPlural(t, 'commit.filesTruncated', files.length, locale)}</p> : null}
         </>
       )}
+    </header>
+  )
+}
+
+/** The stash's base and what it can restore, above its read-only file tree. */
+function StashHeader({ reading, entry, onSelectCommit, isLoaded, onRetry, t, locale }:
+  Omit<CommitHeaderProps, 'summary' | 'copyLabels'> & { entry: StashEntry | null }) {
+  const detail = reading.detail?.kind === 'stash' ? reading.detail.stash : null
+  const stash = detail ?? entry
+  const untracked = detail?.files.filter(file => file.untracked === true).length ?? 0
+  const extras = [
+    detail !== null && detail.staged > 0 ? formatPlural(t, 'stash.staged', detail.staged, locale) : '',
+    untracked > 0 ? formatPlural(t, 'stash.untrackedCount', untracked, locale) : '',
+  ].filter(Boolean)
+  return (
+    <header className="vcs-node-header">
+      <h2 className="vcs-node-title">{stash?.message || t('stash.untitled')}</h2>
+      {stash === null ? null : (
+        <p className="vcs-stash-meta">
+          <span>{t('stash.madeOn', { branch: stash.branch ?? t('stash.detached') })}</span>
+          <time title={formatDateTime(stash.time * 1_000, locale)} dateTime={new Date(stash.time * 1_000).toISOString()}>
+            {formatDateTime(stash.time * 1_000, locale)} · {formatCommitTime(stash.time * 1_000, Date.now(), locale)}
+          </time>
+          <span>{t('stash.baseLink')} <ParentLink sha={stash.base} isLoaded={isLoaded} onSelectCommit={onSelectCommit} t={t} /></span>
+        </p>
+      )}
+      {extras.length > 0 ? <p className="vcs-stash-meta">{extras.join(' · ')}</p> : null}
+      {reading.status === 'error' ? (
+        <div className="vcs-node-status">
+          <span>{t('stash.detailError')} {errorMessage(t, reading.error)}</span>
+          <Button onClick={onRetry}>{t('error.retry')}</Button>
+        </div>
+      ) : null}
+      {detail?.files.length === 0 ? <p className="vcs-note">{t('commit.noFiles')}</p> : null}
+      {reading.truncated && detail !== null
+        ? <p className="vcs-note">{formatPlural(t, 'commit.filesTruncated', detail.files.length, locale)}</p> : null}
     </header>
   )
 }
@@ -236,15 +275,19 @@ function WorktreeHeader({ status, statusState, statusError, t }: WorktreeHeaderP
   )
 }
 
-/** Maximum commit details kept across node switches of the same revision. */
-const COMMIT_CACHE_LIMIT = 200
+/** Maximum commit and stash details kept across node switches. */
+const DETAIL_CACHE_LIMIT = 200
 
-/** Store one commit detail, evicting the oldest past {@link COMMIT_CACHE_LIMIT}. */
-function rememberCommit(cache: Map<string, CommitState> | null | undefined, key: string, value: CommitState): void {
+export function detailCacheKey(repo: string, node: string, revision: number): string {
+  return `${repo}|${node}|${revision}`
+}
+
+/** Store one revision detail, evicting the oldest past the shared limit. */
+function rememberDetail(cache: Map<string, RevisionState> | null | undefined, key: string, value: RevisionState): void {
   if (cache === undefined || cache === null) return
   cache.delete(key)
   cache.set(key, value)
-  while (cache.size > COMMIT_CACHE_LIMIT) {
+  while (cache.size > DETAIL_CACHE_LIMIT) {
     const oldest = cache.keys().next().value
     if (oldest === undefined) return
     cache.delete(oldest)
@@ -279,6 +322,7 @@ export interface DetailPaneProps {
   repo: string
   node: string
   summary?: CommitNode | null
+  stashEntry: StashEntry | null
   status: StatusData | null
   statusState: DetailStatusState
   statusError: ApiFailure | null
@@ -306,12 +350,14 @@ export interface DetailPaneProps {
   revision: number
   backgroundDiffRevision: number | undefined
   cache: Map<string, DiffFetchResult>
-  commitCache?: Map<string, CommitState> | null
+  detailCache?: Map<string, RevisionState> | null
   initialAnchor: ReadingAnchor | null
   onReading: (anchor: ReadingAnchor | null) => void
   control: MutableRefObject<DetailPaneControl | null>
   capabilities: RepositoryCapabilities | null
-  onRefActions?: (reference: VcsRef, point: RefActivation, target: HTMLElement) => void
+  onRefActions?: (reference: RefView, point: RefActivation, target: HTMLElement) => void
+  onStashActions?: (stash: StashEntry, point: RefActivation, target: HTMLElement) => void
+  onSaveStash?: (target: HTMLElement) => void
   onStage?: ChangeStage
   stageDisabled: boolean
   onStageHistory?: (action: string, id: string) => Promise<boolean>
@@ -330,26 +376,29 @@ export interface DetailPaneProps {
  * @param props - node, data, and handlers from the panel.
  */
 export function DetailPane({
-  api, repo, node, summary, status, statusState, statusError,
+  api, repo, node, summary, stashEntry, status, statusState, statusError,
   dirChildren, loadingDirs, dirs, collapsed, onToggleDir,
   folds, onToggleFold, onSetFolds, split, wrap, onToggleSplit, onToggleWrap,
   mergeStaging = true, onToggleStageLayout,
   singleColumn, onBack, onLeaveNav, onSelectCommit, isLoaded, onMissing, onSettled,
-  revision, backgroundDiffRevision, cache, commitCache, initialAnchor, onReading, control, capabilities, onRefActions, onStage, stageDisabled, t, locale,
+  revision, backgroundDiffRevision, cache, detailCache, initialAnchor, onReading, control, capabilities, onRefActions,
+  onStashActions, onSaveStash, onStage, stageDisabled, t, locale,
   onStageHistory, onInteractionChange, worktree = null, workingCopies = [], snapshotError = null, showCurrentHead = true,
 }: DetailPaneProps) {
   const isWorktree = worktree !== null
+  const selectedStash = capabilities?.stashOps === true ? stashSha(node) : null
   const canMergeStaging = isWorktree && capabilities?.staging === true
   const merged = canMergeStaging && mergeStaging
   const stageHistory = isWorktree && onStageHistory !== undefined ? status?.stageHistory : undefined
+  const saveStashReason = stashSaveReason(status, stageDisabled)
   const copyLabels = workingCopies.map(copy => copy.label)
-  const commitCacheKey = `${repo}|${node}|${revision}`
-  const [commitState, setCommitState] = useState<CommitState>(() => {
-    if (!isWorktree && commitCache !== undefined && commitCache !== null) {
-      const cached = commitCache.get(commitCacheKey)
+  const cacheKey = detailCacheKey(repo, node, revision)
+  const [reading, setReading] = useState<RevisionState>(() => {
+    if (!isWorktree && detailCache != null) {
+      const cached = detailCache.get(cacheKey)
       if (cached !== undefined) return cached
     }
-    return { status: 'idle', commit: null, truncated: false, error: null }
+    return { status: 'idle', detail: null, truncated: false, error: null }
   })
   const [attempt, setAttempt] = useState(0)
   const [width, setWidth] = useState(0)
@@ -358,31 +407,35 @@ export function DetailPane({
 
   useEffect(() => {
     if (isWorktree) return undefined
-    if (attempt === 0 && commitCache !== undefined && commitCache !== null) {
-      const cached = commitCache.get(commitCacheKey)
+    if (attempt === 0 && detailCache != null) {
+      const cached = detailCache.get(cacheKey)
       if (cached !== undefined) {
-        setCommitState(cached)
+        setReading(cached)
         return undefined
       }
     }
     const controller = new AbortController()
-    setCommitState(previous => ({ ...previous, status: previous.commit === null ? 'loading' : 'refreshing', error: null }))
-    api.commit(repo, node, controller.signal).then(answer => {
+    setReading(previous => ({ ...previous, status: previous.detail === null ? 'loading' : 'refreshing', error: null }))
+    const request = selectedStash !== null
+      ? api.stash(repo, selectedStash, controller.signal).then(({ stash, truncated }) => ({ detail: { kind: 'stash', stash } as const, truncated }))
+      : api.commit(repo, node, controller.signal).then(({ commit, truncated }) => ({ detail: { kind: 'commit', commit } as const, truncated }))
+    request.then(({ detail, truncated }) => {
       if (controller.signal.aborted) return
-      if (answer?.commit === null || typeof answer?.commit !== 'object') {
-        setCommitState({ status: 'error', commit: null, truncated: false, error: null })
+      const value = detail.kind === 'commit' ? detail.commit : detail.stash
+      if (value === null || typeof value !== 'object') {
+        setReading({ status: 'error', detail: null, truncated: false, error: null })
         return
       }
-      const next: CommitState = { status: 'ready', commit: answer.commit, truncated: answer.truncated === true, error: null }
-      rememberCommit(commitCache, commitCacheKey, next)
-      setCommitState(next)
+      const next: RevisionState = { status: 'ready', detail, truncated: truncated === true, error: null }
+      rememberDetail(detailCache, cacheKey, next)
+      setReading(next)
     }).catch((error: ApiFailure) => {
       if (error?.name === 'AbortError' || controller.signal.aborted) return
-      if (error?.code === 'not-found') onMissing()
-      setCommitState({ status: 'error', commit: null, truncated: false, error })
+      if (error?.code === (selectedStash === null ? 'not-found' : 'stash-missing')) onMissing()
+      setReading({ status: 'error', detail: null, truncated: false, error })
     })
     return () => { controller.abort() }
-  }, [api, attempt, commitCache, commitCacheKey, isWorktree, node, onMissing, repo, revision])
+  }, [api, attempt, cacheKey, detailCache, isWorktree, node, onMissing, repo, selectedStash])
 
   // The tree's own width decides whether a side-by-side comparison fits.
   useLayoutEffect(() => {
@@ -396,10 +449,11 @@ export function DetailPane({
     return () => { observer.disconnect() }
   }, [])
 
-  const sourceGroups = useMemo(
-    () => (isWorktree ? worktreeGroups(status) : commitGroups(commitState.commit)),
-    [commitState.commit, isWorktree, status],
-  )
+  const commit = reading.detail?.kind === 'commit' ? reading.detail.commit : null
+  const stash = reading.detail?.kind === 'stash' ? reading.detail.stash : null
+  const sourceGroups = useMemo(() => isWorktree ? worktreeGroups(status)
+    : stash !== null ? revisionGroups('stash', stash.files) : revisionGroups('commit', commit?.files ?? []),
+  [commit, isWorktree, stash, status])
   const mergedGroups = useMemo(() => canMergeStaging ? mergedWorktreeGroups(sourceGroups) : [], [canMergeStaging, sourceGroups])
   const groups = merged ? mergedGroups : sourceGroups
   // A running Host may still serve the previous status shape during a Client reload.
@@ -409,7 +463,7 @@ export function DetailPane({
     return new Set(unstaged.filter(entry => staged.has(entry.path)).map(entry => entry.path))
   }, [sourceGroups])
   // Use the id of the files we are showing even if a snapshot is in flight.
-  const rev = isWorktree ? null : (commitState.commit?.sha ?? node)
+  const rev = isWorktree ? null : (selectedStash ?? commit?.sha ?? node)
   // The expand action follows the fully expanded order, so collapsing a
   // directory never changes which other files stay folded.
   const allSections = useMemo(() => streamSections(groups, dirChildren, rev), [dirChildren, groups, rev])
@@ -475,7 +529,7 @@ export function DetailPane({
 
   const settled = isWorktree
     ? status !== null || statusState === 'error'
-    : commitState.commit !== null || commitState.status === 'error'
+    : reading.detail !== null || reading.status === 'error'
 
   useLayoutEffect(() => {
     control.current = {
@@ -502,9 +556,12 @@ export function DetailPane({
 
   const header = isWorktree
     ? <WorktreeHeader status={status} statusState={statusState} statusError={statusError} t={t} />
-    : (
+    : selectedStash !== null ? (
+      <StashHeader reading={reading} entry={stashEntry} onSelectCommit={onSelectCommit} isLoaded={isLoaded}
+        onRetry={() => { setAttempt(value => value + 1) }} t={t} locale={locale} />
+    ) : (
       <CommitHeader
-        commitState={commitState}
+        reading={reading}
         summary={summary}
         copyLabels={copyLabels}
         onSelectCommit={onSelectCommit}
@@ -524,11 +581,11 @@ export function DetailPane({
       {isWorktree && status?.truncated === true ? <p className="vcs-note">{t('changes.truncatedMany')}</p> : null}
       {isWorktree && status?.untrackedAdded === null ? <p className="vcs-note">{t('changes.untrackedLinesUnavailable')}</p> : null}
       {/* The commit's files arrive with its facts; the facts' shape already speaks for both. */}
-      {!isWorktree && commitState.commit === null && commitState.status !== 'error' ? <TreeSkeleton /> : null}
+      {!isWorktree && reading.detail === null && reading.status !== 'error' ? <TreeSkeleton /> : null}
     </>
   )
 
-  const refs = summary?.refs ?? commitState.commit?.refs ?? []
+  const refs = summary?.refs ?? commit?.refs ?? []
   const displayedRefs = showCurrentHead ? refs : sharedRefs(refs)
   const mergedCounts = merged ? summarizeEntries(mergedGroups[0]?.entries ?? []) : null
   const worktreeCounts = isWorktree ? worktreeSummary(status) : null
@@ -548,8 +605,17 @@ export function DetailPane({
       {summaryCounts.deleted > 0 ? <span className="vcs-del">−{formatCount(summaryCounts.deleted, locale)}</span> : null}
     </>
   ) : null
-  const commitCounts = isWorktree || commitState.commit === null ? null : commitSummary(commitState.commit.files)
-  const commitSource = commitState.commit ?? summary ?? null
+  const files = stash?.files ?? commit?.files
+  const counts = files === undefined ? null : commitSummary(files)
+  const revisionStat = counts === null ? null : (
+    <span className="vcs-detail-stat">
+      <span className="vcs-dim">{formatPlural(t, 'detail.fileCount', counts.count, locale)}</span>
+      {counts.added > 0 ? <span className="vcs-add">+{formatCount(counts.added, locale)}</span> : null}
+      {counts.deleted > 0 ? <span className="vcs-del">−{formatCount(counts.deleted, locale)}</span> : null}
+    </span>
+  )
+  const stashSource = stashEntry ?? stash
+  const commitSource = commit ?? summary ?? null
   const base = isWorktree || commitSource === null ? null : comparisonBase(commitSource, capabilities)
   const baseText = base === null
     ? null
@@ -571,12 +637,26 @@ export function DetailPane({
             {status?.branch?.name ? <span className="vcs-detail-branch vcs-dim"><BranchIcon /><span className="vcs-detail-branch-name">{status.branch.name}</span></span> : null}
             {worktreeStat === null ? null : <span className="vcs-detail-stat">{worktreeStat}</span>}
           </>
+        ) : selectedStash !== null ? (
+          <>
+            {stashSource === null ? null : (
+              <RefBadge reference={{ kind: 'stash', name: stashSource.selector }}
+                onRefActivate={onStashActions === undefined ? undefined : (_, event, target) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  onStashActions(stashSource, event, target)
+                }}
+              />
+            )}
+            {revisionStat}
+            {stashSource === null ? null : <span className="vcs-detail-base vcs-dim">{t('stash.base', { sha: shortSha(stashSource.base) })}</span>}
+          </>
         ) : (
           <>
             <WorkingCopyBadge labels={copyLabels} title={t('commit.workingCopy')} />
-            <ShaButton sha={commitState.commit?.sha ?? summary?.sha ?? node} t={t} />
-            {typeof commitState.commit?.changeId === 'string' && commitState.commit.changeId !== '' ? (
-              <code className="vcs-detail-change" title={t('commit.changeId')}>{shortChangeId(commitState.commit.changeId)}</code>
+            <ShaButton sha={commit?.sha ?? summary?.sha ?? node} t={t} />
+            {typeof commit?.changeId === 'string' && commit.changeId !== '' ? (
+              <code className="vcs-detail-change" title={t('commit.changeId')}>{shortChangeId(commit.changeId)}</code>
             ) : null}
             {displayedRefs.length === 0 ? null : (
               <span className="vcs-detail-refs">
@@ -589,19 +669,25 @@ export function DetailPane({
                 ))}
               </span>
             )}
-            {commitCounts === null ? null : (
-              <span className="vcs-detail-stat">
-                <span className="vcs-dim">{formatPlural(t, 'detail.fileCount', commitCounts.count, locale)}</span>
-                {commitCounts.added > 0 ? <span className="vcs-add">+{formatCount(commitCounts.added, locale)}</span> : null}
-                {commitCounts.deleted > 0 ? <span className="vcs-del">−{formatCount(commitCounts.deleted, locale)}</span> : null}
-              </span>
-            )}
+            {revisionStat}
             {baseText === null ? null : <span className="vcs-detail-base vcs-dim">{baseText}</span>}
           </>
         )}
         <span className="vcs-detail-spacer" />
         {stageHistory !== undefined ? (
           <span className="vcs-diff-tools">
+            {onSaveStash === undefined ? null : (
+              <IconButton
+                className="vcs-diff-tool vcs-stash-save"
+                label={t('stash.save')}
+                title={t(saveStashReason ?? 'stash.saveHint')}
+                description={saveStashReason === undefined ? undefined : t(saveStashReason)}
+                ariaDisabled={saveStashReason !== undefined}
+                onClick={event => { onSaveStash(event.currentTarget) }}
+              >
+                <StashIcon />
+              </IconButton>
+            )}
             {STAGE_HISTORY_ACTIONS.map(action => (
               <StageHistoryButton
                 key={action}

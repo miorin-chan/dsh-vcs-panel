@@ -18,8 +18,10 @@ import { commitActionMeta, isDestructiveCommitAction } from './commit.js'
 import type { CommitActionMeta } from './commit.js'
 import { tagActionMeta } from './tag.js'
 import type { TagActionMeta } from './tag.js'
+import { stashActionMeta } from './stash.js'
 import type { RefMenuTarget } from './useRepoActions.js'
 import { useFloatingMenu } from './useFloatingMenu.js'
+import { RefBadge } from './ui.jsx'
 
 /** Fallback menu dimensions before DOM measurement (used in headless harnesses). */
 const MENU_WIDTH = 252
@@ -28,12 +30,13 @@ const EXTRA_HEIGHT = 72
 const MARGIN = 8
 
 /** Descriptor metadata of any one action of any one target kind. */
-type AnyActionMeta = CommitActionMeta | TagActionMeta | BranchActionMeta
+type AnyActionMeta = CommitActionMeta | TagActionMeta | BranchActionMeta | NonNullable<ReturnType<typeof stashActionMeta>>
 
 /** Look up descriptor metadata for one action of one target kind. */
 function actionMeta(kind: RefMenuTarget['kind'], action: string): AnyActionMeta | undefined {
   if (kind === 'commit') return commitActionMeta(action)
   if (kind === 'tag') return tagActionMeta(action)
+  if (kind === 'stash') return stashActionMeta(action)
   return branchActionMeta(action)
 }
 
@@ -148,6 +151,8 @@ export function RefActionsMenu({ target, busy, t, onChoose, onClose }: RefAction
     ? t('worktree.actions', { name: target.name })
     : target.kind === 'commit'
     ? t('commit.menuLabel', { sha: target.name })
+    : target.kind === 'stash'
+    ? t('stash.rowLabel', { selector: target.stash.selector, message: target.stash.message || t('stash.untitled') })
     : target.kind === 'tag'
       ? t('tag.menuLabel', { tag: target.name })
       : t('branch.menuLabel', { branch: target.name })
@@ -171,8 +176,12 @@ export function RefActionsMenu({ target, busy, t, onChoose, onClose }: RefAction
       }}
     >
       <p className="vcs-ref-ops-title">
-        <span className="vcs-ref-ops-name">{target.name}</span>
-        {(target.kind === 'commit' || target.kind === 'worktree') && target.detail ? (
+        {target.kind === 'stash'
+          ? <RefBadge reference={{ kind: 'stash', name: target.stash.selector }} />
+          : <span className="vcs-ref-ops-name">{target.name}</span>}
+        {target.kind === 'stash' ? (
+          <span className="vcs-ref-ops-detail" title={target.stash.message || t('stash.untitled')}>{target.stash.message || t('stash.untitled')}</span>
+        ) : (target.kind === 'commit' || target.kind === 'worktree') && target.detail ? (
           <span className="vcs-ref-ops-detail" title={target.detail}>{target.detail}</span>
         ) : null}
         {target.kind === 'branch' && target.current ? <span className="vcs-ref-ops-current">{t('branch.current')}</span> : null}
@@ -185,7 +194,8 @@ export function RefActionsMenu({ target, busy, t, onChoose, onClose }: RefAction
         const separated = index > 0 && group !== previousGroup
         const destructive = target.kind === 'commit'
           ? isDestructiveCommitAction(action)
-          : target.kind === 'worktree' ? action === 'remove' : isDestructiveAction(action)
+          : target.kind === 'stash' ? stashActionMeta(action)?.destructive === true
+            : target.kind === 'worktree' ? action === 'remove' : isDestructiveAction(action)
         const disabledReason = target.disabledActions?.[action] ?? (target.kind === 'worktree' && busy ? t('error.busy') : undefined)
         const disabled = busy || disabledReason !== undefined
         return (

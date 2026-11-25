@@ -6,6 +6,10 @@
  * numstat run keyed by the same paths.
  */
 
+import { outputTooLarge, VcsError } from './errors.js'
+import type { GitRunner } from './git.js'
+import { parseNumstat } from './status.js'
+
 const NUL = String.fromCharCode(0)
 
 /** Most files one commit detail lists. */
@@ -147,4 +151,16 @@ export function mergeCommitFiles(
       binary: measured?.binary === true,
     }
   })
+}
+
+/** Read one or two immutable commit trees with the same rename and numstat rules. */
+export async function readCommitFiles(git: GitRunner, root: string, revisions: string[], signal: AbortSignal): Promise<CommitFile[]> {
+  const args = ['diff-tree', '--no-ext-diff', '--no-textconv', '--no-commit-id', '-r', '-M', '-z']
+  const [names, counts] = await Promise.all([
+    git.run([...args, '--name-status', ...revisions], { cwd: root, signal }),
+    git.run([...args, '--numstat', ...revisions], { cwd: root, signal }),
+  ])
+  if (names.lossy || counts.lossy) throw outputTooLarge()
+  if (names.exitCode !== 0 || counts.exitCode !== 0) throw new VcsError('internal', 'The commit files could not be read.')
+  return mergeCommitFiles(parseNameStatusZ(names.stdout), parseNumstat(counts.stdout))
 }

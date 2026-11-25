@@ -1,4 +1,4 @@
-import { basename, isAbsolute, join } from 'node:path'
+import { basename, join } from 'node:path'
 
 import type { Context } from '@deepseek-ai/cordis'
 
@@ -6,7 +6,7 @@ import type { CommandResult } from './command.js'
 import { canonicalDirectory } from './contain.js'
 import { badRequest, outputTooLarge, VcsError } from './errors.js'
 import type { GitRunner } from './git.js'
-import { redactDetail } from './git-utils.js'
+import { gitDirectory, hasGitOperation, redactDetail } from './git-utils.js'
 import { isFullSha, sameRepoPath } from './paths.js'
 import { refExists, validateRefFormat } from './ref-utils.js'
 import { checkWorktreeFiles, requireAbsentDestination } from './worktree-ops.js'
@@ -14,7 +14,6 @@ import type { RecheckTarget, WorktreeChange, WorktreeCreate } from './worktree-o
 import { gitCommonDirAt, parseGitWorktrees } from './worktrees.js'
 import type { GitWorktree, Worktree } from './worktrees.js'
 
-const OPERATION_STATE = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_START', 'rebase-apply', 'rebase-merge', 'sequencer']
 const GIT_METADATA = new Set(['.git'])
 
 export async function gitWorktreeRegistrations(git: GitRunner, cwd: string, signal: AbortSignal): Promise<GitWorktree[]> {
@@ -85,16 +84,8 @@ export async function createGitWorktree(
   throw new VcsError('worktree-failed', 'Git could not create the worktree.', redactDetail(result?.stderr ?? ''))
 }
 
-export async function gitWorktreeGitDir(ctx: Context, git: GitRunner, cwd: string, signal: AbortSignal): Promise<string | null> {
-  const result = await git.run(['rev-parse', '--absolute-git-dir'], { cwd, signal })
-  if (result.lossy || result.exitCode !== 0 || !result.stdout.endsWith('\n')) return null
-  const path = result.stdout.slice(0, -1)
-  return isAbsolute(path) ? canonicalDirectory(ctx, path, signal) : null
-}
-
 export async function requireIdleGitWorktree(ctx: Context, gitDir: string, signal: AbortSignal): Promise<void> {
-  const state = await Promise.all(OPERATION_STATE.map(name => ctx.fs.lstat(join(gitDir, name), undefined, signal)))
-  if (state.some(info => info !== undefined)) throw new VcsError('worktree-dirty', 'Finish the Git operation in this checkout before continuing.')
+  if (await hasGitOperation(ctx, gitDir, signal)) throw new VcsError('worktree-dirty', 'Finish the Git operation in this checkout before continuing.')
 }
 
 export async function requireNoPrivateGitRefs(git: GitRunner, cwd: string, signal: AbortSignal): Promise<void> {
@@ -118,7 +109,7 @@ export async function removeGitWorktree(
   if (tree.locked) throw new VcsError('worktree-locked', 'Unlock this Git worktree before removing it.')
   const { path } = tree
   const marker = await ctx.fs.lstat(join(path, '.git'), undefined, signal)
-  const gitDir = marker?.type === 'file' ? await gitWorktreeGitDir(ctx, git, path, signal) : null
+  const gitDir = marker?.type === 'file' ? await gitDirectory(ctx, git, path, signal) : null
   if (gitDir === null) throw new VcsError('worktree-protected', 'Git worktree metadata could not be verified.')
   await requireIdleGitWorktree(ctx, gitDir, signal)
   await requireNoPrivateGitRefs(git, path, signal)

@@ -8,7 +8,8 @@ for both **Git** and **Jujutsu** repositories—and to act on Git branches, remo
 and commits in one place: check out, rename, delete, merge into the current branch,
 rebase the current branch onto another, push a branch, check out or delete a remote branch,
 merge or pull it into the current branch, delete or push a tag, tag a commit, branch from it, check it out,
-cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstream.
+cherry-pick, revert, drop, merge, rebase, or reset to it, stash changes and apply, recover, or drop a stash,
+or sync with the upstream.
 
 ## Features
 
@@ -119,8 +120,18 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
   and Drop is further checked on the Host; Reset chooses Soft, Mixed, or Hard,
   and only Hard discards staged and unstaged changes.
   Timeline rows summarize more than three refs with `+N`, while the commit detail header keeps every ref clickable.
-- **Writes stay explicit.** Writes start from a worktree, staging, sync, branch, remote-branch, tag, or commit action.
-  A conflicting merge, pull, pick, revert, drop, or rebase is aborted; pushes and remote deletions never force anything.
+- **Stashes.** **Stash Changes…** in the working-tree toolbar stashes every change, untracked files included by default.
+  Each stash appears in the timeline just above the commit it was made on;
+  select it to read its changes against that base.
+  Right-click a stash row (or press `Shift+F10`), its badge in the detail header, or its overview pointer
+  to Apply (optionally restoring the staged state and dropping the stash afterwards), Create Branch from Stash, or Drop.
+  Before applying, the Host checks that the stash applies cleanly; a conflict,
+  unstaged changes it would overwrite, or untracked files already in place leave everything untouched,
+  and a conflicting stash can be recovered on a new branch at its base instead.
+- **Writes stay explicit.** Writes start from a worktree, staging, sync, branch,
+  remote-branch, tag, commit, or stash action.
+  A conflicting merge, pull, pick, revert, drop, or rebase is aborted, and a stash
+  that would conflict is not applied; pushes and remote deletions never force anything.
   Jujutsu snapshots the working copy on manual refresh or after an Agent turn with changes.
   Follows DSH themes and all 8 UI languages, and loads large histories and diffs on demand.
 
@@ -136,8 +147,8 @@ cherry-pick, revert, drop, merge, rebase, or reset to it, or sync with the upstr
 | `←` `→` or `h` `l` | Enter the change tree, expand a row, or step into an open file's first hunk; `←` / `h` closes an open file first, then returns to the timeline |
 | `Enter`, `Space`, `Esc` | Fold/expand the focused row or activate a ref badge in the detail header; `Esc` returns to the timeline |
 | `↑` `↓`, `Home` `End` | Move inside an open worktree, branch, or actions menu; `Esc` closes it |
-| Right-click / `Shift+F10` | Right-click or activate a branch, remote-branch, or tag badge for its actions; press `Shift+F10` on the branch control for branch actions or on a commit row for commit actions |
-| `Enter`, `Esc` | Confirm or cancel a branch, remote-branch, tag, or commit action dialog |
+| Right-click / `Shift+F10` | Right-click or activate a branch, remote-branch, tag, or stash badge for its actions; press `Shift+F10` on the branch control for branch actions, on a commit row for commit actions, or on a stash row for stash actions |
+| `Enter`, `Esc` | Confirm or cancel a branch, remote-branch, tag, commit, or stash action dialog |
 | `[` / `]` | Move to the previous / next tree row, skipping hunk headers |
 | `T`, `/` | Tile the repositories or return to the timeline; search the open overview (both commands can be bound in **Settings → Shortcuts**) |
 | `1`–`7`, `n`, `Esc` | While tiled, step to the next pointer of a state (`Shift` steps back), continue with `n`; `Esc` clears the step, then returns to the timeline |

@@ -7,7 +7,8 @@ import { canonicalDirectory } from './contain.js'
 import { badRequest, outputTooLarge, VcsError } from './errors.js'
 import { GitRunner } from './git.js'
 import { redactDetail } from './git-utils.js'
-import { durableGitCommit, gitWorktreeGitDir, gitWorktreeRegistrations, requireIdleGitWorktree, requireNoPrivateGitRefs } from './git-worktree-ops.js'
+import { gitDirectory } from './git-utils.js'
+import { durableGitCommit, gitWorktreeRegistrations, requireIdleGitWorktree, requireNoPrivateGitRefs } from './git-worktree-ops.js'
 import type { JujutsuRunner } from './jujutsu.js'
 import { jjCommonDirAt, readWorkspaces, WORKSPACE_LIST } from './jujutsu-worktrees.js'
 import type { JjWorkspaceRecord } from './jujutsu-worktrees.js'
@@ -93,7 +94,7 @@ async function checkColocatedWorkspace(
   }
   const list = await gitWorktreeRegistrations(git, tree.path, signal)
   const checkout = list.find(entry => sameRepoPath(entry.path, tree.path) && !entry.prunable)
-  const gitDir = await gitWorktreeGitDir(ctx, git, tree.path, signal)
+  const gitDir = await gitDirectory(ctx, git, tree.path, signal)
   if (checkout === undefined || checkout.primary || gitDir === null || list.some(entry => entry.prunable)) {
     throw new VcsError('worktree-protected', 'The colocated worktree cannot be safely unlinked from Git.')
   }

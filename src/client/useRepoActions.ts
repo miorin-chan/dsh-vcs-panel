@@ -28,9 +28,15 @@ import {
 } from './format.js'
 import { hasClass } from './keys.js'
 import type { PanelState } from './state.js'
+import { worktreeNode } from './state.js'
+import { worktreeSummary } from './history/timeline-model.js'
+import type { WorktreeSummary } from './history/timeline-model.js'
+import { stashActions, stashNode, stashSaveReason } from './stash.js'
+import type { StashMenuAction, StashTarget } from './stash.js'
+import type { StashDetail, StashRequest } from '../lib/stash-types.js'
 
 /** One write domain under the per-repository lock. */
-export type RepoWriteDomain = 'sync' | 'switch' | 'branch' | 'tag' | 'commit' | 'stage' | 'worktree'
+export type RepoWriteDomain = 'sync' | 'switch' | 'branch' | 'tag' | 'commit' | 'stage' | 'worktree' | 'stash'
 
 /** One write in flight for one repository. */
 export interface RepoWrite {
@@ -117,8 +123,15 @@ export interface CommitMenuTarget extends RefMenuTargetBase {
   subject: string
 }
 
+export interface StashMenuTarget extends RefMenuTargetBase {
+  domain: 'stash'
+  kind: 'stash'
+  stash: StashTarget
+  actions: StashMenuAction[]
+}
+
 /** The open actions menu. */
-export type RefMenuTarget = BranchMenuTarget | TagMenuTarget | CommitMenuTarget | WorktreeMenuTarget
+export type RefMenuTarget = BranchMenuTarget | TagMenuTarget | CommitMenuTarget | WorktreeMenuTarget | StashMenuTarget
 
 interface WorktreeMenuTarget extends RefMenuTargetBase {
   domain: 'worktree'
@@ -134,6 +147,7 @@ export type RepoAction =
   | { domain: 'branch'; kind: BranchMenuAction; branch: string; remote?: string; local?: string; receiver?: string }
   | { domain: 'tag'; kind: TagAction; tag: string }
   | { domain: 'commit'; kind: CommitAction; sha: string; subject: string }
+  | { domain: 'stash'; kind: StashMenuAction; stash: StashTarget }
   | { domain: 'worktree'; kind: WorktreeRemovalAction; tree: WorktreeInfo }
 
 /** One branch confirmation dialog. */
@@ -163,8 +177,13 @@ export interface CommitDialogRequest {
   subject: string
 }
 
+export type StashDialogRequest = { domain: 'stash'; repo: string; current: string | null } & (
+  | { kind: 'push'; summary: WorktreeSummary }
+  | { kind: StashMenuAction; stash: StashTarget; detail?: StashDetail }
+)
+
 /** The open confirmation dialog. */
-export type RepoDialogRequest = BranchDialogRequest | TagDialogRequest | CommitDialogRequest | WorktreeDialogRequest
+export type RepoDialogRequest = BranchDialogRequest | TagDialogRequest | CommitDialogRequest | WorktreeDialogRequest | StashDialogRequest
 
 export type WorktreeDialogRequest = { domain: 'worktree'; repo: string; commitBased: boolean } & (
   | { kind: 'create' }
@@ -203,7 +222,7 @@ export interface StageWriteMeta {
 /** Where focus returns after a menu closes. */
 interface MenuReturn {
   element: HTMLElement | null
-  domain: 'branch' | 'tag' | 'commit' | 'worktree'
+  domain: 'branch' | 'tag' | 'commit' | 'worktree' | 'stash'
   restore?: () => void
 }
 
@@ -233,6 +252,8 @@ export interface UseRepoActionsParams {
   commits: CommitNode[]
   /** Commit id to loaded row index. */
   commitIndex: Map<string, number>
+  getStashDetail: (target: StashTarget) => StashDetail | undefined
+  selectStashResult: (node: string | null) => void
   /** The HEAD commit id of the shown checkout. */
   head: string | null
   /** The panel's root element, for focus fallbacks. */
@@ -282,6 +303,11 @@ export interface RepoActions {
   switchBranch: (branch: string) => Promise<void>
   openBranchActions: (entry: RefEntry, point: MenuPoint, returnElement?: HTMLElement | null) => void
   openCommitActions: (commit: CommitNode, point: MenuPoint, returnElement?: HTMLElement | null) => void
+  openStashActions: (stash: StashTarget, point: MenuPoint, returnElement: HTMLElement | null) => void
+  openStashSave: (returnElement: HTMLElement) => void
+  confirmStash: (request: StashRequest) => void
+  branchFromStash: () => void
+  clearDialogError: () => void
   onRefActions: (reference: RefEntry, event: RefActionEvent, returnElement?: HTMLElement | null) => void
   closeMenu: (restoreFocus: boolean) => void
   chooseMenuAction: (action: string) => void
@@ -312,7 +338,7 @@ function checkedOutBranch(statusData: StatusData | null): string | null {
 export function useRepoActions({
   api, sessionId, repo, stateRef, sessionRef, statusData, capabilities,
   commits, commitIndex, head, rootRef, onRestoreFocus, t, locale,
-  refresh, onWorktreeChange, resetReadingForNewHead, setNotice, clearBranches, abortBranches,
+  refresh, onWorktreeChange, resetReadingForNewHead, setNotice, clearBranches, abortBranches, getStashDetail, selectStashResult,
 }: UseRepoActionsParams): RepoActions {
   const [inFlight, setInFlight] = useState<ReadonlyMap<string, RepoWrite>>(new Map())
   const inFlightRef = useRef<Map<string, RepoWrite>>(new Map())
@@ -368,6 +394,7 @@ export function useRepoActions({
           hasClass(entry.element, 'vcs-branch-button')
           || hasClass(entry.element, 'vcs-ref-button')
           || hasClass(entry.element, 'vcs-timeline-row')
+          || domain === 'stash'
         )
       ) {
         entry.element.focus({ preventScroll: true })
@@ -550,6 +577,25 @@ export function useRepoActions({
       y: point.clientY,
     })
   }, [capabilities, commitIndex, commits, head, reachability, statusData])
+
+  const openStashActions = useCallback((stash: StashTarget, point: MenuPoint, element: HTMLElement | null): void => {
+    const offered = stashActions(capabilities?.stashOps === true && writeRootRef.current === stash.repo)
+    if (offered.length === 0) return
+    menuReturnRef.current = { element, domain: 'stash' }
+    setMenu({
+      domain: 'stash', kind: 'stash', name: stash.selector, stash, actions: offered,
+      x: point.clientX, y: point.clientY,
+    })
+  }, [capabilities])
+
+  const openStashSave = useCallback((element: HTMLElement): void => {
+    const repo = writeRootRef.current
+    if (repo === null || capabilities?.stashOps !== true || capabilities.stageOps !== true
+      || stashSaveReason(statusData, inFlightRef.current.has(repo)) !== undefined) return
+    menuReturnRef.current = { element, domain: 'stash' }
+    setDialogError(null)
+    setDialog({ domain: 'stash', kind: 'push', repo, current: statusData?.branch?.name ?? null, summary: worktreeSummary(statusData) })
+  }, [capabilities, statusData])
 
   const openWorktreeCreate = useCallback((restore: () => void): void => {
     const repo = stateRef.current.repo
@@ -738,6 +784,10 @@ export function useRepoActions({
           sha: action.sha, shortSha: shortSha(action.sha), current, subject: action.subject,
         }
         break
+      case 'stash':
+        if (capabilities.stashOps !== true || action.stash.repo !== repo) return false
+        request = { domain: 'stash', kind: action.kind, repo, current, stash: action.stash, detail: getStashDetail(action.stash) }
+        break
       case 'worktree':
         if ((action.kind === 'remove' ? capabilities.worktreeRemove : capabilities.worktreeForget) !== true) return false
         request = { domain: 'worktree', kind: action.kind, repo, tree: action.tree, commitBased: capabilities.workingCopy === 'commit' }
@@ -759,7 +809,7 @@ export function useRepoActions({
       }
     }
     return true
-  }, [capabilities, loadTagRemotes, restoreFocus, runBranchAction, stateRef, statusData, switchBranch, sync])
+  }, [capabilities, getStashDetail, loadTagRemotes, restoreFocus, runBranchAction, stateRef, statusData, switchBranch, sync])
 
   /** Translate one enabled menu item into the same explicit target used by direct buttons. */
   const chooseMenuAction = useCallback((action: string): void => {
@@ -783,6 +833,11 @@ export function useRepoActions({
         if (kind !== undefined) openAction({ domain: 'commit', kind, sha: menu.sha, subject: menu.subject })
         break
       }
+      case 'stash': {
+        const kind = chosen(menu.actions)
+        if (kind !== undefined) openAction({ domain: 'stash', kind, stash: menu.stash })
+        break
+      }
       case 'worktree': {
         const kind = chosen(menu.actions)
         if (kind !== undefined) openAction({ domain: 'worktree', kind, tree: menu.tree })
@@ -802,6 +857,64 @@ export function useRepoActions({
       void runCommitAction(dialog.kind, dialog, values)
     }
   }, [dialog, runBranchAction, runCommitAction, runTagAction])
+
+  const clearDialogError = useCallback(() => { setDialogError(null) }, [])
+
+  const branchFromStash = useCallback(() => {
+    if (dialog?.domain !== 'stash' || dialog.kind !== 'apply' || dialogWriting) return
+    setDialogError(null)
+    setDialog({ ...dialog, kind: 'branch' })
+  }, [dialog, dialogWriting])
+
+  const confirmStash = useCallback((request: StashRequest): void => {
+    if (dialog?.domain !== 'stash' || dialog.kind !== request.action || capabilities?.stashOps !== true
+      || writeRootRef.current !== dialog.repo) return
+    if (request.action !== 'push' && (dialog.kind === 'push' || dialog.stash.sha !== request.sha)) return
+    const { repo } = dialog
+    if (inFlightRef.current.has(repo)) return
+    const base = dialog.kind === 'push' ? null : dialog.stash.base
+    setDialogError(null)
+    setNotice(null, repo)
+    void runRepoWrite(repo, 'stash', request.action, () => api.stashOp(repo, request), run => {
+      if (sessionRef.current !== sessionId) return
+      const current = stateRef.current.repo === repo
+      if (!run.ok) {
+        const { error } = run
+        if (error.code === 'stash-missing') refresh('stash-drop', repo)
+        if (error.code === 'stash-failed') refresh('stash', repo)
+        if (error.code === 'stash-conflict') {
+          if (current) setDialog(null)
+          refresh('stash', repo)
+          const paths = error.stashPaths?.paths ?? []
+          const list = paths.join(', ') + (error.stashPaths?.pathsTruncated ? ', …' : '')
+          setNotice({ tone: 'error', text: paths.length > 0 ? t('stash.applyConflicted', { paths: list }) : errorMessage(t, error) }, repo)
+          if (current) restoreFocus()
+        } else if (current) setDialogError(error)
+        return
+      }
+      const { value } = run
+      if (current) {
+        setDialog(null)
+        if (request.action === 'push') selectStashResult(stashNode(value.sha))
+        else if (request.action === 'apply') selectStashResult(worktreeNode(repo))
+        else if (request.action === 'branch') {
+          abortBranches()
+          clearBranches()
+          resetReadingForNewHead()
+        } else if (stateRef.current.node === stashNode(value.sha)) {
+          selectStashResult(base !== null && commitIndex.has(base) ? base : null)
+        }
+      }
+      refresh(request.action === 'drop' ? 'stash-drop' : 'stash', repo)
+      const params = { selector: value.selector, branch: 'branch' in value ? value.branch : '' }
+      const key = request.action === 'push' ? 'stash.saved' : request.action === 'branch' ? 'stash.branched'
+        : request.action === 'drop' ? 'stash.dropped' : 'dropped' in value && value.dropped ? 'stash.popped'
+          : request.drop ? 'stash.appliedKept' : 'stash.applied'
+      setNotice({ tone: 'info', text: t(key, params) }, repo)
+      if (current) restoreFocus()
+    })
+  }, [abortBranches, api, capabilities, clearBranches, commitIndex, dialog, refresh, resetReadingForNewHead, restoreFocus,
+    runRepoWrite, selectStashResult, sessionId, sessionRef, setNotice, stateRef, t])
 
   const confirmWorktree = useCallback((create?: WorktreeCreateRequest): void => {
     if (dialog?.domain !== 'worktree' || stateRef.current.repo !== dialog.repo) return
@@ -879,6 +992,11 @@ export function useRepoActions({
     switchBranch,
     openBranchActions,
     openCommitActions,
+    openStashActions,
+    openStashSave,
+    confirmStash,
+    branchFromStash,
+    clearDialogError,
     onRefActions,
     closeMenu,
     chooseMenuAction,

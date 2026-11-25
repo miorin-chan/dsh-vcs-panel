@@ -135,9 +135,8 @@ export function diffTargets(group: string, entry: FileEntry, rev: string | null)
  * @param commit - the commit detail.
  * @returns one group, or none.
  */
-export function commitGroups(commit: { files?: readonly FileEntry[] } | null): FileGroup[] {
-  const files = commit?.files ?? []
-  return files.length === 0 ? [] : [{ id: 'commit', entries: files, header: false }]
+export function revisionGroups(kind: 'commit' | 'stash', files: readonly FileEntry[]): FileGroup[] {
+  return files.length === 0 ? [] : [{ id: kind, entries: files, header: false }]
 }
 
 /**
@@ -150,10 +149,11 @@ export function commitGroups(commit: { files?: readonly FileEntry[] } | null): F
  * @returns the target.
  */
 export function diffTarget(group: string, entry: FileEntry, rev: string | null): DiffTarget {
-  const scope = group === 'commit' ? 'commit' : (entry.untracked === true ? 'untracked' : group)
+  const scope = group === 'stash' ? (entry.untracked === true ? 'stash-untracked' : 'stash')
+    : group === 'commit' ? 'commit' : (entry.untracked === true ? 'untracked' : group)
   const target: DiffTarget = { scope, path: entry.path }
   if (entry.origPath !== undefined) target.oldPath = entry.origPath
-  if (scope === 'commit') target.rev = rev
+  if (group === 'commit' || group === 'stash') target.rev = rev
   return target
 }
 

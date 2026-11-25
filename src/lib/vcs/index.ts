@@ -17,6 +17,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { DiffComparison } from '../diff.js'
 import type { Limiter, OverviewRepository, UnlistedRoots } from '../overview.js'
 import type { JjRef } from '../jujutsu.js'
+import type { StashCheck, StashDetailAnswer, StashEntry, StashMode, StashRequest, StashResult } from '../stash-types.js'
 import type { StatusBranch, StatusGroups } from '../status.js'
 import type { Worktree, WorktreeOptions } from '../worktrees.js'
 import type { RecheckTarget, WorktreeChange, WorktreeCreate } from '../worktree-ops.js'
@@ -98,11 +99,14 @@ export interface LogPageAnswer {
   truncated: boolean
   /** Offset for the next page, or null when the walk ended. */
   nextSkip: number | null
+  /** Stash-capable backends report the reflog only on the first page. */
+  stashes?: StashEntry[]
+  stashesTruncated?: boolean
 }
 
 /** One comparison request. */
 export interface DiffTarget {
-  /** `staged`, `unstaged`, `untracked`, or `commit`. */
+  /** `staged`, `unstaged`, `untracked`, `commit`, `stash`, or `stash-untracked`. */
   scope: unknown
   /** Repository-relative file path. */
   path: unknown
@@ -283,6 +287,9 @@ export interface VcsBackend {
   tagOp?(root: string, request: unknown, signal: AbortSignal): Promise<unknown>
   /** Dispatch one commit action. */
   commitOp?(root: string, request: unknown, signal: AbortSignal): Promise<unknown>
+  stash?(root: string, sha: string, signal: AbortSignal): Promise<StashDetailAnswer>
+  stashCheck?(root: string, sha: string, mode: StashMode, index: boolean, signal: AbortSignal): Promise<StashCheck>
+  stashOp?(root: string, request: StashRequest, signal: AbortSignal): Promise<StashResult>
   /** One repository's pointers, bases, and occupancy for the overview. */
   overview?(root: string, options: { registered: boolean, statusLimiter?: Limiter, signal: AbortSignal }): Promise<OverviewRepository>
   /** Repositories under the session directory that discovery does not list. */

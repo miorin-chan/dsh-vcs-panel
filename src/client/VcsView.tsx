@@ -15,15 +15,18 @@ import { ApiError, createApi, failureOf } from './api.js'
 import type {
   Api, ApiFailure, BranchesAnswer, CommitNode, LogAnswer, RepositoryInfo, StatusData, WorktreeInfo,
 } from './api.js'
+import type { StashEntry } from '../lib/stash-types.js'
+import { stashNode, stashSha } from './stash.js'
+import type { StashTarget } from './stash.js'
 import {
   loadState, nodePatch, saveState, SIDEBAR_MAX, SIDEBAR_MIN, WORKING_COPY, WORKTREE, worktreeNode, worktreePath,
 } from './state.js'
 import type { PanelState, ReadingAnchor } from './state.js'
 import type { DirRow, GroupRow, UntrackedChild } from './detail/tree.js'
-import type { CommitState, DetailPaneControl, DetailStatusState } from './detail/DetailPane.jsx'
+import type { RevisionState, DetailPaneControl, DetailStatusState } from './detail/DetailPane.jsx'
 import type { DiffFetchResult } from './detail/ChangeTree.jsx'
 import type {
-  CommitActionsHandler, RefActionsHandler, TimelineCommit, TimelineControl, TimelineWorktree,
+  CommitActionsHandler, RefActionsHandler, StashActionsHandler, TimelineControl,
 } from './history/Timeline.jsx'
 import type { MenuPoint, Notice } from './useRepoActions.js'
 import type { WorktreeChoice } from './worktrees.js'
@@ -41,14 +44,16 @@ import {
 import { dirKey } from './detail/tree.js'
 import { buildGraph } from './history/layout.js'
 import { indexCommits } from './history/commits.js'
-import { graphInput, nodeAt, pickRepository, rowOf } from './history/timeline-model.js'
+import { graphInput, indexTimelineRows, nodeAt, pickRepository, rowOf, timelineRows } from './history/timeline-model.js'
+import type { WorktreeHead } from './history/timeline-model.js'
 import { ROW_HEIGHT, Timeline } from './history/Timeline.jsx'
-import { DetailPane } from './detail/DetailPane.jsx'
+import { DetailPane, detailCacheKey } from './detail/DetailPane.jsx'
 import { TopBar } from './TopBar.jsx'
 import { RefActionsMenu } from './RefActionsMenu.jsx'
 import { BranchDialog } from './BranchDialogs.jsx'
 import { TagDialog } from './TagDialog.jsx'
 import { CommitDialog } from './CommitDialog.jsx'
+import { StashDialog } from './StashDialog.jsx'
 import { WorktreeDialog } from './WorktreeDialog.jsx'
 import { RepositoryConfigDialog } from './RepositoryConfigDialog.jsx'
 import { useRepoActions } from './useRepoActions.js'
@@ -58,7 +63,7 @@ import { onPanelCommand } from './commands.js'
 import type { FilterId, PointerView } from './overview/model.js'
 import {
   FILTERS,
-  buildSkeleton, columnOrder, filterCounts, pointerTarget, repositoryView, stepIndex, tileOrder, traversal,
+  buildSkeleton, columnOrder, filterCounts, pointerTarget, repositoryView, selectedPointerId, stashPointerTarget, stepIndex, tileOrder, traversal,
 } from './overview/model.js'
 import { tileDirectActions } from './overview/directActions.js'
 import type { TileDirectAction } from './overview/directActions.js'
@@ -111,6 +116,8 @@ type WorktreeHeadRow = NonNullable<LogAnswer['worktreeHeads']>[number]
 interface HistoryLog {
   status: string
   commits: CommitNode[]
+  stashes: StashEntry[]
+  stashesTruncated: boolean
   worktreeHeads: WorktreeHeadRow[] | null
   error: ApiFailure | null
   truncated: boolean
@@ -172,6 +179,7 @@ type ViewCommit = Omit<CommitNode, 'workingCopies'> & {
 /** Empty status answer. */
 const IDLE_STATUS: StatusEntry = Object.freeze({ status: 'idle', data: null, error: null })
 const NO_WORKTREE_ROWS: readonly ViewWorktree[] = Object.freeze([])
+const NO_STASHES: readonly StashEntry[] = Object.freeze([])
 const INITIAL_REVISIONS: Revisions = Object.freeze({ working: 0, history: 0, repositories: 0 })
 
 /** Advance the revision of every domain in one refresh request. */
@@ -185,7 +193,13 @@ function advanceRevisions(previous: Revisions, domains: readonly string[]): Revi
 
 /** Empty history answer. */
 function idleLog(): HistoryLog {
-  return { status: 'idle', commits: [], worktreeHeads: null, error: null, truncated: false, hasMore: false, loadingMore: false }
+  return { status: 'idle', commits: [], stashes: [], stashesTruncated: false, worktreeHeads: null, error: null,
+    truncated: false, hasMore: false, loadingMore: false }
+}
+
+/** Writes that only invalidate the history and overview, not the worktree. */
+function historyOnlyRefresh(requester: string | null): boolean {
+  return requester === 'tag' || requester === 'stash-drop'
 }
 
 /** Whether two path lists name the same paths in the same order. */
@@ -216,30 +230,6 @@ function omit<TValue>(record: Readonly<Record<string, TValue>>, key: string): Re
  */
 function viewCommits(rows: readonly CommitNode[]): ViewCommit[] {
   return rows as unknown as ViewCommit[]
-}
-
-/**
- * Read checkout views as the timeline's rows.
- *
- * The timeline's status type is a structural subset of the panel's status
- * answer, which the timeline's `Record`-keyed shape does not admit directly.
- * @param rows - the panel's checkout views.
- * @returns the same rows as timeline rows.
- */
-function timelineWorktrees(rows: readonly ViewWorktree[]): TimelineWorktree[] {
-  return rows as unknown as TimelineWorktree[]
-}
-
-/**
- * Read commit rows as the timeline's rows.
- *
- * The timeline's checkout status is an open string-keyed record, which the
- * panel's status interface does not structurally admit.
- * @param rows - the panel's commit rows.
- * @returns the same rows as timeline rows.
- */
-function timelineCommits(rows: readonly ViewCommit[]): TimelineCommit[] {
-  return rows as unknown as TimelineCommit[]
 }
 
 /**
@@ -373,7 +363,7 @@ export function VcsView({
   const branchesControllerRef = useRef<AbortController | null>(null)
   const loadingBranchesRef = useRef(false)
   const diffCacheRef = useRef(new Map<string, DiffFetchResult>())
-  const commitCacheRef = useRef(new Map<string, CommitState>())
+  const detailCacheRef = useRef(new Map<string, RevisionState>())
   const timelineControl = useRef<TimelineControl | null>(null)
   const detailControl = useRef<DetailPaneControl | null>(null)
   const navZoneRef = useRef<'timeline' | 'tree'>('timeline')
@@ -475,6 +465,10 @@ export function VcsView({
     return viewCommits(log.commits.map(commit => ({ ...commit, refs: sharedRefs(commit.refs ?? []) })))
   }, [commitBased, log.commits, showCurrentHead, workspaceViews])
   const worktreeRows = commitBased ? NO_WORKTREE_ROWS : treeViews
+  const stashes = baseCapabilities?.stashOps === true ? log.stashes : NO_STASHES
+  const selectedStashSha = stashSha(state.node)
+  const selectedStash = selectedStashSha === null ? undefined : stashes.find(stash => stash.sha === selectedStashSha)
+  const stashRevision = manual.history + background.history
   const selectedTree = treeViews.find(tree => tree.id === state.node) ?? null
   const selectedWorktree = commitBased ? null : selectedTree
   // Jujutsu commit contents live in the shared store. Use the same immutable
@@ -487,10 +481,9 @@ export function VcsView({
   const canStage = capabilities?.stageOps === true && selectedWorktree?.path === state.repo
   const anchorHead = showCurrentHead ? worktreeRows[0]?.head ?? null : null
   const graphWorktreesKey = JSON.stringify(worktreeRows.map(({ id, head }) => ({ id, head })))
-  const layout = useMemo(
-    () => buildGraph(graphInput(commits, parseJson<Array<{ id: string; head: string | null }>>(graphWorktreesKey))),
-    [commits, graphWorktreesKey],
-  )
+  const rows = useMemo(() => timelineRows(commits, parseJson<WorktreeHead[]>(graphWorktreesKey), stashes), [commits, graphWorktreesKey, stashes])
+  const rowIndex = useMemo(() => indexTimelineRows(rows), [rows])
+  const layout = useMemo(() => buildGraph(graphInput(rows)), [rows])
   const commitIndex = useMemo(
     () => indexCommits(commits),
     [commits],
@@ -605,7 +598,7 @@ export function VcsView({
       return
     }
     const domains = requester === 'stage' ? ['working']
-      : requester === 'tag' ? ['history']
+      : historyOnlyRefresh(requester) ? ['history']
         : requester === 'repositories' ? ['repositories']
           : requester === 'refresh' || requester === 'worktree' ? Object.keys(INITIAL_REVISIONS) : ['working', 'history']
     setRefreshing(requester)
@@ -616,7 +609,7 @@ export function VcsView({
     if (domains.includes('history')) {
       pageControllerRef.current?.abort()
       pageControllerRef.current = null
-      commitCacheRef.current.clear()
+      detailCacheRef.current.clear()
     }
     setManual(previous => advanceRevisions(previous, domains))
   }, [resetDirectories, setNotice])
@@ -645,7 +638,7 @@ export function VcsView({
     navZoneRef.current = 'timeline'
     resetDirectories()
     diffCacheRef.current.clear()
-    commitCacheRef.current.clear()
+    detailCacheRef.current.clear()
     update({ node: null, nodeChosen: false, anchor: null, folds: {}, collapsed: {}, dirs: {} })
   }, [resetDirectories, update])
 
@@ -659,6 +652,16 @@ export function VcsView({
     loadingBranchesRef.current = false
   }, [])
 
+  const getStashDetail = useCallback(({ repo, sha }: StashTarget) => {
+    const reading = detailCacheRef.current.get(detailCacheKey(repo, stashNode(sha), stashRevision))
+    return reading?.detail?.kind === 'stash' ? reading.detail.stash : undefined
+  }, [stashRevision])
+  const selectStashResult = useCallback((node: string | null) => {
+    selectNode(node, node !== null)
+    if (stashSha(node) !== null) pendingRevealRef.current = node
+  }, [selectNode])
+  const refreshMissingStash = useCallback((repo: string) => { refresh('stash-drop', repo) }, [refresh])
+
   const actions = useRepoActions({
     api,
     sessionId,
@@ -669,6 +672,8 @@ export function VcsView({
     capabilities: tileAnchorActions ? baseCapabilities : capabilities,
     commits,
     commitIndex,
+    getStashDetail,
+    selectStashResult,
     head: anchorHead,
     rootRef,
     onRestoreFocus: () => {
@@ -693,6 +698,11 @@ export function VcsView({
     : undefined
   const timelineCommitActions: CommitActionsHandler | undefined = capabilities?.commitOps === true
     ? (commit, point, anchor) => { actions.openCommitActions(commit as unknown as CommitNode, point, anchor as unknown as HTMLElement | null) }
+    : undefined
+  const timelineStashActions: StashActionsHandler | undefined = capabilities?.stashOps === true && showCurrentHead && state.repo !== null
+    ? (stash, point, anchor) => {
+      actions.openStashActions({ ...stash, repo: state.repo! }, point, anchor as HTMLElement | null)
+    }
     : undefined
 
   const closeRepositoryManagement = () => {
@@ -763,7 +773,7 @@ export function VcsView({
     if (!current.tiled) setNotice(null, nextRepo)
     resetDirectories()
     diffCacheRef.current.clear()
-    commitCacheRef.current.clear()
+    detailCacheRef.current.clear()
     abortBranches()
     clearBranches()
     resetActionsUi()
@@ -871,16 +881,8 @@ export function VcsView({
   ), [tileColumns, tileTraversal.filter])
 
   // The pointer the timeline's selection names, marked in the overview.
-  const selectedPointer = useMemo(() => {
-    const view = state.repo === null ? undefined : viewByPath.get(state.repo)
-    if (view === undefined || state.node === null) return null
-    const tree = worktreePath(state.node)
-    const match = tree !== null
-      ? view.list.find(pointer => pointer.occupant?.path === tree)
-      : view.list.find(pointer => pointer.kind !== 'stash' && (pointer.sha === state.node || pointer.occupant?.workingCopy === state.node))
-        ?? view.list.find(pointer => pointer.kind === 'stash' && pointer.onto === state.node)
-    return match?.id ?? null
-  }, [state.node, state.repo, viewByPath])
+  const selectedPointer = useMemo(() => selectedPointerId(state.repo === null ? undefined : viewByPath.get(state.repo), state.node),
+    [state.node, state.repo, viewByPath])
 
   /** Ask the Sidebar for its fullscreen presentation when the panel is narrower than `needed`. */
   const requestRoom = useCallback((needed: number) => {
@@ -986,17 +988,17 @@ export function VcsView({
   /**
    * Move the timeline to a pointer: its repository becomes current, the checkout
    * holding it joins the selection, and the timeline selects its commit, the
-   * checkout's working tree when it has unsaved changes, or a stash's base.
+   * checkout's working tree when it has unsaved changes, or the stash itself.
    */
   const revealPointer = useCallback((pointer: PointerView, keyboard: boolean) => {
     const entry = repositories.list.find(item => item.path === pointer.repo)
     const target = pointerTarget(pointer)
-    if (entry === undefined || target === null) return
+    if (entry === undefined || ('stash' in target && entry.capabilities.stashOps !== true)) return
     const current = stateRef.current
-    const node = 'worktree' in target ? worktreeNode(target.worktree) : target.commit
+    const node = 'worktree' in target ? worktreeNode(target.worktree) : 'stash' in target ? target.stash : target.commit
     if (current.repo !== entry.path) switchRepo(entry, node)
     else selectNode(node, true)
-    if ('commit' in target) update({ ref: 'all' })
+    if (!('worktree' in target)) update({ ref: 'all' })
     const occupant = pointer.occupant?.path
     if (occupant !== undefined) {
       setState(previous => {
@@ -1006,10 +1008,7 @@ export function VcsView({
         return checked.includes(occupant) ? previous : { ...previous, worktrees: [...checked, occupant] }
       })
     }
-    pendingRevealRef.current = 'commit' in target ? target.commit : null
-    if (pointer.kind === 'stash' && 'commit' in target) {
-      setNotice({ tone: 'info', text: t('overview.stashBase', { sha: target.commit.slice(0, 7) }) })
-    }
+    pendingRevealRef.current = 'worktree' in target ? null : node
     navZoneRef.current = 'timeline'
     if (singleColumn) setSingleView('timeline')
     if (keyboard) {
@@ -1020,7 +1019,7 @@ export function VcsView({
       setFocusTick(value => value + 1)
     }
     if (overviewDrawer) update({ overview: false })
-  }, [overviewDrawer, repositories.list, selectNode, setNotice, singleColumn, switchRepo, t, update])
+  }, [overviewDrawer, repositories.list, selectNode, singleColumn, switchRepo, update])
 
   const selectOverviewRepository = useCallback((path: string, keyboard: boolean) => {
     const entry = repositories.list.find(item => item.path === path)
@@ -1041,7 +1040,7 @@ export function VcsView({
   const requestPointerAction = useCallback((request: PointerActionRequest) => {
     const { pointer } = request
     const entry = repositories.list.find(item => item.path === pointer.repo)
-    if (pointer.kind === 'stash' || entry === undefined) return
+    if (entry === undefined || (pointer.kind === 'stash' && entry.capabilities.stashOps !== true)) return
     pendingPointerActionRef.current = null
     // Opening actions is not navigation: keep the drawer and its opener visible.
     if (stateRef.current.repo !== pointer.repo) switchRepo(entry)
@@ -1207,7 +1206,7 @@ export function VcsView({
       lastStatusScope.current = statusScope
       setSettledStatusKey(statusKey)
       if (foreground) {
-        setRefreshing(action => action === 'tag' || action === 'repositories' ? action : null)
+        setRefreshing(action => historyOnlyRefresh(action) || action === 'repositories' ? action : null)
       } else {
         setStatuses(previous => {
           const next = { ...previous }
@@ -1266,6 +1265,8 @@ export function VcsView({
     setLog(previous => ({ ...previous, ...(foreground ? { status: 'loading', error: null } : {}), loadingMore: false }))
     async function readHistory(repoRoot: string) {
       const commits: CommitNode[] = []
+      let stashes: StashEntry[] = []
+      let stashesTruncated = false
       let worktreeHeads: WorktreeHeadRow[] | null = null
       let truncated = false
       let hasMore = false
@@ -1279,7 +1280,11 @@ export function VcsView({
         if (signal.aborted) return
         const heads: WorktreeHeadRow[] | null = Array.isArray(page?.worktreeHeads) ? page.worktreeHeads : null
         const rows: CommitNode[] = Array.isArray(page?.commits) ? page.commits : []
-        if (boundary === undefined) worktreeHeads = heads
+        if (boundary === undefined) {
+          worktreeHeads = heads
+          stashes = Array.isArray(page?.stashes) ? page.stashes : []
+          stashesTruncated = page?.stashesTruncated === true
+        }
         else if (rows[0]?.sha !== boundary.sha || JSON.stringify(heads) !== JSON.stringify(worktreeHeads)) {
           throw new ApiError('internal', 'The repository changed while reading history.', 409)
         }
@@ -1290,7 +1295,7 @@ export function VcsView({
       } while (hasMore && commits.length < targetLength)
       if (historyResumeRef.current === resume) historyResumeRef.current = null
       logKeyRef.current = historyKey
-      setLog({ status: 'ready', commits, worktreeHeads, error: null, truncated, hasMore, loadingMore: false })
+      setLog({ status: 'ready', commits, stashes, stashesTruncated, worktreeHeads, error: null, truncated, hasMore, loadingMore: false })
     }
     readHistory(repo).catch(error => {
       if (failureOf(error).name === 'AbortError' || signal.aborted) return
@@ -1299,7 +1304,7 @@ export function VcsView({
       if (signal.aborted) return
       lastHistoryScope.current = historyReadScope
       setSettledHistoryKey(historyKey)
-      if (foreground) setRefreshing(action => action === 'tag' ? null : action)
+      if (foreground) setRefreshing(action => historyOnlyRefresh(action) ? null : action)
     })
     return () => { controller.abort() }
   }, [api, historyKey, historyReadScope, historyWorktrees, repositoryReady, state.repo, state.ref, validHistoryRange, waitingForRepositories, waitingForSnapshots])
@@ -1351,15 +1356,15 @@ export function VcsView({
     historyResumeRef.current = null
     repositoryVcsRef.current.clear()
     diffCacheRef.current.clear()
-    commitCacheRef.current.clear()
+    detailCacheRef.current.clear()
     pageControllerRef.current?.abort()
     pageControllerRef.current = null
   }, [abortBranches, clearBranches, resetActionsUi, resetDirectories, sessionId])
 
-  const selectedRow = rowOf(commitIndex, state.node, worktreeRows)
+  const selectedRow = rowOf(rowIndex, state.node)
   const summaryIndex = state.node === null ? undefined : commitIndex.get(state.node)
   const summary = summaryIndex === undefined ? null : commits[summaryIndex] ?? null
-  const hasTimelineRows = worktreeRows.length > 0 || commits.length > 0
+  const hasTimelineRows = rows.length > 0
   const timelineSettled = hasTimelineRows || log.status === 'ready' || log.status === 'error'
 
   /**
@@ -1600,7 +1605,7 @@ export function VcsView({
 
   /** Choose the node on one timeline row. */
   const selectRow = useCallback((index: number) => {
-    const node = nodeAt(commits, index, { worktrees: worktreeRows })
+    const node = nodeAt(rows, index)
     if (node === null) return
     panelOwnsFocusRef.current = true
     if (singleColumn) {
@@ -1614,15 +1619,15 @@ export function VcsView({
     navZoneRef.current = 'timeline'
     pendingRestoreFocusRef.current = true
     selectNode(node, true)
-  }, [commits, selectNode, singleColumn, worktreeRows])
+  }, [rows, selectNode, singleColumn])
 
   /** Keyboard movement along the timeline; the selection follows the cursor. */
   const moveTimeline = useCallback((delta: number) => {
-    const maxIndex = commits.length + worktreeRows.length - 1
+    const maxIndex = rows.length - 1
     if (maxIndex < 0) return
     const base = selectedRow < 0 ? 0 : selectedRow
     const next = Math.max(0, Math.min(maxIndex, base + delta))
-    const node = nodeAt(commits, next, { worktrees: worktreeRows })
+    const node = nodeAt(rows, next)
     if (node === null) return
     panelOwnsFocusRef.current = true
     navZoneRef.current = 'timeline'
@@ -1630,13 +1635,13 @@ export function VcsView({
     pendingRestoreFocusRef.current = !sameNode
     selectNode(node, true)
     if (sameNode) timelineControl.current?.restoreFocus()
-  }, [commits, selectNode, selectedRow, worktreeRows])
+  }, [rows, selectNode, selectedRow])
 
   /** Move the keyboard into the selected node's files, or wait while they load. */
   const openDetail = useCallback(() => {
     panelOwnsFocusRef.current = true
     if (selectedRow < 0 && hasTimelineRows) {
-      const first = nodeAt(commits, 0, { worktrees: worktreeRows })
+      const first = nodeAt(rows, 0)
       if (first !== null) selectNode(first, true)
     }
     pendingDetailFocusRef.current = true
@@ -1666,7 +1671,7 @@ export function VcsView({
         }
       })
     })
-  }, [commits, hasTimelineRows, selectNode, selectedRow, singleColumn, worktreeRows])
+  }, [rows, hasTimelineRows, selectNode, selectedRow, singleColumn])
 
   /** Complete a deferred detail focus once the selected node's rows arrive. */
   const onDetailSettled = useCallback((hasRows: boolean) => {
@@ -1752,10 +1757,20 @@ export function VcsView({
     commitBased,
   ) ?? treeViews[0]?.id ?? null
 
-  /** A selected commit vanished (amend, rebase): fall back to the default. */
+  /** A selected commit or stash vanished: fall back to the default. */
   const onMissing = useCallback(() => {
+    if (stashSha(stateRef.current.node) !== null) refreshInBackground(['history'])
     selectNode(fallbackNodeRef.current, false)
-  }, [selectNode])
+  }, [refreshInBackground, selectNode])
+
+  useEffect(() => {
+    if (selectedStashSha === null || !repositoryReady || hasOpenOverlay || detailInteracting) return
+    if (baseCapabilities?.stashOps !== true
+      || (currentHistory && log.status === 'ready' && !log.stashesTruncated && selectedStash === undefined)) {
+      selectNode(fallbackNodeRef.current, false)
+    }
+  }, [baseCapabilities, currentHistory, detailInteracting, hasOpenOverlay, log.stashesTruncated, log.status,
+    repositoryReady, selectedStash, selectedStashSha, selectNode])
 
   const onReading = useCallback((anchor: ReadingAnchor | null) => {
     anchorRef.current = anchor
@@ -1797,22 +1812,24 @@ export function VcsView({
     }
   }, [api, currentHistory, historyKey, historyWorktrees, log.commits.length, log.worktreeHeads, log.hasMore, log.loadingMore, refreshInBackground, state.repo, state.ref, t, waitingForSnapshots])
 
-  // A pointer outside the loaded history: keep loading pages until it shows or history ends.
+  // A pointer or restored stash outside the loaded history: keep loading its base.
   useEffect(() => {
-    const sha = pendingRevealRef.current
-    if (sha === null) return
-    if (state.node !== sha || commitIndex.has(sha)) {
+    const node = pendingRevealRef.current
+      ?? (selectedStash !== undefined && log.hasMore && selectedRow < 0 ? state.node : null)
+    if (node === null) return
+    if (state.node !== node || rowIndex.has(node)) {
       pendingRevealRef.current = null
       return
     }
     if (!currentHistory || log.status !== 'ready' || log.loadingMore) return
     if (log.hasMore) {
+      pendingRevealRef.current = node
       void loadMore()
       return
     }
     pendingRevealRef.current = null
     setNotice({ tone: 'info', text: t('overview.beyondHistory') })
-  }, [commitIndex, currentHistory, loadMore, log.hasMore, log.loadingMore, log.status, state.node, t])
+  }, [currentHistory, loadMore, log.hasMore, log.loadingMore, log.status, rowIndex, selectedRow, selectedStash, state.node, setNotice, t])
 
   // Open the menu or act directly once the pointer's repository is current and read.
   useEffect(() => {
@@ -1839,7 +1856,7 @@ export function VcsView({
       const offered = view === undefined || latest === undefined ? undefined
         : tileDirectActions(latest, view, baseCapabilities, actions.inFlight.get(pointer.repo), repoInfo ?? undefined)
           .find(item => item.action.kind === request.action.kind)
-      if (offered === undefined || offered.disabledReason !== undefined || !actions.openAction(request.action, request.restore)) {
+      if (offered === undefined || offered.disabledReason !== undefined || !actions.openAction(offered.action, request.restore)) {
         setNotice({ tone: 'info', text: t(offered?.disabledReason ?? 'tile.actionUnavailable') }, pointer.repo)
         return
       }
@@ -1850,7 +1867,10 @@ export function VcsView({
       return
     }
     const { point, element } = request
-    if (pointer.kind === 'detached' || baseCapabilities.workingCopy === 'commit') {
+    if (pointer.kind === 'stash') {
+      const stash = stashPointerTarget(pointer)
+      if (stash !== null) actions.openStashActions(stash, point, element)
+    } else if (pointer.kind === 'detached' || baseCapabilities.workingCopy === 'commit') {
       const tree = worktrees.find(item => item.path === pointer.occupant?.path)
       if (tree !== undefined) {
         actions.openWorktreeActions(tree, repoInfo?.enclosing === true ? state.repo : null, point, () => { element?.focus({ preventScroll: true }) })
@@ -2053,9 +2073,9 @@ export function VcsView({
   const activeTimeline = missingToolMessage ?? (
     <Timeline
       key={historyScope}
-      commits={timelineCommits(commits)}
+      rows={rows}
       layout={layout}
-      worktrees={timelineWorktrees(worktreeRows)}
+      worktrees={worktreeRows}
       selectedRow={selectedRow}
       onSelectRow={selectRow}
       onMove={moveTimeline}
@@ -2068,11 +2088,13 @@ export function VcsView({
       error={log.error}
       hasMore={log.hasMore}
       truncated={log.truncated}
+      stashesTruncated={baseCapabilities?.stashOps === true && log.stashesTruncated}
       onLoadMore={() => { void loadMore() }}
       canLoadMore={currentHistory && !waitingForSnapshots}
       onRetry={() => { refreshInBackground(['history']) }}
       onRefActions={timelineRefActions}
       onCommitActions={timelineCommitActions}
+      onStashActions={timelineStashActions}
       initialScrollTop={timelineScrollRef.current}
       onScrollOffset={top => {
         timelineScrollRef.current = top
@@ -2272,6 +2294,7 @@ export function VcsView({
               <section className="vcs-content">
                 {missingTool ? (singleColumn ? missingToolMessage : null)
                   : detailNode === null || state.node === WORKTREE || state.node === WORKING_COPY
+                  || (selectedStashSha !== null && baseCapabilities?.stashOps !== true)
                   || (worktreePath(state.node) !== null && selectedTree === null) ? (
                   commitBased && selectedTree !== null && detailStatus.status === 'error'
                     ? <p className="vcs-note" role="alert">{t('changes.error')} {errorMessage(t, detailStatus.error)}</p>
@@ -2287,6 +2310,7 @@ export function VcsView({
                     snapshotError={commitBased && selectedTree !== null && detailStatus.status === 'error' ? detailStatus.error : null}
                     showCurrentHead={showCurrentHead}
                     summary={summary}
+                    stashEntry={selectedStash ?? null}
                     status={detailStatus.data}
                     statusState={detailStatus.status as DetailStatusState}
                     statusError={detailStatus.error}
@@ -2314,17 +2338,19 @@ export function VcsView({
                     isLoaded={sha => commitIndex.has(sha)}
                     onMissing={onMissing}
                     onSettled={onDetailSettled}
-                    revision={selectedTree === null ? manual.history : revision}
+                    revision={selectedStashSha !== null ? stashRevision : selectedTree === null ? manual.history : revision}
                     backgroundDiffRevision={selectedTree === null ? undefined : backgroundDiffRevision}
                     onInteractionChange={setDetailInteracting}
                     cache={diffCacheRef.current}
-                    commitCache={commitCacheRef.current}
+                    detailCache={detailCacheRef.current}
                     initialAnchor={anchorRef.current}
                     onReading={onReading}
                     control={detailControl}
                     capabilities={capabilities}
                     onStage={canStage ? actions.stage : undefined}
                     onStageHistory={canStage ? actions.stageHistory : undefined}
+                    onSaveStash={canStage && capabilities?.stashOps === true ? actions.openStashSave : undefined}
+                    onStashActions={timelineStashActions}
                     stageDisabled={actions.repoBusy || refreshing !== null || detailStatus.status !== 'ready'}
                     onRefActions={capabilities?.branchOps === true || capabilities?.tagOps === true
                       ? actions.onRefActions
@@ -2411,6 +2437,22 @@ export function VcsView({
           onCancel={actions.cancelDialog}
           onConfirm={actions.confirmWorktree}
           t={t}
+        />
+      ) : actions.dialog.domain === 'stash' ? (
+        <StashDialog
+          key={actions.dialog.kind === 'push' ? actions.dialog.repo : `${actions.dialog.kind}:${actions.dialog.stash.sha}`}
+          api={api}
+          request={actions.dialog}
+          error={actions.dialogError}
+          busy={actions.dialogWriting}
+          blocked={actions.repoBusy && !actions.dialogWriting}
+          onCancel={actions.cancelDialog}
+          onConfirm={actions.confirmStash}
+          onBranch={actions.branchFromStash}
+          onClearError={actions.clearDialogError}
+          onMissing={refreshMissingStash}
+          t={t}
+          locale={locale}
         />
       ) : (
         <CommitDialog

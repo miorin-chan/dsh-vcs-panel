@@ -126,6 +126,7 @@ function watchRef(
   ref: string,
   receive: WatchReceive,
   signal: AbortSignal,
+  domains: readonly string[] = REFS,
 ): () => void {
   const parts = ref.split('/')
   if (parts.length > 32 || parts.some(part => part === '.' || part === '..' || part === '' || part.includes('\\'))) return () => {}
@@ -138,7 +139,7 @@ function watchRef(
     for (const [index, name] of parts.entries()) {
       const off = files.directory(path, (event, changed) => {
         if (changed !== null && changed !== name) return
-        receive(REFS)
+        receive(domains)
         if (event === 'rename' && index < parts.length - 1) queueMicrotask(rebuild)
       }, false, true)
       if (off === null) break
@@ -227,6 +228,9 @@ async function gitMetadata(
   await refreshRefs().catch(() => {})
   if (signal.aborted) return await Promise.all(setups)
   setups.push(watchChildTree(files, common, 'refs', onRef, signal, { include: metadataPath }).then(keep))
+  // refs/stash is covered by the refs tree. Dropping an older entry can change
+  // only its reflog; watch that path even before the first stash creates it.
+  keep(watchRef(files, common, 'logs/refs/stash', receive, signal, [HISTORY]))
   setups.push(watchChildTree(files, common, 'reftable', (_event, path) => {
     if (path === null || metadataPath(path)) receive(REFS)
   }, signal, { include: metadataPath }).then(keep))

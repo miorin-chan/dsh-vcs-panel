@@ -11,6 +11,8 @@
 
 import type { BranchOpAction } from './branch.js'
 import type { OverviewRepository } from './overview/model.js'
+import type { StashBlockInfo, StashCheck, StashDetailAnswer, StashEntry, StashMode, StashPaths, StashRequest, StashResult } from '../lib/stash-types.js'
+import { stashFailureFields } from './stash.js'
 
 /** The parts of a thrown failure the panel reads. */
 export interface ApiFailure {
@@ -18,6 +20,8 @@ export interface ApiFailure {
   readonly code?: string
   readonly message?: string
   readonly status?: number
+  readonly stashBlock?: StashBlockInfo
+  readonly stashPaths?: StashPaths
 }
 
 /**
@@ -38,17 +42,20 @@ export class ApiError extends Error {
   readonly code: string
   /** HTTP status. */
   readonly status: number
+  readonly stashBlock?: StashBlockInfo
+  readonly stashPaths?: StashPaths
 
   /**
    * @param code - Host error code.
    * @param message - message safe to render.
    * @param status - HTTP status.
    */
-  constructor(code: string, message: string, status: number) {
+  constructor(code: string, message: string, status: number, error?: Record<string, unknown>) {
     super(message)
     this.name = 'ApiError'
     this.code = code
     this.status = status
+    Object.assign(this, stashFailureFields(error))
   }
 }
 
@@ -109,6 +116,8 @@ export interface RepositoryCapabilities {
   readonly tagOps: boolean
   /** Whether the commit menu's writes are available. */
   readonly commitOps: boolean
+  /** Whether Git stash rows, detail, and writes are available. */
+  readonly stashOps: boolean
   readonly worktreeCreate?: boolean
   readonly worktreeRemove?: boolean
   readonly worktreeForget?: boolean
@@ -423,6 +432,8 @@ export interface LogPage {
   commits: CommitNode[]
   truncated: boolean
   nextSkip: number | null
+  stashes?: StashEntry[]
+  stashesTruncated?: boolean
 }
 
 /** One page of history with the checkouts it was scoped to. */
@@ -638,6 +649,9 @@ export interface Api {
   log(repo: string, page?: LogQuery, signal?: AbortSignal): Promise<LogAnswer>
   /** One commit's metadata and changed files. */
   commit(repo: string, sha: string, signal?: AbortSignal): Promise<CommitAnswer>
+  stash(repo: string, sha: string, signal?: AbortSignal): Promise<StashDetailAnswer>
+  stashCheck(repo: string, sha: string, mode: StashMode, index: boolean, signal?: AbortSignal): Promise<StashCheck>
+  stashOp<T extends StashRequest>(repo: string, request: T): Promise<StashResult<T>>
   /** One completed turn's recorded repository head and change totals. */
   turn(turn: number, seq?: number | null, signal?: AbortSignal): Promise<unknown>
   /** Bring the checked-out branch level with its upstream. */
@@ -733,7 +747,7 @@ export function createApi(sessionId: string, options: ApiOptions = {}): Api {
       const error = isRecord(body) ? body.error : undefined
       const code = isRecord(error) && typeof error.code === 'string' ? error.code : 'internal'
       const message = isRecord(error) && typeof error.message === 'string' ? error.message : `Request failed (${response.status}).`
-      throw new ApiError(code, message, response.status)
+      throw new ApiError(code, message, response.status, isRecord(error) ? error : undefined)
     }
     if (bodyFailed || body === null || typeof body !== 'object') {
       throw new ApiError('internal', 'The version control response could not be read.', response.status)
@@ -902,7 +916,7 @@ export function createApi(sessionId: string, options: ApiOptions = {}): Api {
         scope: target.scope,
         path: target.path,
         oldPath: target.oldPath,
-        rev: target.scope === 'commit' ? target.rev : undefined,
+        rev: target.scope === 'commit' || target.scope === 'stash' || target.scope === 'stash-untracked' ? target.rev : undefined,
       }, signal)
     },
 
@@ -912,6 +926,18 @@ export function createApi(sessionId: string, options: ApiOptions = {}): Api {
 
     commit(repo, sha, signal) {
       return get('/api/vcs.commit', { ...browseTarget(repo), sha }, signal)
+    },
+
+    stash(repo, sha, signal) {
+      return get('/api/vcs.stash', { repo, sha }, signal)
+    },
+
+    stashCheck(repo, sha, mode, index, signal) {
+      return get('/api/vcs.stash-check', { repo, sha, mode, index: index ? 1 : 0 }, signal)
+    },
+
+    stashOp(repo, request) {
+      return post('/api/vcs.stash', { repo, ...request })
     },
 
     turn(turn, seq, signal) {

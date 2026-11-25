@@ -8,6 +8,7 @@ import { TAG_BUSY_KEYS } from '../tag.js'
 import type { RepoAction, RepoWrite } from '../useRepoActions.js'
 import { worktreeActionReason } from '../worktrees.js'
 import type { PointerView, RepositoryView } from './model.js'
+import { stashPointerTarget } from './model.js'
 
 export interface TileDirectAction {
   action: Exclude<RepoAction, { domain: 'tag' }>
@@ -31,6 +32,7 @@ function writeReason(write: RepoWrite): string {
     case 'commit': return COMMIT_BUSY_KEYS[write.action] ?? 'commit.working'
     case 'stage': return 'stage.updatingIndex'
     case 'worktree': return write.action === 'remove' ? 'worktree.removing' : 'worktree.working'
+    case 'stash': return 'stash.working'
   }
 }
 
@@ -43,7 +45,7 @@ export function tileDirectActions(
   catalog?: CheckoutCatalog,
 ): TileDirectAction[] {
   if (pointer.repo !== repository.path || capabilities === null || capabilities === undefined
-    || pointer.state === 'unsaved' || pointer.state === 'op' || pointer.kind === 'stash') return []
+    || pointer.state === 'unsaved' || pointer.state === 'op') return []
 
   const candidates = applicableActions(pointer, repository, capabilities, catalog)
   return busy === undefined ? candidates : candidates.map(item => ({ ...item, disabledReason: writeReason(busy) }))
@@ -63,6 +65,13 @@ function applicableActions(
     : repository.pointers.find(item => item.kind === 'branch' && item.name === currentBranch)
   const receiver = primaryIsEntry && primary.operation === null && trunk?.isBase === true && pointer.base !== null
     && (trunk.name === pointer.base || trunk.upstream === pointer.base) ? trunk.name : undefined
+
+  if (pointer.kind === 'stash') {
+    const stash = stashPointerTarget(pointer)
+    if (!capabilities.stashOps || stash === null) return []
+    const kinds = receiver === undefined ? ['drop'] as const : ['apply', 'drop'] as const
+    return kinds.map(kind => ({ action: { domain: 'stash', kind, stash } }))
+  }
 
   const removeWorktree = (): TileDirectAction[] => {
     // A commit-based working copy ends either by forgetting or by removing it;

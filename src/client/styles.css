@@ -721,6 +721,71 @@ select.vcs-dialog-input {
   margin-top: 4px;
 }
 
+.vcs-stash-dialog .vcs-dialog-commit > .vcs-ref,
+.vcs-ref-ops-title > .vcs-ref[data-kind='stash'] {
+  flex: none;
+}
+
+.vcs-stash-check {
+  margin: 0 0 12px;
+  padding: 6px 8px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm, 6px);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.vcs-stash-check[data-state='checking'] {
+  animation: vcs-appear 160ms ease-out var(--vcs-skeleton-delay) both;
+}
+
+.vcs-stash-check[data-state='blocked'] {
+  border-color: var(--vcs-state-stash);
+  background: color-mix(in srgb, var(--vcs-state-stash) 8%, transparent);
+  color: var(--dsw-alias-label-primary);
+}
+
+.vcs-stash-check-message {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.vcs-stash-check-message > .vcs-icon {
+  align-self: center;
+  flex: none;
+}
+
+.vcs-stash-check-diamond {
+  position: relative;
+  top: -1px;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 1px;
+  transform: rotate(45deg);
+  background: var(--vcs-state-stash);
+}
+
+.vcs-stash-paths {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  list-style: none;
+  font: var(--dsw-font-markdown-code, 12px/19px var(--dsw-font-markdown-code-font-family, ui-monospace, monospace));
+}
+
+.vcs-stash-paths > li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vcs-stash-more-paths {
+  color: var(--dsw-alias-label-secondary);
+  font-family: inherit;
+}
+
 /* Repository management --------------------------------------------------- */
 
 .vcs-dialog.vcs-repository-dialog {
@@ -1269,6 +1334,16 @@ select.vcs-repository-kind {
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
+.vcs-ref[data-kind='stash'] {
+  color: var(--vcs-state-stash);
+  border-color: color-mix(in srgb, var(--vcs-state-stash) 55%, transparent);
+  background: color-mix(in srgb, var(--vcs-state-stash) 9%, transparent);
+}
+
+.vcs-ref-button[data-kind='stash']:hover {
+  background: color-mix(in srgb, var(--vcs-state-stash) 18%, transparent);
+}
+
 .vcs-ref-head.vcs-ref-button {
   background: var(--dsw-alias-brand-primary);
 }
@@ -1470,6 +1545,21 @@ select.vcs-repository-kind {
   font: var(--dsw-font-markdown-code, 12px/19px var(--dsw-font-markdown-code-font-family, ui-monospace, monospace));
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.vcs-stash-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+  margin: 4px 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.vcs-stash-meta > :not(:first-child)::before {
+  content: '·';
+  margin-inline-end: 8px;
 }
 
 .vcs-sha-button {

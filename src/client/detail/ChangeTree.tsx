@@ -221,7 +221,7 @@ function ancestorKeys(key: string): string[] {
   const candidates = [key]
   const bar = key.indexOf('|')
   if (bar < 0) return candidates
-  const group = key.slice(0, bar + 1)
+  const group = key.startsWith('stash|') || key.startsWith('stash-untracked|') ? 'stash-dir|' : key.slice(0, bar + 1)
   let path = key.slice(bar + 1)
   while (path.includes('/')) {
     path = path.slice(0, path.lastIndexOf('/'))
@@ -436,8 +436,8 @@ const FileBody = memo(function FileBody({
       wrap={wrap}
       retry={retry}
       onStageLines={stageLines(source)}
-      // The scope is `commit`/`untracked` too; FileDiff only reads it as a
-      // staging side, and those scopes never enable line staging.
+      // Read-only scopes reach here too; FileDiff only reads the scope as a
+      // staging side when line staging is enabled.
       stageScope={source.scope as DiffSide}
       stageDisabled={busy}
       showStageState={group === 'merged'}

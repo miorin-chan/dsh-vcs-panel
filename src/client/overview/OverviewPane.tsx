@@ -86,7 +86,7 @@ export function pointerFacts(pointer: PointerView, view: RepositoryView, cwd: st
     if (pointer.levelRemotes.length > 0) facts.push(`≡ ${pointer.levelRemotes.join(', ')}`)
   }
   if (pointer.kind === 'detached') facts.push(pointer.unique > 0 ? t('overview.detached') : t('overview.detachedClean'))
-  if (pointer.kind === 'stash') facts.push(pointer.subject.replace(/^(?:WIP on|On) [^:]+: /u, ''))
+  if (pointer.kind === 'stash') facts.push(pointer.subject || t('stash.untitled'))
   if (pointer.base !== null && !pointer.baseIsUpstream && !pointer.isBase && pointer.kind !== 'stash') {
     facts.push(`${t('overview.versus', { base: pointer.base })} ${arrows(pointer.ahead ?? 0, pointer.behind ?? 0)}`.trim())
   }

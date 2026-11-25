@@ -386,7 +386,7 @@ async function preserveIndexTimestamp(file: FileHandle, sourceStat: BigIntStats)
  * @param signal - cancellation.
  * @returns the stat of the real index, or null when it does not exist yet.
  */
-async function snapshotIndex(
+export async function snapshotIndex(
   indexPath: string,
   scratch: string,
   signal: AbortSignal,

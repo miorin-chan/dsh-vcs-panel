@@ -521,6 +521,7 @@ test('repositories lists the enclosing repository and one-level children only', 
   assert.equal(body.repositories[0].capabilities.branchOps, true)
   assert.equal(body.repositories[0].capabilities.tagOps, true)
   assert.equal(body.repositories[0].capabilities.commitOps, true)
+  assert.equal(body.repositories[0].capabilities.stashOps, true)
   assert.deepEqual(body.repositories[0].capabilities.ranges.map(range => range.value), ['all', 'HEAD'])
   assert.equal(body.repositories[0].capabilities.defaultRange, 'all')
 })
@@ -666,6 +667,9 @@ test('watch validates targets and streams selected Git worktree and shared metad
 
   git(root, ['worktree', 'add', '-qb', 'added-worktree', join(scratch, 'added-worktree')])
   await stream.domain('repositories')
+  // A stream must retain its browser Request (Node's abort relay is weak).
+  // Exercise the GC case deterministically with node --expose-gc --test.
+  globalThis.gc?.()
   stream.abort()
   let frame
   do { frame = await stream.next() } while (frame?.event === 'invalidate')
@@ -2368,25 +2372,26 @@ test('log pages HEAD and all history with parsed refs and times', async () => {
 })
 
 test('log answers an unborn branch with an empty page', async () => {
+  const empty = { commits: [], truncated: false, nextSkip: null, stashes: [], stashesTruncated: false }
   const { status, body } = await call(
     handlers.log,
     route('/api/vcs.log', { sessionId: 's-unborn', repo: unbornPath }),
   )
   assert.equal(status, 200)
-  assert.deepEqual(body, { commits: [], truncated: false, nextSkip: null })
+  assert.deepEqual(body, empty)
 
   const head = await call(
     handlers.log,
     route('/api/vcs.log', { sessionId: 's-unborn', repo: unbornPath, ref: 'HEAD' }),
   )
   assert.equal(head.status, 200)
-  assert.deepEqual(head.body, { commits: [], truncated: false, nextSkip: null })
+  assert.deepEqual(head.body, empty)
 
   const all = await call(
     handlers.log,
     route('/api/vcs.log', { sessionId: 's-unborn', repo: unbornPath, ref: 'all' }),
   )
-  assert.deepEqual(all.body, { commits: [], truncated: false, nextSkip: null })
+  assert.deepEqual(all.body, empty)
 })
 
 test('log rejects unknown refs and malformed paging values', async () => {
@@ -3126,6 +3131,8 @@ test('apply registers every GET and POST route inside the fence and honors enabl
     '/api/vcs.diff',
     '/api/vcs.log',
     '/api/vcs.commit',
+    '/api/vcs.stash',
+    '/api/vcs.stash-check',
     '/api/vcs.turn',
     '/api/vcs.sync',
     '/api/vcs.switch',
@@ -3143,7 +3150,9 @@ test('apply registers every GET and POST route inside the fence and honors enabl
   )
   const writePaths = new Set(['/api/vcs.sync', '/api/vcs.switch', '/api/vcs.branch', '/api/vcs.tag', '/api/vcs.commit-op', '/api/vcs.worktree', '/api/vcs.stage', '/api/vcs.stage-history'])
   for (const registered of routes) {
-    if (registered.path !== REPOSITORY_CONFIG_ROUTE && registered.path !== REPOSITORY_PREVIEW_ROUTE) {
+    if (registered.path === '/api/vcs.stash') {
+      assert.deepEqual(registered.methods, ['GET', 'POST'])
+    } else if (registered.path !== REPOSITORY_CONFIG_ROUTE && registered.path !== REPOSITORY_PREVIEW_ROUTE) {
       assert.deepEqual(registered.methods, writePaths.has(registered.path) ? ['POST'] : ['GET'])
     }
     assert.equal(registered.requestBody, 'buffered')
@@ -5374,4 +5383,411 @@ test('Jujutsu overview does not reconcile divergent operation heads', { skip: !H
   assert.equal(lines[1].error.code, 'internal')
   assert.equal(lines[1].path, source)
   assert.deepEqual(await readdir(headsPath), before)
+})
+
+/** A checkout whose stash has different W and I trees, plus an optional U tree. */
+function stashFixture(t, subprocess = fakeSubprocess) {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), 'vcs-stash-')))
+  t.after(() => rmSync(repo, { recursive: true, force: true }))
+  initRepo(repo)
+  const put = (path, text) => writeFileSync(join(repo, path), text)
+  put('tracked.txt', 'base\n')
+  put('other.txt', 'other\n')
+  put('.gitignore', '*.ignored\n')
+  git(repo, ['add', '-A'])
+  git(repo, ['commit', '-qm', 'initial'])
+  git(repo, ['commit', '-qm', 'stash base', '--allow-empty'])
+  const base = git(repo, ['rev-parse', 'HEAD'])
+  const sessionId = 'stash-fixture'
+  const target = { sessionId, repo }
+  const routes = createHandlers(createHost({ sessions: { get: id => id === sessionId ? { header: { cwd: repo } } : undefined }, subprocess }))
+  const write = async (body, headers = {}) => {
+    const result = await routes.stashOp(new Request('http://127.0.0.1/api/vcs.stash', {
+      method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ ...target, ...body }),
+    }))
+    return { status: result.status, body: await result.json() }
+  }
+  const stage = () => routes.stage(new Request('http://127.0.0.1/api/vcs.stage', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...target, scope: 'unstaged', path: 'other.txt' }),
+  }))
+  const read = (key, path, params) => call(routes[key], route('/api/vcs.' + path, { ...target, ...params }))
+  const check = (sha, mode = 'apply', index = 0) => read('stashCheck', 'stash-check', { sha, mode, index })
+  const prepare = () => {
+    put('tracked.txt', 'staged\n')
+    git(repo, ['add', 'tracked.txt'])
+    put('tracked.txt', 'staged\nplus working tree\n')
+    mkdirSync(join(repo, 'draft'))
+    put('draft/note.txt', 'untracked\n')
+  }
+  const push = async (opts = { untracked: true, message: 'Keep: parser' }) => {
+    const { status, body } = await write({ action: 'push', ...opts })
+    assert.equal(status, 200, JSON.stringify(body))
+    assert.equal(body.selector, 'stash@{0}')
+    assert.match(body.sha, /^[a-f0-9]{40}$/u)
+    return body.sha
+  }
+  return { repo, base, put, prepare, push, write, read, check, stage }
+}
+
+/** Inspect the state that a blocked stash must never leave partially changed. */
+async function stashState(repo) {
+  async function snapshot(directory) {
+    const entries = await readdir(join(repo, directory), { withFileTypes: true })
+    return Promise.all(entries.filter(entry => entry.name !== '.git').sort((a, b) => a.name.localeCompare(b.name)).map(async entry => {
+      const path = join(directory, entry.name)
+      return [path, entry.isDirectory() ? await snapshot(path) : entry.isSymbolicLink()
+        ? ['symlink', await realpath(join(repo, path))] : await readFile(join(repo, path))]
+    }))
+  }
+  return {
+    files: await snapshot('.'),
+    staged: gitRaw(repo, ['diff', '--cached', '--binary']),
+    untracked: gitRaw(repo, ['ls-files', '--others', '-z']),
+    stashes: gitRaw(repo, ['stash', 'list', '--format=%gd %H %gs']),
+    refs: gitRaw(repo, ['show-ref']),
+    head: git(repo, ['symbolic-ref', 'HEAD']),
+  }
+}
+
+test('stash push serves a first-page entry and reads tracked, staged, and untracked changes', async t => {
+  const f = stashFixture(t)
+  f.prepare()
+  f.put('skip.ignored', 'leave me\n')
+  // Record a panel staging write, not just an index change made in the terminal.
+  f.put('other.txt', 'stage this too\n')
+  const staged = await f.stage()
+  assert.equal(staged.status, 200)
+  assert.ok((await f.read('status', 'status')).body.stageHistory.undo)
+  const sha = await f.push()
+  const status = await f.read('status', 'status')
+  assert.equal(status.body.total, 0)
+  assert.deepEqual(status.body.stageHistory, { undo: null, redo: null })
+  assert.equal(await readFile(join(f.repo, 'skip.ignored'), 'utf8'), 'leave me\n')
+
+  const page = await f.read('log', 'log', { ref: 'all', limit: 1 })
+  const [base, index, untracked] = git(f.repo, ['show', '-s', '--format=%P', sha]).split(' ')
+  const entry = {
+    sha, selector: 'stash@{0}', base, index, untracked, time: Number(git(f.repo, ['show', '-s', '--format=%ct', sha])),
+    branch: 'main', message: 'Keep: parser',
+  }
+  assert.equal(base, f.base)
+  assert.deepEqual(page.body.commits.map(commit => commit.sha), [f.base])
+  assert.deepEqual(page.body.stashes, [entry])
+  assert.equal(page.body.stashesTruncated, false)
+  const next = await f.read('log', 'log', { ref: 'all', skip: 1 })
+  assert.equal(next.status, 200)
+  assert.equal(next.body.commits.length, 1)
+  assert.ok(!next.body.commits.some(commit => [sha, index, untracked].includes(commit.sha)))
+  assert.ok(!Object.hasOwn(next.body, 'stashes') && !Object.hasOwn(next.body, 'stashesTruncated'))
+  assert.deepEqual((await f.read('log', 'log', { ref: 'HEAD' })).body.stashes, [entry])
+
+  const detail = await f.read('stash', 'stash', { sha })
+  assert.equal(detail.status, 200)
+  assert.equal(detail.body.truncated, false)
+  const { files, staged: stagedCount, ...header } = detail.body.stash
+  assert.deepEqual(header, entry)
+  assert.equal(stagedCount, 2)
+  assert.deepEqual(files.map(file => [file.path, file.status, file.untracked === true, file.added, file.deleted]), [
+    ['draft/note.txt', 'U', true, 1, 0], ['other.txt', 'M', false, 1, 1], ['tracked.txt', 'M', false, 2, 1],
+  ])
+  const trackedDiff = await f.read('diff', 'diff', { scope: 'stash', rev: sha, path: 'tracked.txt' })
+  assert.equal(trackedDiff.status, 200)
+  assert.deepEqual(trackedDiff.body.hunks[0].lines, ['-base', '+staged', '+plus working tree'])
+  assert.equal(trackedDiff.body.lineStaging, undefined)
+  const untrackedDiff = await f.read('diff', 'diff', { scope: 'stash-untracked', rev: sha, path: 'draft/note.txt' })
+  assert.equal(untrackedDiff.status, 200)
+  assert.equal(untrackedDiff.body.before, false)
+  assert.deepEqual(untrackedDiff.body.hunks[0].lines, ['+untracked'])
+  assert.equal((await f.read('diff', 'diff', { scope: 'stash', rev: sha, path: 'draft/note.txt' })).status, 404)
+})
+
+test('stash apply can restore the index and only drops on successful request', async t => {
+  const f = stashFixture(t)
+  f.prepare()
+  const sha = await f.push()
+  const indexPath = join(f.repo, '.git', 'index')
+  const index = await readFile(indexPath)
+  const statBefore = await stat(indexPath, { bigint: true })
+  const before = await stashState(f.repo)
+  const lock = indexPath + '.lock'
+  writeFileSync(lock, 'held by another process')
+  assert.deepEqual((await f.check(sha, 'apply', 1)).body, { head: f.base, baseIsHead: true, block: null })
+  assert.deepEqual(await stashState(f.repo), before)
+  assert.deepEqual(await readFile(indexPath), index)
+  assert.equal((await stat(indexPath, { bigint: true })).mtimeNs, statBefore.mtimeNs)
+  assert.equal(await readFile(lock, 'utf8'), 'held by another process')
+  rmSync(lock)
+  const applied = await f.write({ action: 'apply', sha, index: true, drop: false })
+  assert.deepEqual(applied, { status: 200, body: { sha, selector: 'stash@{0}', dropped: false } })
+  assert.equal(git(f.repo, ['show', ':tracked.txt']), 'staged')
+  assert.equal(await readFile(join(f.repo, 'tracked.txt'), 'utf8'), 'staged\nplus working tree\n')
+  assert.equal(await readFile(join(f.repo, 'draft/note.txt'), 'utf8'), 'untracked\n')
+  assert.equal(git(f.repo, ['rev-parse', 'stash']), sha)
+
+  git(f.repo, ['reset', '-q', '--hard', 'HEAD'])
+  rmSync(join(f.repo, 'draft'), { recursive: true })
+  const popped = await f.write({ action: 'apply', sha, index: false, drop: true })
+  assert.deepEqual(popped, { status: 200, body: { sha, selector: 'stash@{0}', dropped: true } })
+  assert.equal(git(f.repo, ['diff', '--cached']), '')
+  assert.equal(await readFile(join(f.repo, 'draft/note.txt'), 'utf8'), 'untracked\n')
+  assert.equal(await readFile(join(f.repo, 'tracked.txt'), 'utf8'), 'staged\nplus working tree\n')
+  assert.equal(git(f.repo, ['stash', 'list']), '')
+})
+
+test('stash branch recovers on the original base and selectors can move without changing identity', async t => {
+  const f = stashFixture(t)
+  f.prepare()
+  const older = await f.push()
+  f.put('tracked.txt', 'later experiments\n')
+  f.put('loose.txt', 'leave outside the stash\n')
+  const newer = await f.push({ untracked: false })
+  assert.equal((await f.read('stash', 'stash', { sha: newer })).body.stash.untracked, null)
+  assert.equal(await readFile(join(f.repo, 'loose.txt'), 'utf8'), 'leave outside the stash\n')
+  assert.equal((await f.read('stash', 'stash', { sha: older })).body.stash.selector, 'stash@{1}')
+  f.put('tracked.txt', 'different HEAD\n')
+  git(f.repo, ['commit', '-qam', 'conflicting head'])
+  assert.deepEqual((await f.check(older, 'apply')).body.block, { reason: 'conflict', paths: ['tracked.txt'], pathsTruncated: false })
+  assert.deepEqual((await f.check(older, 'branch')).body.block, null)
+  const branched = await f.write({ action: 'branch', sha: older, name: 'recovered/experiment' })
+  assert.deepEqual(branched, { status: 200, body: { sha: older, selector: 'stash@{1}', branch: 'recovered/experiment' } })
+  assert.equal(git(f.repo, ['branch', '--show-current']), 'recovered/experiment')
+  assert.equal(git(f.repo, ['rev-parse', 'HEAD']), f.base)
+  assert.equal(git(f.repo, ['show', ':tracked.txt']), 'staged')
+  assert.equal(await readFile(join(f.repo, 'draft/note.txt'), 'utf8'), 'untracked\n')
+  assert.equal(git(f.repo, ['stash', 'list', '--format=%H']), newer)
+  f.put('other.txt', 'prepare undo history\n')
+  const staged = await f.stage()
+  assert.equal(staged.status, 200)
+  const before = await stashState(f.repo)
+  const history = (await f.read('status', 'status')).body.stageHistory
+  assert.ok(history.undo)
+  assert.deepEqual(await f.write({ action: 'drop', sha: newer }), { status: 200, body: { sha: newer, selector: 'stash@{0}' } })
+  assert.deepEqual(await stashState(f.repo), { ...before, stashes: '', refs: before.refs.replace(/^.* refs\/stash\n/mu, '') })
+  assert.deepEqual((await f.read('status', 'status')).body.stageHistory, history)
+})
+
+test('stash check reasons block the corresponding write without changing files, index, or refs', async t => {
+  const cases = [
+    ['operation', 'apply', false, ['tracked.txt'], f => {
+      git(f.repo, ['switch', '-qc', 'side'])
+      f.put('tracked.txt', 'side\n')
+      git(f.repo, ['commit', '-qam', 'side'])
+      git(f.repo, ['switch', '-q', 'main'])
+      f.put('tracked.txt', 'main\n')
+      git(f.repo, ['commit', '-qam', 'main'])
+      assert.throws(() => execFileSync('git', ['merge', 'side'], { cwd: f.repo, env: GIT_ENV, stdio: 'pipe' }))
+    }],
+    ['dirty', 'branch', false, ['tracked.txt'], f => {
+      f.put('tracked.txt', 'stage me\n')
+      git(f.repo, ['add', 'tracked.txt'])
+      f.put('tracked.txt', 'base\n')  // The staged and unstaged changes cancel in HEAD → worktree.
+    }],
+    ['untracked-exists', 'apply', false, ['draft/note.txt'], f => {
+      f.put('draft', 'a file where a directory would be\n')
+      f.put('tracked.txt', 'also an unstaged edit\n')
+    }],
+    ['overwrite', 'apply', false, ['tracked.txt'], f => f.put('tracked.txt', 'local unstaged edit\n')],
+    ['index-conflict', 'apply', true, ['tracked.txt'], f => {
+      f.put('tracked.txt', 'other HEAD\n')
+      git(f.repo, ['commit', '-qam', 'conflicting head'])
+    }],
+    ['conflict', 'apply', false, ['tracked.txt'], f => {
+      f.put('tracked.txt', 'other HEAD\n')
+      git(f.repo, ['commit', '-qam', 'conflicting head'])
+    }],
+  ] as const
+  for (const [reason, mode, index, paths, prepare] of cases) await t.test(reason, async t => {
+    const f = stashFixture(t)
+    f.prepare()
+    const sha = await f.push()
+    // A previously green preview cannot authorize the write after changes.
+    assert.equal((await f.check(sha, mode, Number(index))).body.block, null)
+    prepare(f)
+    const before = await stashState(f.repo)
+    const preview = await f.check(sha, mode, Number(index))
+    assert.equal(preview.status, 200)
+    const block = { reason, paths, pathsTruncated: false }
+    assert.deepEqual(preview.body.block, block)
+    const write = await f.write(mode === 'apply' ? { action: mode, sha, index, drop: true }
+      : { action: mode, sha, name: 'not-created' })
+    assert.equal(write.status, 409)
+    const { message, ...failure } = write.body.error
+    assert.deepEqual(failure, { code: 'stash-blocked', ...block })
+    assert.ok(message.length > 0 && !message.includes(f.repo))
+    if (reason === 'operation') {
+      const save = await f.write({ action: 'push', untracked: true })
+      assert.deepEqual({ ...save.body.error, message: undefined }, { code: 'stash-blocked', ...block, message: undefined })
+    }
+    assert.deepEqual(await stashState(f.repo), before)
+  })
+})
+
+test('stash guards untracked checkout obstructions outside U, including ignored data', async t => {
+  const f = stashFixture(t)
+  f.put('file.ignored', 'saved tracked file\n')
+  git(f.repo, ['add', '-f', 'file.ignored'])
+  mkdirSync(join(f.repo, 'draft'))
+  f.put('draft/note.txt', 'saved untracked file\n')
+  const sha = await f.push()
+  f.put('file.ignored', 'local ignored file\n')
+  const before = await stashState(f.repo)
+  for (const mode of ['apply', 'branch']) {
+    const block = { reason: 'untracked-exists', paths: ['file.ignored'], pathsTruncated: false }
+    assert.deepEqual((await f.check(sha, mode)).body.block, block)
+    const result = await f.write(mode === 'apply' ? { action: mode, sha, index: false, drop: false }
+      : { action: mode, sha, name: 'not-created' })
+    assert.equal(result.status, 409)
+    const { message, ...failure } = result.body.error
+    assert.deepEqual(failure, { code: 'stash-blocked', ...block })
+    assert.deepEqual(await stashState(f.repo), before)
+  }
+})
+
+test('stash validates identities, names, the write fence, and save inputs without changing the repository', async t => {
+  const f = stashFixture(t)
+  f.prepare()
+  const sha = await f.push()
+  const missing = 'f'.repeat(sha.length)
+  const bad = 'stash@{0}'
+  const before = await stashState(f.repo)
+  for (const [id, status, code] of [[missing, 404, 'stash-missing'], [bad, 400, 'bad-request'], [sha.slice(0, 12), 400, 'bad-request']] as const) {
+    for (const result of [
+      await f.read('stash', 'stash', { sha: id }),
+      await f.check(id),
+      await f.read('diff', 'diff', { scope: 'stash-untracked', rev: id, path: 'draft/note.txt' }),
+      await f.write({ action: 'drop', sha: id }),
+    ]) {
+      assert.equal(result.status, status)
+      assert.equal(result.body.error.code, code)
+      assert.equal(result.body.error.paths, undefined)
+    }
+  }
+  for (const [input, code] of [
+    [{ action: 'branch', sha, name: 'bad..name' }, 'branch-invalid'],
+    [{ action: 'branch', sha, name: '@{-1}' }, 'branch-invalid'],
+    [{ action: 'branch', sha, name: 'main' }, 'branch-exists'],
+    [{ action: 'push', untracked: true, message: 'first\nsecond' }, 'bad-request'],
+    [{ action: 'push', untracked: true, message: 'first\0second' }, 'bad-request'],
+    [{ action: 'push', untracked: true, message: 'x'.repeat(1001) }, 'bad-request'],
+    [{ action: 'push', untracked: 'true' }, 'bad-request'],
+    [{ action: 'push', untracked: true }, 'stash-empty'],
+    [{ action: 'apply', sha, index: 0, drop: false }, 'bad-request'],
+    [{ action: 'drop', sha, worktree: f.repo }, 'forbidden'],
+  ] as const) {
+    const result = await f.write(input)
+    assert.equal(result.body.error.code, code)
+    assert.equal(result.body.error.paths, undefined)
+    assert.deepEqual(await stashState(f.repo), before)
+  }
+  assert.equal((await f.write({ action: 'drop', sha }, { 'sec-fetch-site': 'cross-site' })).body.error.code, 'forbidden')
+  assert.equal((await f.check(sha, 'branch', 2)).body.error.code, 'bad-request')
+  assert.deepEqual(await stashState(f.repo), before)
+})
+
+test('a non-top stash drop refreshes history even when refs/stash does not move', async t => {
+  const { handler, params, root } = watchFixture(t)
+  const path = join(root, 'folder', 'file.txt')
+  for (const content of ['older', 'newer']) {
+    writeFileSync(path, content)
+    git(root, ['stash', 'push', '-q', '-m', content])
+  }
+  const top = git(root, ['rev-parse', 'refs/stash'])
+  const stream = await watchStream(t, handler, params)
+  git(root, ['stash', 'drop', '-q', 'stash@{1}'])
+  assert.equal(git(root, ['rev-parse', 'refs/stash']), top)
+  assert.ok((await stream.domain('history')).domains.includes('history'))
+})
+
+test('Jujutsu has no stash routes or history entries', { skip: !HAS_JJ }, async () => {
+  const target = { sessionId: 's-jj', repo: realpathSync(fixture.jj) }
+  assert.equal((await call(handlers.status, route('/api/vcs.status', { ...target, readOnly: 1 }))).body.capabilities.stashOps, false)
+  assert.ok(!Object.hasOwn((await call(handlers.log, route('/api/vcs.log', target))).body, 'stashes'))
+  const sha = 'a'.repeat(40)
+  for (const [handler, path, args] of [
+    [handlers.stash, 'stash', { sha }],
+    [handlers.stashCheck, 'stash-check', { sha, mode: 'apply', index: 1 }],
+    [handlers.diff, 'diff', { scope: 'stash', rev: sha, path: 'file.txt' }],
+  ]) {
+    assert.equal((await call(handler, route('/api/vcs.' + path, { ...target, ...args }))).body.error.code, 'bad-request')
+  }
+})
+
+test('stash checks overwrite at the destination of a rename made after the stash', async t => {
+  const f = stashFixture(t)
+  f.put('long.txt', 'first\nsecond\nthird\nfourth\nfifth\n')
+  git(f.repo, ['add', 'long.txt'])
+  git(f.repo, ['commit', '-qm', 'add longer file'])
+  f.put('long.txt', 'first\nsecond\nstashed change\nfourth\nfifth\n')
+  f.put('draft.txt', 'untracked stash content\n')
+  const sha = await f.push()
+  git(f.repo, ['mv', 'long.txt', 'moved.txt'])
+  git(f.repo, ['commit', '-qm', 'move file'])
+  f.put('moved.txt', 'first\nsecond\nlocal unstaged change\nfourth\nfifth\n')
+  const before = await stashState(f.repo)
+  const block = { reason: 'overwrite', paths: ['moved.txt'], pathsTruncated: false }
+  assert.deepEqual((await f.check(sha)).body.block, block)
+  const result = await f.write({ action: 'apply', sha, index: false, drop: true })
+  const { message, ...failure } = result.body.error
+  assert.deepEqual(failure, { code: 'stash-blocked', ...block })
+  assert.deepEqual(await stashState(f.repo), before, 'the unrelated untracked stash file was not restored')
+})
+
+test('stash preflight caps the reported paths without allowing a partial apply', async t => {
+  const f = stashFixture(t)
+  const paths = Array.from({ length: 51 }, (_, i) => 'note-' + String(i).padStart(2, '0'))
+  for (const path of paths) f.put(path, 'in the stash\n')
+  const sha = await f.push()
+  for (const path of paths) f.put(path, 'already present locally\n')
+  const before = await stashState(f.repo)
+  const expected = { reason: 'untracked-exists', paths: paths.slice(0, 50), pathsTruncated: true }
+  assert.deepEqual((await f.check(sha)).body.block, expected)
+  const result = await f.write({ action: 'apply', sha, index: false, drop: true })
+  assert.equal(result.status, 409)
+  const { message, ...failure } = result.body.error
+  assert.deepEqual(failure, { code: 'stash-blocked', ...expected })
+  assert.deepEqual(await stashState(f.repo), before)
+})
+
+test('stash apply reports races honestly and keeps the stash when conflict or drop fails', async t => {
+  await t.test('an external write between check and apply leaves a conflict', async t => {
+    const f = stashFixture(t, {
+      ...fakeSubprocess,
+      spawn(spec) {
+        if (spec.argv.includes('stash') && spec.argv.includes('apply')) {
+          f.put('tracked.txt', 'externally advanced HEAD\n')
+          git(f.repo, ['commit', '-qam', 'racing work'])
+        }
+        return fakeSubprocess.spawn(spec)
+      },
+    })
+    f.prepare()
+    const sha = await f.push()
+    const response = await f.write({ action: 'apply', sha, index: false, drop: true })
+    assert.equal(response.status, 409)
+    const { message, ...failure } = response.body.error
+    assert.deepEqual(failure, { code: 'stash-conflict', paths: ['tracked.txt'], pathsTruncated: false })
+    assert.ok(git(f.repo, ['ls-files', '-u']).includes('tracked.txt'))
+    assert.match(await readFile(join(f.repo, 'tracked.txt'), 'utf8'), /<<<<<<< /u)
+    assert.equal(git(f.repo, ['rev-parse', 'stash']), sha)
+  })
+
+  await t.test('a failed post-apply drop preserves a successful application', async t => {
+    const f = stashFixture(t, {
+      ...fakeSubprocess,
+      spawn(spec) {
+        if (!spec.argv.includes('stash') || !spec.argv.includes('drop')) return fakeSubprocess.spawn(spec)
+        // A concurrent Git process is holding the stash ref lock, but not index.lock.
+        writeFileSync(join(f.repo, '.git/refs/stash.lock'), '')
+        return fakeSubprocess.spawn(spec)
+      },
+    })
+    f.prepare()
+    const sha = await f.push()
+    const response = await f.write({ action: 'apply', sha, index: true, drop: true })
+    assert.deepEqual(response, { status: 200, body: { sha, selector: 'stash@{0}', dropped: false } })
+    assert.equal(git(f.repo, ['show', ':tracked.txt']), 'staged')
+    assert.equal(await readFile(join(f.repo, 'draft/note.txt'), 'utf8'), 'untracked\n')
+    assert.equal(git(f.repo, ['rev-parse', 'stash']), sha)
+  })
 })

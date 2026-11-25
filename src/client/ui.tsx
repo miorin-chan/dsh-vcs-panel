@@ -39,6 +39,8 @@ export interface IconButtonProps {
   children?: ReactNode
   onClick?: MouseEventHandler<HTMLButtonElement>
   disabled?: boolean
+  /** Unavailable, but still focusable so its explanation can be read. */
+  ariaDisabled?: boolean
   /** Ignore clicks while work runs, keeping focus and full contrast. */
   busy?: boolean
   title?: string
@@ -61,7 +63,7 @@ export interface TurningProps {
  * The reference kind a badge states. `head` is the detached-HEAD marker a log
  * row or the commit header shows beside the other refs.
  */
-export type RefKind = 'head' | 'branch' | 'remote' | 'tag'
+export type RefKind = 'head' | 'branch' | 'remote' | 'tag' | 'stash'
 
 /** One reference as a badge renders it. */
 export interface RefView {
@@ -126,7 +128,7 @@ export function Button({ children, onClick, disabled = false, title, className =
  * button ignores clicks while its work runs but keeps focus and full contrast
  * (`aria-disabled` rather than `disabled`).
  */
-export function IconButton({ label, children, onClick, disabled = false, busy = false, title, pressed, description, className = '' }: IconButtonProps) {
+export function IconButton({ label, children, onClick, disabled = false, ariaDisabled = false, busy = false, title, pressed, description, className = '' }: IconButtonProps) {
   return (
     <button
       type="button"
@@ -135,9 +137,9 @@ export function IconButton({ label, children, onClick, disabled = false, busy = 
       aria-pressed={pressed}
       aria-description={description}
       aria-busy={busy ? 'true' : undefined}
-      aria-disabled={busy ? 'true' : undefined}
+      aria-disabled={busy || ariaDisabled ? 'true' : undefined}
       title={title ?? label}
-      onClick={busy ? undefined : onClick}
+      onClick={busy || ariaDisabled ? undefined : onClick}
       disabled={disabled}
     >
       {children}
@@ -245,11 +247,12 @@ export function RefBadge({ reference, onRefContextMenu, onRefActivate }: RefBadg
   const current = reference.current === true
   const remote = reference.kind === 'remote'
     && typeof reference.remote === 'string' && typeof reference.branch === 'string'
-  const actionableKind = reference.kind === 'branch' || reference.kind === 'tag' || remote
+  const actionableKind = reference.kind === 'branch' || reference.kind === 'tag' || reference.kind === 'stash' || remote
   const interactive = actionableKind && typeof onRefActivate === 'function'
   const contextOnly = actionableKind && !interactive && typeof onRefContextMenu === 'function'
   const title = current ? `HEAD -> ${reference.name}` : reference.name
   const tone = current ? 'head' : reference.kind
+  const dataKind = reference.kind === 'stash' ? 'stash' : undefined
 
   if (interactive) {
     const openFrom = (target: HTMLElement, event: RefCancellation) => {
@@ -266,6 +269,7 @@ export function RefBadge({ reference, onRefContextMenu, onRefActivate }: RefBadg
         type="button"
         className={`vcs-ref vcs-ref-button vcs-ref-${tone}`}
         title={title}
+        data-kind={dataKind}
         aria-haspopup="menu"
         data-ref-actions="true"
         onClick={event => { openFrom(event.currentTarget, event) }}
@@ -284,6 +288,7 @@ export function RefBadge({ reference, onRefContextMenu, onRefActivate }: RefBadg
     <span
       className={`vcs-ref vcs-ref-${tone}`}
       title={title}
+      data-kind={dataKind}
       data-ref-actions={contextOnly ? 'true' : undefined}
       onContextMenu={contextOnly
         ? event => { onRefContextMenu(reference, event) }
@@ -534,6 +539,16 @@ export function CheckIcon() {
   return (
     <svg className="vcs-icon" viewBox="0 0 16 16" aria-hidden="true">
       <path d="m3.5 8.5 3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+/** Save the working changes into a stash. */
+export function StashIcon() {
+  return (
+    <svg className="vcs-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M8 2v7M5.4 6.4 8 9l2.6-2.6M2.5 9.5v3.8h11V9.5"
+        stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }

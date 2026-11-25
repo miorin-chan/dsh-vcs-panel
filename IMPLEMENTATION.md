@@ -25,8 +25,10 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `GET /api/vcs.remotes` | `sessionId`、`repo` | `remotes[]`、`truncated`（`capabilities.tagOps` 或 `capabilities.branchOps` 为真时可用） |
 | `GET /api/vcs.untracked` | `sessionId`、`repo`、`worktree?`、`path`（`/` 结尾） | `path`、`entries[]`（`name`、`path`、`type`）、`truncated`（仅 `capabilities.untracked` 为真时可用） |
 | `GET /api/vcs.diff` | `sessionId`、`repo`、`worktree?`、`scope`、`path`、`oldPath?`、`rev?` | `VcsFileDiff` |
-| `GET /api/vcs.log` | `sessionId`、`repo`、`worktree?`（可重复）、`ref`、`limit`、`skip` | `commits[]`、`truncated`、`nextSkip`；传入工作树时另有 `worktreeHeads[]`（`path`、`head`） |
+| `GET /api/vcs.log` | `sessionId`、`repo`、`worktree?`（可重复）、`ref`、`limit`、`skip` | `commits[]`、`truncated`、`nextSkip`；传入工作树时另有 `worktreeHeads[]`（`path`、`head`）；Git 首页另有 `stashes[]` 与 `stashesTruncated` |
 | `GET /api/vcs.commit` | `sessionId`、`repo`、`worktree?`、`sha` | `commit`（`CommitDetail`，不含 patch；`refs` 含 `current`、分离 `head` 及 `remote`/`branch` 标注）、`truncated` |
+| `GET /api/vcs.stash` | `sessionId`、`repo`、`sha` | `{ stash: StashDetail, truncated }`（仅 `capabilities.stashOps` 为真时可用） |
+| `GET /api/vcs.stash-check` | `sessionId`、`repo`、`sha`、`mode`（`apply` 或 `branch`）、`index`（`0` 或 `1`） | `StashCheck`（同上） |
 | `GET /api/vcs.turn` | `sessionId`、`turn`、`seq?` | `turn`、`head`（`TurnHead \| null`）、`changed`、`added`、`deleted` |
 | `POST /api/vcs.sync` | JSON 请求体 `{ sessionId, repo }` | `upstream`、`pulled`、`pushed`（仅 `capabilities.sync` 为真时可用） |
 | `POST /api/vcs.switch` | JSON 请求体 `{ sessionId, repo, branch }` | `branch`（仅 `capabilities.branchSwitch` 为真时可用） |
@@ -34,12 +36,14 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `POST /api/vcs.branch` | JSON 请求体 `{ sessionId, repo, action, branch, name?, local?, force? }` | 本地：`rename` → `{ from, branch }`；`delete` → `{ branch }`；`merge` → `{ branch, current, result }`；`rebase` → `{ branch, current }`；`push` → `{ branch, upstream, pushed }`。远程：`checkout-remote` → `{ branch, local }`；`delete-remote` → `{ branch }`；`merge-remote` / `pull-remote` → `{ branch, current, result }`（仅 `capabilities.branchOps` 为真时可用） |
 | `POST /api/vcs.tag` | JSON 请求体 `{ sessionId, repo, action, tag, remote? }` | `delete` → `{ tag }`；`push` → `{ tag, remote, pushed }`（仅 `capabilities.tagOps` 为真时可用） |
 | `POST /api/vcs.commit-op` | JSON 请求体 `{ sessionId, repo, action, sha, name?, message?, mode?, checkout? }` | `tag` → `{ tag, sha }`；`branch` → `{ branch, sha, checkedOut?: true }`；`checkout` → `{ sha }`；`cherry-pick` / `revert` / `drop` / `rebase` → `{ sha, current }`；`merge` → `{ sha, current, result }`；`reset` → `{ sha, current, mode }`（仅 `capabilities.commitOps` 为真时可用） |
+| `POST /api/vcs.stash` | JSON 请求体含 `sessionId`、`repo`、`action`；`push` 带 `message?`、`untracked`，`apply` 带 `sha`、`index`、`drop`，`branch` 带 `sha`、`name`，`drop` 带 `sha` | 均返回 `{ sha, selector }`；`apply` 另带 `dropped`，`branch` 另带 `branch`（仅 `capabilities.stashOps` 为真时可用） |
 | `POST /api/vcs.stage` | JSON 请求体 `{ sessionId, repo, scope, path, oldPath?, fingerprint?, lines? }`，或目录与分组的 `{ sessionId, repo, scope, files }` | `{ scope, path, fileCount? }`（仅 `capabilities.stageOps` 为真时可用） |
 | `POST /api/vcs.stage-history` | JSON 请求体 `{ sessionId, repo, action: 'undo' \| 'redo', id }` | `{ action, stageHistory }`（仅 `capabilities.stageOps` 为真时可用） |
 
 ### 自动刷新订阅
 
 - `vcs.watch` 使用同源 SSE。页签与文档可见时建立连接，隐藏或切换范围时关闭连接。
+  Host 的观察流持有原始读取请求直到关闭，使 Node 的请求取消链在垃圾回收后仍有效。
   `ready` 后客户端补查，以覆盖隐藏期间和连接建立前的变化。
   自动刷新期间保留上次成功数据。
 - `invalidate` 携带 `working`、`history` 或 `repositories`。
@@ -48,6 +52,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
   写入或对话期间暂缓读取。面板写入带 `X-VCS-Client`，若事件的 `origin` 匹配该面板，它使用操作完成后的显式刷新。
 - Git 用独立的工作树监听与元数据监听。
   后者覆盖每棵工作树的 `HEAD`、index 和公共引用存储，动态监听当前分支与上游引用，并过滤锁文件与 Watchman cookie。
+  公共目录的 `refs/stash` 与 `logs/refs/stash` 变化使 `history` 失效；丢弃非顶端的贮藏可能只更新引用日志。
   macOS 和 Windows 优先用原生递归监听，其他平台按目录数量设限。
   超出监听范围的变更可通过会话事件、重新激活或手动刷新发现。
 - Git 状态读取由 Host 按仓库根单飞。
@@ -100,8 +105,8 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
   Git 侧再包 `:(literal)` pathspec，Jujutsu 侧用 `file:"..."` fileset。
   提交 ID 先做 7–64 位十六进制校验；Git 再经 `rev-parse --verify <sha>^{commit}` 解析，
   Jujutsu 仅接受 `@` 或十六进制 ID。
-- **写请求栅栏**：`vcs.sync`、`vcs.switch`、`vcs.branch`、`vcs.tag`、
-  `vcs.commit-op` 、`vcs.stage` 与 `vcs.stage-history` 只接受 `POST`，
+- **写请求栅栏**：`vcs.sync`、`vcs.switch`、`vcs.branch`、`vcs.tag`、`vcs.commit-op`、
+  `vcs.stash`、`vcs.stage` 与 `vcs.stage-history` 的写入只接受 `POST`，
   `content-type` 必须是 `application/json`（跨站页面不经 CORS 预检发不出），
   `Sec-Fetch-Site` 存在且不是 `same-origin` / `none` 时返回 `403 forbidden`；
   请求体中的 `sessionId` 与 `repo` 再走与读取相同的会话与仓库白名单。
@@ -122,9 +127,14 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
   `revert`、`drop`、`merge`、`rebase` 或 `reset`；`sha` 为 7–64 位十六进制；
   `tag` / `branch` 的 `name` 复用引用名校验；`branch` 的可选 `checkout` 必须是布尔值；
   `tag` 的 `message` 是长度不超过 4,000 的字符串；`reset` 的 `mode` 必须是 `soft`、`mixed` 或 `hard`。
+  贮藏的 `sha`（diff 中为 `rev`）必须是完整的 40 或 64 位十六进制，且命中当次 `stash list`；
+  存放的可选说明至多 1,000 字符，不含换行或 NUL，写入选项必须是布尔值。
+  从贮藏创建分支时先检查工作区，再用 `check-ref-format --branch` 校验新名并确认未占用；拒绝 Git 展开的检出简写。
   同一共享存储同时只允许一次面板写操作，第二次返回 `409 busy`。
 
-失败统一返回 `{ error: { code, message } }`，不携带宿主绝对路径、原始命令或堆栈：
+失败统一返回 `{ error: { code, message } }`，不携带宿主绝对路径、原始命令或堆栈。
+`stash-blocked` 的 `error` 另带与预检相同的 `reason`、`paths`、`pathsTruncated`；
+`stash-conflict` 另带 `paths` 与 `pathsTruncated`。
 
 | `code` | HTTP | 触发情形 |
 | --- | --- | --- |
@@ -165,6 +175,9 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `commit-conflict` | 409 | 拣选、还原或丢弃冲突并已中止，分支保持不变 |
 | `commit-blocked` | 409 | 提交操作被本地改动、已有操作或不支持的提交形态阻止 |
 | `commit-failed` | 409 | 提交操作因其他原因失败 |
+| `stash-missing` | 404 | 贮藏的提交 ID 未命中当前列表 |
+| `stash-empty` / `stash-blocked` | 409 | 没有可存放的改动，或默认工作树未通过检查 |
+| `stash-conflict` / `stash-failed` | 409 | 应用后留下了冲突且保留贮藏，或贮藏命令因其他原因失败 |
 | `stale-diff` | 409 | 暂存目标已变化，或逐行选择的指纹与当前 diff 不匹配 |
 | `staging-unsupported` | 409 | 当前目标或改动不支持请求的暂存操作 |
 | `staging-failed` | 409 | Git 未能完成暂存或取消暂存 |
@@ -185,13 +198,13 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
   除工作副本快照外的读取均带 `--ignore-working-copy`。
 
 每个后端实现 `require`、`head`、`status`、`log`、`commit`、`diff`（可选 `untracked`、`worktrees`、`sync`、
-`branches` / `switchBranch`、`branchOp`、`remotes` / `tagOp`、`commitOp`、`stage`）并声明 `capabilities`；
-Client 仅按能力对象驱动布局，不按后端名称分支：
+`branches` / `switchBranch`、`branchOp`、`remotes` / `tagOp`、`commitOp`、`stash` / `stashCheck` / `stashOp`、
+`stage`）并声明 `capabilities`；Client 仅按能力对象驱动布局，不按后端名称分支：
 
 | 能力字段 | Git | Jujutsu |
 | --- | --- | --- |
 | `workingCopy` / `workingCopyNode` | `'row'` / `null` | `'commit'` / `'@'` |
-| `staging` / `untracked` / `aheadBehind` / `sync` / `branchSwitch` / `branchOps` / `tagOps` / `commitOps` / `stageOps` | `true` | `false` |
+| `staging` / `untracked` / `aheadBehind` / `sync` / `branchSwitch` / `branchOps` / `tagOps` / `commitOps` / `stashOps` / `stageOps` | `true` | `false` |
 | `changeId` / `snapshots` | `false` | `true` |
 | `worktreeCreate` / `worktreeRemove` / `worktreeForget` | 创建及移除 | 创建、解除关联及按已安装版本开放移除 |
 | `ranges`（`defaultRange`） | **`all`**、`HEAD` | **`all`**、`@` |
@@ -210,14 +223,15 @@ Git 工作树预览保留 Git 的读取能力。
   遇到折叠目录时用 `ls-files --others --exclude-standard -z` 枚举，统计普通 UTF-8 文本，末行没有换行符时也算一行。
   二进制、符号链接与嵌套 Git 仓库不参与统计。
   Host 每棵工作树最多并发读取 4 个文件，大于单文件 diff 字节上限时流式计数，30 秒内无法取得完整总数时返回 `null`。
-  `diff` 按 `staged`（对 `HEAD`）、`unstaged`（对 index）、`untracked`（按新文件合成）、
-  `commit`（对第一父，root 对空树）取值；空仓库读取 `HEAD` 日志视为空历史而非错误。
+  `diff` 按 `staged`（对 `HEAD`）、`unstaged`（对 index）、`untracked`（按新文件合成）、`commit`（对第一父，
+  root 对空树）、`stash`（基底到 W）与 `stash-untracked`（空树到 U）取值；空仓库读取 `HEAD` 日志视为空历史而非错误。
   `GitBackend.commit` 并行读取详情（`show`）、`HEAD` 符号/分支指向（`for-each-ref %(refname)%00%(HEAD)`、
   `symbolic-ref`、`rev-parse HEAD`）并在含远程引用时并行读取远程列表，为详情返回与 `log` 一致的 `current: true`、
   分离 `head` 及 `remote`/`branch` 标注。
 - **Git 多起点历史**：在 `HEAD` 范围读取时，取所选树经校验的非空 `head` 对象 ID，
   去重后传给一次 `git log --topo-order`；没有已存在的 `HEAD` 就返回空历史。
-  单选入口树时直接读取 `HEAD`，`all` 保持使用 `git log --all`。Client 把所选根路径集合纳入 `HEAD` 范围的分页键，
+  单选入口树时直接读取 `HEAD`，`all` 用 `git log --exclude=refs/stash --all`，不从贮藏引用遍历 W / I / U。
+  Client 把所选根路径集合纳入 `HEAD` 范围的分页键，
   下一页发现 `worktreeHeads` 已变更则重新载入首屏。 非默认树的单选和多选中，
   前端隐藏读取命令所在树的 `current` / `head` 装饰，改用工作区行显示各树的 `HEAD`。
 - **Git 共享底层工具**：`lib/git-utils.js` 复用 `listGitRemotes`、`remoteNames`（上限 500）、
@@ -290,6 +304,28 @@ Git 工作树预览保留 Git 的读取能力。
   （校验 `turn` 与 `seq` 归属一致，剔除宿主路径与文件明细），并与该轮 `head` 合并返回；
   两者均不存在（如 Host 重启后的历史轮次）时返回 `404 not-found`。
 
+### Git 贮藏
+
+`lib/stash.js` 从 `stash list` 的 NUL 分隔字段解析快照、序号、所在分支和说明。
+全景与历史首页共用列表与上限；详情与写入按完整的 W 提交 ID 查找当前引用日志，不接收客户端提供的序号。
+详情复用提交的文件名与行数读取，把基底到 W 的差异与 U 的文件按路径混排，再独立计数基底到 I 的差异。
+文件的两类 diff 仅比较 Git 对象，不读取工作区的同名路径。
+
+`lib/stash-ops.js` 在预览与写入锁内复用同一项检查。
+先查进行中操作与未合并索引条目，创建分支时再分别查已暂存和未暂存的跟踪改动。
+U 的每条路径逐级以 `lstat` 检查，遇到非目录父路径也算占用，不跟随符号链接。
+应用时先检查贮藏改动与未暂存路径的交集，再以 `GIT_INDEX_FILE` 指向临时 index 副本。
+要求恢复暂存状态时，以 `git apply --cached --check` 检查基底到 I 的二进制补丁；
+由副本上的 `write-tree` 得到当前索引树，交给支持 `--merge-base` 的 `merge-tree --write-tree` 与 W 三方合并。
+冲突路径由 Git 的 NUL 分隔输出给出，真实 index 不取锁、不改写。
+合并后再检查改名落点的未暂存改动，以及更新会覆盖的未跟踪或忽略文件；创建分支则核对检出基底和恢复 W 的新增路径。
+Git 原生命令遇到这些占用时可能已经恢复了 U，或直接覆盖忽略文件，因此也在实际写入之前拒绝。
+
+存放按选项用 `git stash push`，成功后读回栈顶。 应用按完整 ID 运行 `git stash apply`，
+成功后才按当时的序号丢弃；单独丢弃和从贮藏创建分支同样在共享存储锁内按当前序号执行。 预检之后其他进程仍可能改变检出；
+应用失败且发现未合并条目时报告冲突而不回滚，也不丢弃。 存放、应用或从贮藏创建分支成功后清空该树暂存撤销与重做；
+丢弃只刷新历史，不清空暂存记录。
+
 ### 全景读取
 
 `vcs.overview` 为[全景栏与平铺](DESIGN.md#全景栏)提供每个指针的基线、领先 / 落后、独有与占用。
@@ -317,8 +353,9 @@ Git 工作树预览保留 Git 的读取能力。
 - 独有：有远程的仓库读一次 `rev-list --parents --branches --not --remotes` 得到未发布子图，
   每个分支在子图内从自己的提交出发计数；子图超过 50,000 个提交时改为逐个分支 `rev-list --count <tip> --not --remotes`。
   游离检出计 `--not --branches --remotes`，无远程的仓库计对基线的领先数，贮藏记为 1。
-- `stash list` 给出贮藏与它的基底提交，标签只计数；`fetchedAt` 是 common dir 下 `FETCH_HEAD` 的修改时间，
-  DSH 文件服务不报告修改时间，这一处像刷新监听一样直接 `lstat`。
+- 贮藏与历史共用 `stash list`，用快照的基底提交确定直接「应用」所需的候选主线，不计算贮藏自身的距离。
+  标签只计数；`fetchedAt` 是 common dir 下 `FETCH_HEAD` 的修改时间，DSH 文件服务不报告修改时间，
+  这一处像刷新监听一样直接 `lstat`。
 
 每个 Jujutsu 仓库按[书签与工作区的对应规则](DESIGN.md#jujutsu-的指针对应到同一组量)读取：
 
@@ -443,6 +480,29 @@ type CommitDetail = CommitNode & {
   files: FileEntry[]
 }
 
+type StashEntry = {
+  sha: string              // W；用它标识贮藏
+  selector: string         // 读取时的 stash@{n}；只供显示
+  base: string
+  index: string            // I
+  untracked: string | null // 可选的 U
+  time: number             // %ct，秒
+  branch: string | null
+  message: string
+}
+
+type StashDetail = StashEntry & {
+  files: FileEntry[]       // U 的文件标记 status: 'U'、untracked: true
+  staged: number          // 基底到 I 有差异的文件数
+}
+
+type StashBlock = 'operation' | 'dirty' | 'untracked-exists' | 'overwrite' | 'index-conflict' | 'conflict'
+type StashCheck = {
+  head: string | null
+  baseIsHead: boolean
+  block: null | { reason: StashBlock; paths: string[]; pathsTruncated: boolean }
+}
+
 type BranchInfo = {
   name: string | null
   oid: string | null
@@ -515,12 +575,13 @@ type TurnSummary = {
 | 项目 | 上限 | 执行位置 |
 | --- | --- | --- |
 | 单会话初始仓库根 / 附加工作树数 | 各 50 | Host `discoverRepositories` / `groupRepositories` |
-| 全景：每仓库检出 / 指针 / 贮藏；未登记仓库的列举深度 / 列举次数 / 仓库数 | 51 / 2,000 / 200；6 层 / 20,000 / 50 | Host `overview.js` |
+| 全景：每仓库检出 / 指针；未登记仓库的列举深度 / 列举次数 / 仓库数 | 51 / 2,000；6 层 / 20,000 / 50 | Host `overview.js` |
+| 贮藏列表（全景与历史首页）/ 检查及冲突路径 / 存放说明 | 200 条 / 50 条 / 1,000 字符 | Host `stash.js` / `stash-ops.js` / `handlers.js` |
 | 全景栏宽度 / 抽屉阈值；平铺每列历史 / 并发读取 | 320–600px（默认 400）/ 余宽 360px；300 个提交 / 4 | Client `state.ts`、`VcsView`、`useTileHistories` |
 | 仓库发现标记检查 / 配置文件 / 每组配置路径与后端偏好 | 1,000 项 / 64 KiB / 50 项 | Host `repositories.js` / `repository-config.js` |
 | 工作树状态读取并发 / 一次历史请求的工作树数 | Git 4、Jujutsu 1 / 51 | Client `VcsView` / Host `log` |
 | Jujutsu `.jj/repo` 路径链接 | 16 KiB | Host `jjCommonDirAt` |
-| 每组状态文件数（Git）/ 单提交详情文件数 / 未跟踪目录展开条目数 / 本地分支列表 / 远程列表 | 各 500 | Host `status` / `commit` / `untracked` / `branches` / `remotes` |
+| 每组状态文件数（Git）/ 单提交或贮藏详情文件数 / 未跟踪目录展开条目数 / 本地分支列表 / 远程列表 | 各 500 | Host `status` / `commit` / `stash` / `untracked` / `branches` / `remotes` |
 | 单文件 diff 输出 / 渲染行数 | 2 MB / 5,000 行 | Host `diff`、Client `FileDiff` |
 | “全部展开”的 diff 预算 | 单文件 1,000 行；单节点累计 20,000 行 | Client `budgetFolds`、`expandedFileFolds` |
 | diff 请求并发 / 视口预载距离 / 结果缓存 | 4 个并发 / 800 px / 最近 300 条 | Client 请求队列与缓存 |
@@ -630,8 +691,8 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 详情跨工作树切换时取消旧目录展开请求并重置目录阅读状态，避免串用同名文件和目录。
 
 `folds` 只为用户显式操作过的文件保存布尔值：空记录表示文件全部收起，也就是详情的默认形态。
-行键前缀白名单为 `staged|`、`unstaged|`、`merged|`、`merged-dir|`、`commit|`；
-`sanitizeState` 在读取时丢弃未知字段与旧版遗留的 `untracked|` 键。 仓库范围、
+行键前缀白名单为 `staged|`、`unstaged|`、`merged|`、`merged-dir|`、`commit|`、`stash|`、
+`stash-dir|`、`stash-untracked|`；`sanitizeState` 在读取时丢弃未知字段与旧版遗留的 `untracked|` 键。 仓库范围、
 仓库勾选与时间线分组的旧字段也按未知字段忽略。
 数据刷新、折叠全部文件或收起吸顶文件头时，统一先记录锚点行与行内像素偏移，重排后恢复；
 锚点行未渲染时沿“文件行 → 父目录链 → 分组行”降级。
@@ -649,7 +710,7 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 统一处理外部指针按下、窗口尺寸变化、失焦退出与键盘移动。 菜单内部滚动不触发关闭；工作树菜单也忽略外部滚动，
 以免调整视图引起的时间线重排打断连续操作。 `RefActionsMenu` 在 `useLayoutEffect` 实测宽高后做视口边界夹紧并设最大宽度。
 
-工作树、分支、远程分支、标签与提交操作状态均收敛在 `useRepoActions.js`（由 `VcsView` 持有），维护单一 `menu`、
+工作树、分支、远程分支、标签、提交与贮藏操作状态均收敛在 `useRepoActions.js`（由 `VcsView` 持有），维护单一 `menu`、
 单一 `dialog`、共享的 `disabledActions` 禁用文案与按仓库区分的 `inFlight` 单飞映射（切换仓库时不丢失原仓库写入态）：
 弹窗自身写入中进行时传入 `busy` 锁定关闭，
 同仓库存在其他写入时传入 `blocked` 只禁用确认并显示 `error.busy` 而不阻断取消；
@@ -659,13 +720,17 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 补充时间线每行最多 3 个徽标、超出展示 `+N` 的限制）均只上报目标与焦点归还元素。
 标签推送对话框打开时加载 `/api/vcs.remotes` 并在关闭或切换仓库时中止。
 检出（含创建分支立即检出）、远程检出、分支切换与 Hard 重置成功后清空旧 `HEAD` 阅读状态；
-其他写操作保留当前阅读位置，若节点已被改写则由详情的 `onMissing` 回退。
+从贮藏创建分支同样清空。 `StashDialog` 按动作复用确认框；取回预检随「恢复暂存状态」重读并取消旧请求，
+锁内检查拒绝时用返回的阻挡原因更新对话框。 存放后选中 `stash:<sha>`，应用后选中默认工作区，
+丢弃正选中的贮藏时选中已加载的基底，或回到默认节点。
+其他写操作保留当前阅读位置，若节点消失则由详情的 `onMissing` 回退。
 
 ### 图布局与变更树管线
 
-- **时间线图布局**：`buildGraph` 接收勾选的工作树虚节点与一份拓扑序提交，按 `pass / goto / end` 遍历活动 lane，
-  输出路径与圆点坐标，与虚拟列表共用滚动容器渲染。 每个 Git 工作树虚节点的虚线路径终止在它自己的 `HEAD`；
-  多个虚线可终止于同一圆点。
+- **时间线图布局**：行模型把勾选的工作树放在最前，贮藏按引用日志顺序放在各自基底紧上方，
+  基底未加载时暂不插行。 行、图与键盘索引共用这份顺序；贮藏行以 W 的 ID 键定，同一个 W 只呈现最新的序号。
+  `buildGraph` 按 `pass / goto / end` 遍历活动 lane，输出路径与节点坐标，与虚拟列表共用滚动容器渲染。
+  虚线按 `kind` 区分工作区与贮藏，止于各自的 `HEAD` 或基底；同一基底的相邻贮藏共用一条虚线并画成菱形。
   提交第二父等真实祖先边只复用实线。
   分页追加时重算整图并按提交锚点恢复位置。
 - **时间线、详情缓存与变更树请求调度**：
@@ -675,8 +740,9 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
   时间线 `.vcs-timeline-meta` 让非 `HEAD` 徽标与作者/时间优先收缩以保住 `HEAD`（上限 110px）、
   `+N` 与短 SHA，详情工具栏的 `.vcs-detail-refs` 仅在有引用时渲染并横向滚动不压缩徽标；
   对话框 `<select>` 采用 `appearance: none` 单行截断并配 `.vcs-dialog-select-caret` 居中箭头与右缘渐隐遮罩。
-  `DetailPane` 用 `${repo}|${node}|${revision}` 键缓存已读提交详情（`commitCache`，
-  上限 `COMMIT_CACHE_LIMIT = 200`），避免反复切换提交重复请求，并在刷新或切仓时清空。
+  `DetailPane` 用 `${repo}|${node}|${revision}` 键缓存提交与贮藏详情（`detailCache`，
+  上限 `DETAIL_CACHE_LIMIT = 200`），避免反复切换节点重复请求。
+  贮藏用 `stash:<sha>`，后台历史失效也推进其版本，以读到移动后的序号。 显式刷新历史或切仓时清空缓存。
   时间线工作区行、详情工具栏与「未暂存」分组用灰色 `+N` 显示 `untrackedAdded`（`.vcs-untracked-stat`）。
   `0` 时隐藏灰标，无法取得完整行数时显示 `+…` 并在详情说明。
   灰标的悬停提示与读屏文本均说明行数口径。
@@ -684,7 +750,8 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
   窄栏可在工具栏下方显示同一组统计。
   变更树客户端将 Git 的 `untracked` 条目并入 `unstaged` 分组（可按需展开的未跟踪目录不参与单子目录链压缩），
   生成单一扁平行列表供渲染、roving tabindex 键盘导航与滚动锚点共用；文件默认收起，只有展开的行才请求 `vcs.diff`。
-  发起请求时仍按条目自身的 `untracked` 标记还原 `scope`（未跟踪项走 `untracked`，重命名带 `oldPath`）。
+  发起请求时仍按条目自身的 `untracked` 标记还原 `scope`（工作区未跟踪项走 `untracked`，重命名带 `oldPath`）。
+  贮藏只读且无分组行或暂存列：已跟踪与未跟踪文件分别走 `stash` / `stash-untracked`，都带完整的 W ID 作 `rev`。
   展开文件以 `<section class="vcs-tree-file" data-open>` 渲染为卡片（吸顶头部外框 `.vcs-tree-file-head-wrap`
   保留不透明底与暂存列，`flowTop` 按语义容器查找静态位置避免吸顶偏移干扰）。
   变更树的横向几何只在样式表里：目录、文件与加载行只写 `--vcs-level`（分组视图下为 `depth + 1`），
@@ -746,14 +813,17 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 两类行都可以选中；时间线只读当前仓库，独立报告历史与工作树的读取结果。 栏头只用发现列表计数，
 齿轮打开同一个 `RepositoryConfigDialog`，没有仓库时仍可进入，关闭对话框后焦点回到齿轮。
 仓库行以 `repo:<path>` 为键，流式读取重排时光标与焦点留在原行；
-当前仓库或光标所在的仓库进入一致组时自动展开该组。 用户打开全景时聚焦当前仓库，恢复已展开的布局时只设置默认停靠点，
-不移动焦点；从时间线向左则回到全景上次的停靠点。
+当前仓库或光标所在的仓库进入一致组时自动展开该组。 用户打开全景时聚焦当前仓库，
+恢复已展开的布局时只设置默认停靠点，不移动焦点；从时间线向左则回到全景上次的停靠点。
+点击贮藏指针选中 `stash:<sha>`，需要时续载历史寻找基底；时间线与全景按同一 ID 高亮，而不高亮基底提交。
+右键贮藏指针沿用时间线的贮藏菜单。
 
 `overview/directActions.ts` 的 `tileDirectActions` 按[直接按钮的规则](DESIGN.md#操作条的直接按钮)从指针、仓库视图、
 后端能力和该仓库的写入状态选出动作；移除工作树时再用工作树清单中的保护信息。 平铺沿用指针菜单的仓库切换和状态读取，
 就绪后把显式目标交给 `useRepoActions.openAction`；
-菜单选择也走同一入口。 依赖当前分支的合并和同步只在主检出同时为已授权仓库入口时提供，
-工作树预览保持只读。 写入触发全景与骨架重读，结果按仓库显示；原按钮消失时，焦点留在同列的指针或列头。
+菜单选择也走同一入口。 依赖当前分支的合并和同步只在主检出同时为已授权仓库入口时提供，工作树预览保持只读。
+贮藏的「应用」复用合并对主检出和基线的要求，「丢弃」不受此限。
+写入触发全景与骨架重读，结果按仓库显示；原按钮消失时，焦点留在同列的指针或列头。
 
 布局：全景栏绝对定位在 `.vcs-root` 左侧，打开时根节点获得同宽的 `padding-left`，两者沿同一条曲线移动 280ms；
 扣除全景栏后不足 360px 时改为顶部栏下的抽屉，选中仓库或指针后收起。
@@ -767,7 +837,7 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 退出时记录列的位置，时间线从当前列移回；其余列的不可交互副本向恢复的全景行或面板左缘移动，
 并在 300ms 内沿 `ease-in` 淡出。
 详情面板进平铺时原地淡出右移，退出时从右侧滑回。减少动效时不播放。
-指针 id 由仓库路径、种类与名称以 NUL 连接；同名的 Jujutsu 匿名头再用提交 ID 区分。
+指针 id 由仓库路径、种类与名称以 NUL 连接；贮藏用 W 的提交 ID 代替会变动的序号，同名的 Jujutsu 匿名头再用提交 ID 区分。
 元素按属性值比较查找，不进 CSS 选择器。
 
 ## 复用与来源

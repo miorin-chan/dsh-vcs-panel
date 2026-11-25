@@ -5672,10 +5672,14 @@ test('Timeline virtualization, paging, ChangeTree hunk entry, header scroll-back
         subject: `c-${i}`,
       }))
       const layout = { width: 1, rows: commits.map((_, i) => ({ x: 0, color: 0, lines: [], up: [], down: [], row: i + 1 })) }
+      const rows = [
+        { kind: 'worktree', node: 'worktree:/repo', head: null },
+        ...commits.map(commit => ({ kind: 'commit', node: commit.sha, commit })),
+      ]
       let selected = 1
       const renderTimeline = () => {
         harness.mount(harness.react.createElement(Timeline, {
-          commits,
+          rows,
           layout,
           status: null,
           worktrees: [{ id: 'worktree:/repo', path: '/repo', label: 'Working tree', status: null, statusState: 'ready', refLabel: null }],
@@ -5947,5 +5951,138 @@ test('Timeline virtualization, paging, ChangeTree hunk entry, header scroll-back
       restoreWide()
       globalThis.fetch = savedFetch
     }
+  }
+})
+
+test('overview opens the stash itself; row menu and Apply/Branch dialogs keep their keyboard and check state', async () => {
+  const harness = createHarness({ width: 1600 })
+  const restore = harness.installGlobals()
+  const previousFetch = globalThis.fetch
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
+  const sessionId = 'stash-panel'
+  let stored = JSON.stringify({ repo: tileAlpha, overview: true })
+  Object.defineProperty(globalThis, 'sessionStorage', {
+    value: { getItem: () => stored, setItem: (_key, value) => { stored = value } }, configurable: true,
+  })
+  const stash = {
+    sha: tileLoose, base: tileMain, selector: 'stash@{0}', branch: 'main', message: 'Saved changes',
+    time: 1_700_000_000, index: 'a'.repeat(40), untracked: null,
+  }
+  const repo = tileRepo(tileAlpha, [tilePointer(stash.selector, stash.sha, {
+    kind: 'stash', onto: stash.base, subject: stash.message, unique: 1,
+  })])
+  const checks = []
+  const writes = []
+  let stashReads = 0
+  globalThis.fetch = async (url, init) => {
+    const query = new URL(url, 'http://127.0.0.1')
+    const commit = { sha: tileMain, refs: [], parents: [], author: 'Ada', authorTime: 1_700_000_000_000, subject: 'The base', files: [] }
+    if (init?.method === 'POST') {
+      writes.push(JSON.parse(init.body))
+      return Response.json({})
+    }
+    switch (query.pathname) {
+      case '/api/vcs.repositories':
+        return Response.json({ cwd: '/fixture', repositories: [{ ...repo, capabilities: GIT_CAPABILITIES, enclosing: true }] })
+      case '/api/vcs.overview': return overviewResponse([repo])
+      case '/api/vcs.status': return Response.json({
+        defaultNode: tileMain, repo: { path: tileAlpha }, capabilities: GIT_CAPABILITIES, vcs: 'git',
+        branch: { name: 'main', oid: tileMain }, groups: {}, total: 0, stageHistory: { undo: null, redo: null },
+      })
+      case '/api/vcs.log': return Response.json({ commits: [commit], stashes: [stash], stashesTruncated: false, nextSkip: null })
+      case '/api/vcs.commit': return Response.json({ commit })
+      case '/api/vcs.stash':
+        stashReads += 1
+        assert.equal(query.searchParams.get('sha'), stash.sha)
+        return Response.json({ stash: { ...stash, staged: 1, files: [{ path: 'work.txt', status: 'M' }] } })
+      case '/api/vcs.stash-check': {
+        const { promise, resolve } = Promise.withResolvers()
+        checks.push({ mode: query.searchParams.get('mode'), index: query.searchParams.get('index'), signal: init.signal, resolve })
+        return promise
+      }
+      default: return Response.json({})
+    }
+  }
+  try {
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
+    harness.mount(harness.react.createElement(VcsView, { sessionId, t, locale: 'en-US' }))
+    await harness.settle()
+    const body = harness.document.body
+    const pointer = () => body.querySelector('.vcs-overview-pointer[data-kind="stash"]')
+    const row = () => body.querySelector('.vcs-stash-row')
+    const menu = () => body.querySelector('.vcs-ref-ops[data-ref-kind="stash"]')
+    const modal = () => body.querySelector('.vcs-stash-dialog')
+    const check = () => modal().querySelector('.vcs-stash-check')
+    const submit = () => modal().querySelector('[type="submit"]')
+
+    assert.ok(pointer())
+    harness.mouseClick(pointer())
+    await harness.settle()
+    assert.equal(JSON.parse(stored).node, 'stash:' + stash.sha)
+    assert.equal(pointer().props['aria-current'], true)
+    assert.equal(row().props['aria-current'], 'true')
+    assert.equal(stashReads, 1)
+    assert.ok(body.querySelector('[data-row-key="stash|work.txt"]'))
+    assert.equal(body.querySelector('.vcs-tree').attributes.has('data-gutter'), false)
+
+    row().focus()
+    assert.equal(harness.keyDown(row(), 'F10', { shiftKey: true }).prevented, true)
+    await harness.settle()
+    const items = menu().querySelectorAll('[role="menuitem"]')
+    assert.deepEqual(items.map(textOf), ['stash.apply', 'stash.branch', 'stash.drop'])
+    assert.ok(items[2].classList.contains('vcs-ref-ops-danger'))
+    assert.equal(harness.document.activeElement, items[0])
+    harness.keyClick(items[0])
+    await harness.settle()
+    assert.equal(textOf(harness.document.activeElement), 'branch.cancel')
+    assert.equal(check().dataset.state, 'checking')
+    assert.equal(submit().props['aria-disabled'], true)
+    modal().props.onSubmit({ preventDefault() {} })
+    assert.deepEqual(writes, [])
+    assert.equal(checks[0].mode, 'apply')
+    assert.equal(checks[0].index, '1')
+
+    const restoreIndex = modal().querySelector('[type="checkbox"]')
+    assert.equal(restoreIndex.props.checked, true)
+    restoreIndex.props.onChange({ currentTarget: { checked: false } })
+    await harness.settle()
+    assert.equal(checks[0].signal.aborted, true)
+    assert.equal(checks[1].index, '0')
+    const paths = Array.from({ length: 8 }, (_, i) => 'paths/file-' + i)
+    checks[1].resolve(Response.json({ head: tileTopic, baseIsHead: false, block: { reason: 'conflict', paths, pathsTruncated: false } }))
+    // Even if the cancelled transport resolves later, its green result cannot win.
+    checks[0].resolve(Response.json({ head: tileMain, baseIsHead: true, block: null }))
+    await harness.settle()
+    assert.equal(check().dataset.state, 'blocked')
+    const displayedPaths = check().querySelector('.vcs-stash-paths').children
+    assert.equal(displayedPaths.length, 6)
+    assert.equal(displayedPaths[0].props.title, paths[0])
+    assert.equal(submit().props['aria-disabled'], true)
+    assert.match(textOf(modal()), /stash\.applyMerge/u)
+    const shortcut = modal().querySelectorAll('[type="button"]').find(button => textOf(button) === 'stash.branch')
+    assert.ok(shortcut)
+    harness.mouseClick(shortcut)
+    await harness.settle()
+    assert.equal(harness.document.activeElement.props.id, 'vcs-stash-branch')
+    assert.equal(checks[2].mode, 'branch')
+    checks[2].resolve(Response.json({ head: tileTopic, baseIsHead: false, block: null }))
+    await harness.settle()
+    const name = modal().querySelector('[id="vcs-stash-branch"]')
+    name.props.onChange({ currentTarget: { value: 'bad..name' } })
+    assert.equal(submit().props['aria-disabled'], true)
+    name.props.onChange({ currentTarget: { value: 'recover/test' } })
+    assert.equal(submit().props['aria-disabled'], undefined)
+    harness.keyDown(harness.document.activeElement, 'Escape')
+    await harness.settle()
+    assert.equal(modal(), null)
+    assert.equal(harness.document.activeElement, row())
+    assert.deepEqual(writes, [])
+  } finally {
+    for (const check of checks) check.resolve(Response.json({}))
+    harness.unmount()
+    restore()
+    globalThis.fetch = previousFetch
+    if (previousStorage === undefined) delete globalThis.sessionStorage
+    else Object.defineProperty(globalThis, 'sessionStorage', previousStorage)
   }
 })

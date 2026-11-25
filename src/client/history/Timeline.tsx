@@ -13,12 +13,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ButtonHTMLAttributes, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
+import type { StashEntry } from '../../lib/stash-types.js'
 import { graphWidth, Graph } from './Graph.jsx'
 import type { GraphLayout } from './layout.js'
 import { DEFAULT_ROW_HEIGHT } from './layout.js'
 import { hasSeveralAuthors } from './commits.js'
 import { worktreeSummary } from './timeline-model.js'
-import type { WorktreeStatus } from './timeline-model.js'
+import type { TimelineRow, WorktreeStatus } from './timeline-model.js'
 import { errorMessage, formatCommitTime, formatCount, formatPlural, shortChangeId, shortSha } from '../format.js'
 import { DOWN, findAncestor, FORWARD, hasClass, isDiscreteActionButton, isEditableTarget, movement, unmodified, UP } from '../keys.js'
 import type { ElementLike } from '../keys.js'
@@ -55,7 +56,7 @@ export interface TimelineWorktree {
 
 /** One working copy attached to a commit row. */
 export interface TimelineWorkingCopy {
-  path?: string
+  path: string
   label: string
   statusState: string
   status?: TimelineStatus | null
@@ -83,6 +84,24 @@ export type RefActionsHandler = (reference: RefView, event: RefActivation, ancho
 
 /** Open the commit actions menu for one commit row. */
 export type CommitActionsHandler = (commit: TimelineCommit, point: ActionPoint, anchor: Element | null) => void
+export type StashActionsHandler = (stash: StashEntry, point: ActionPoint, anchor: Element | null) => void
+
+/** One row's mouse and keyboard routes into the same context menu. */
+function rowActions(open: (point: ActionPoint, anchor: HTMLButtonElement) => void) {
+  return {
+    onContextMenu: (event: ReactMouseEvent<HTMLButtonElement>) => {
+      if (event.defaultPrevented) return
+      event.preventDefault()
+      open(event, event.currentTarget)
+    },
+    onKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+      if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+      event.preventDefault()
+      const rect = event.currentTarget.getBoundingClientRect()
+      open({ clientX: rect.left + 12, clientY: rect.bottom ?? (rect.top + rect.height) }, event.currentTarget)
+    },
+  }
+}
 
 /** The badge context menu event; `RefActivation` omits the element it came from. */
 interface RefMenuEvent extends RefActivation {
@@ -110,7 +129,7 @@ export interface TimelineControl {
 
 /** The timeline's props. */
 export interface TimelineProps {
-  commits: readonly TimelineCommit[]
+  rows: readonly TimelineRow<TimelineCommit>[]
   layout: GraphLayout
   worktrees?: readonly TimelineWorktree[]
   selectedRow: number
@@ -119,6 +138,7 @@ export interface TimelineProps {
   onOpen: () => void
   onRefActions?: RefActionsHandler | undefined
   onCommitActions?: CommitActionsHandler | undefined
+  onStashActions?: StashActionsHandler | undefined
   control?: { current: TimelineControl | null } | undefined
   t: Translate
   locale?: string
@@ -128,6 +148,7 @@ export interface TimelineProps {
   hasMore: boolean
   canLoadMore?: boolean
   truncated: boolean
+  stashesTruncated: boolean
   onLoadMore: () => void
   onRetry: () => void
   initialScrollTop?: number
@@ -171,9 +192,9 @@ function WorktreeMeta({ status, statusState, t, locale }: { status: TimelineStat
  * @param props - timeline state.
  */
 export function Timeline({
-  commits, layout, worktrees = [], selectedRow, onSelectRow, onMove, onOpen,
-  onRefActions, onCommitActions, control, t, locale,
-  loading, loadingMore, error, hasMore, truncated, onLoadMore, onRetry,
+  rows: timelineRows, layout, worktrees = [], selectedRow, onSelectRow, onMove, onOpen,
+  onRefActions, onCommitActions, onStashActions, control, t, locale,
+  loading, loadingMore, error, hasMore, truncated, stashesTruncated, onLoadMore, onRetry,
   initialScrollTop = 0, onScrollOffset, canLoadMore = true,
 }: TimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -182,6 +203,7 @@ export function Timeline({
   const restoreRef = useRef<number | null>(initialScrollTop)
   const onScrollOffsetRef = useRef(onScrollOffset)
   onScrollOffsetRef.current = onScrollOffset
+  const commits = useMemo(() => timelineRows.flatMap(row => row.kind === 'commit' ? [row.commit] : []), [timelineRows])
 
   useLayoutEffect(() => {
     const element = scrollRef.current
@@ -222,7 +244,7 @@ export function Timeline({
     }
   }, [selectedRow])
 
-  const rowCount = commits.length + worktrees.length
+  const rowCount = timelineRows.length
   const gutter = graphWidth(layout)
   const first = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
   const last = Math.min(rowCount, Math.ceil((scrollTop + viewport) / ROW_HEIGHT) + OVERSCAN)
@@ -231,7 +253,7 @@ export function Timeline({
   const now = Date.now()
 
   const renderRow = (index: number) => {
-    const worktree = worktrees[index]
+    const row = timelineRows[index]
     const common: ButtonHTMLAttributes<HTMLButtonElement> & { 'data-timeline-index': number } = {
       type: 'button',
       'data-timeline-index': index,
@@ -243,7 +265,8 @@ export function Timeline({
         onSelectRow(index)
       },
     }
-    if (worktree !== undefined) {
+    if (row.kind === 'worktree') {
+      const worktree = worktrees[index]
       const { status: treeStatus, statusState } = worktree
       const clean = treeStatus !== null && (treeStatus.total ?? 0) === 0
       return (
@@ -256,7 +279,28 @@ export function Timeline({
         </button>
       )
     }
-    const commit = commits[index - worktrees.length]
+    if (row.kind === 'stash') {
+      const { stash } = row
+      const message = stash.message || t('stash.untitled')
+      return (
+        <button
+          key={row.node}
+          className="vcs-timeline-row vcs-stash-row"
+          aria-label={t('stash.rowLabel', { selector: stash.selector, message })}
+          aria-haspopup={onStashActions === undefined ? undefined : 'menu'}
+          {...common}
+          {...(onStashActions === undefined ? {} : rowActions((point, anchor) => { onStashActions(stash, point, anchor) }))}
+        >
+          <span className="vcs-timeline-title" title={message}>{message}</span>
+          <span className="vcs-timeline-meta">
+            <RefBadge reference={{ kind: 'stash', name: stash.selector }} />
+            <span className="vcs-timeline-author">{stash.branch ?? t('stash.detached')}</span>
+            <span className="vcs-timeline-time">{formatCommitTime(stash.time * 1_000, now, locale)}</span>
+          </span>
+        </button>
+      )
+    }
+    const commit = row.commit
     const copies = commit.workingCopies ?? []
     const copyLabels = copies.map(copy => copy.label)
     const observed = copies.find(copy => copy.statusState !== 'error' && copy.status?.workingCopy?.commitId === commit.sha)
@@ -265,31 +309,13 @@ export function Timeline({
       ? shortChangeId(commit.changeId)
       : shortSha(commit.sha)
     const subject = commit.subject === '' ? t('commit.noDescription') : commit.subject
-    const commitMenu = onCommitActions === undefined ? null : {
-      onContextMenu: (event: ReactMouseEvent<HTMLButtonElement>) => {
-        if (event.defaultPrevented) return
-        event.preventDefault()
-        onCommitActions(commit, event, event.currentTarget)
-      },
-      onKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>) => {
-        if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
-        event.preventDefault()
-        const rect = event.currentTarget.getBoundingClientRect()
-        onCommitActions(
-          commit,
-          { clientX: rect.left + 12, clientY: rect.bottom ?? (rect.top + rect.height) },
-          event.currentTarget,
-        )
-      },
-    }
     return (
       <button
         key={commit.sha}
         className={`vcs-timeline-row${copies.length > 0 ? ' vcs-working-copy-row' : ''}`}
         title={[copyLabels.join(', '), commit.changeId ?? shortSha(commit.sha), subject].filter(Boolean).join('  ')}
         {...common}
-        onContextMenu={commitMenu?.onContextMenu}
-        onKeyDown={commitMenu?.onKeyDown}
+        {...(onCommitActions === undefined ? {} : rowActions((point, anchor) => { onCommitActions(commit, point, anchor) }))}
       >
         <span className="vcs-timeline-title">{subject}</span>
         <span className="vcs-timeline-meta">
@@ -472,12 +498,13 @@ export function Timeline({
           selectedIndex={selectedRow}
         />
       </div>
-      {commits.length === 0 ? null : (
+      {commits.length === 0 && !stashesTruncated ? null : (
         <div className="vcs-timeline-footer">
           <span className="vcs-timeline-count">
             {t('history.count', { count: `${formatCount(commits.length, locale)}${hasMore ? '+' : ''}` })}
           </span>
           {truncated ? <span className="vcs-note">{formatPlural(t, 'history.truncated', commits.length, locale)}</span> : null}
+          {stashesTruncated ? <span className="vcs-note">{t('stash.listTruncated')}</span> : null}
           {hasMore ? (
             <button
               type="button"

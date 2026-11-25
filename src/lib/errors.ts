@@ -4,6 +4,8 @@
  * carry a host absolute path, a raw backend command, or a stack trace.
  */
 
+import type { StashBlockInfo, StashPaths } from './stash-types.js'
+
 /** The status the transport sends for each stable error code. */
 export const ERROR_STATUS = Object.freeze({
   'bad-request': 400,
@@ -44,6 +46,11 @@ export const ERROR_STATUS = Object.freeze({
   'commit-conflict': 409,
   'commit-blocked': 409,
   'commit-failed': 409,
+  'stash-missing': 404,
+  'stash-empty': 409,
+  'stash-blocked': 409,
+  'stash-conflict': 409,
+  'stash-failed': 409,
   'remote-missing': 409,
   'remote-branch-missing': 409,
   'tag-push-failed': 502,
@@ -99,6 +106,19 @@ export class VcsError extends Error {
   }
 }
 
+/** Stash failures that can identify paths without exposing Git's diagnostic. */
+export class StashWriteError extends VcsError {
+  readonly fields: StashBlockInfo | StashPaths
+
+  constructor(code: 'stash-blocked', fields: StashBlockInfo)
+  constructor(code: 'stash-conflict', fields: StashPaths, detail?: string)
+  constructor(code: 'stash-blocked' | 'stash-conflict', fields: StashBlockInfo | StashPaths, detail?: string) {
+    super(code, code === 'stash-blocked' ? 'The stash action is blocked by local repository state.'
+      : 'The stash apply left conflicts in the working tree. The stash was kept.', detail)
+    this.fields = fields
+  }
+}
+
 /** An abbreviation for a bad-request failure. */
 export function badRequest(message: string): VcsError {
   return new VcsError('bad-request', message)
@@ -145,5 +165,5 @@ export function errorResponse(error: unknown): Response {
   const message = error instanceof VcsError
     ? error.message
     : 'The version control request could not be completed.'
-  return json({ error: { code, message } }, ERROR_STATUS[code])
+  return json({ error: { code, message, ...(error instanceof StashWriteError ? error.fields : {}) } }, ERROR_STATUS[code])
 }

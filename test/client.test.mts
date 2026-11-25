@@ -9,20 +9,22 @@ import {
   branchOpMessage, commitOpMessage, errorMessage, formatCommitTime, formatCount, formatDateTime, lineCounts,
   sessionRelativePath, shortChangeId, shortSha, splitPath, statusKey, switchMessage, syncMessage, tagOpMessage,
 } from '../lib/client/format.js'
-import { branchActions, isDestructiveAction, remoteBranchActions } from '../lib/client/branch.js'
+import { branchActions, isDestructiveAction, remoteBranchActions, validNewBranchName } from '../lib/client/branch.js'
 import { tagActions } from '../lib/client/tag.js'
+import { stashActionMeta, stashActions, stashCheckView, stashNode, stashSaveReason } from '../lib/client/stash.js'
 import { commitActions, isDestructiveCommitAction } from '../lib/client/commit.js'
 import {
   buildNodeRows, buildRows, dirKey, isRowKey, rowBodyId, sectionKey, summarizeEntries,
 } from '../lib/client/detail/tree.js'
 import {
-  FOLD_LINES, SPLIT_MIN_WIDTH, STREAM_BUDGET, allFileFolds, budgetFolds, changedLines, commitGroups,
+  FOLD_LINES, SPLIT_MIN_WIDTH, STREAM_BUDGET, allFileFolds, budgetFolds, changedLines, revisionGroups,
   commitSummary, comparisonBase, diffTarget, estimateHeight, expandedFileFolds, hasUnfoldedFile, isFolded,
   diffTargets, mergedWorktreeGroups, rowAt, streamSections, worktreeGroups,
 } from '../lib/client/detail/detail.js'
 import { createQueue } from '../lib/client/detail/queue.js'
 import { counterpartKey, isStageable, mergedStageState, STAGE, stageFiles, UNSTAGE } from '../lib/client/detail/stage.js'
-import { graphInput, nodeAt, rowOf, worktreeSummary } from '../lib/client/history/timeline-model.js'
+import { graphInput, indexTimelineRows, nodeAt, rowOf, timelineRows, worktreeSummary } from '../lib/client/history/timeline-model.js'
+import { buildGraph } from '../lib/client/history/layout.js'
 import { attachWorkingCopies, checkedWorktrees, preferredViewNode, sharedRefs, toggleWorktree } from '../lib/client/worktrees.js'
 import { ApiError, createApi, queryString } from '../lib/client/api.js'
 import {
@@ -1151,27 +1153,29 @@ test('indexCommits answers which commits are loaded and where', () => {
 
 test('timeline rows map independent worktrees above one shared commit sequence', () => {
   const commits = [{ sha: 'c1', parents: ['c2'], refs: [] }, { sha: 'c2', parents: [], refs: [] }]
-  const index = indexCommits(commits)
   const worktrees = [{ id: worktreeNode('/repo'), head: 'c1' }, { id: worktreeNode('/unborn'), head: null }]
-  assert.equal(nodeAt(commits, 0, { worktrees }), worktrees[0].id)
-  assert.equal(nodeAt(commits, 1, { worktrees }), worktrees[1].id)
-  assert.equal(nodeAt(commits, 2, { worktrees }), 'c1')
-  assert.equal(nodeAt(commits, 4, { worktrees }), null)
-  assert.equal(rowOf(index, worktrees[1].id, worktrees), 1)
-  assert.equal(rowOf(index, 'c2', worktrees), 3)
-  assert.equal(rowOf(index, 'missing', worktrees), -1)
-  assert.equal(rowOf(index, null, worktrees), -1)
-  assert.deepEqual(graphInput(commits, worktrees), [
-    { sha: worktrees[0].id, parents: ['c1'], refs: [], worktree: true },
-    { sha: worktrees[1].id, parents: [], refs: [], worktree: true },
+  const rows = timelineRows(commits, worktrees, [])
+  const index = indexTimelineRows(rows)
+  assert.equal(nodeAt(rows, 0), worktrees[0].id)
+  assert.equal(nodeAt(rows, 1), worktrees[1].id)
+  assert.equal(nodeAt(rows, 2), 'c1')
+  assert.equal(nodeAt(rows, 4), null)
+  assert.equal(rowOf(index, worktrees[1].id), 1)
+  assert.equal(rowOf(index, 'c2'), 3)
+  assert.equal(rowOf(index, 'missing'), -1)
+  assert.equal(rowOf(index, null), -1)
+  assert.deepEqual(graphInput(rows), [
+    { sha: worktrees[0].id, parents: ['c1'], refs: [], kind: 'worktree' },
+    { sha: worktrees[1].id, parents: [], refs: [], kind: 'worktree' },
     ...commits,
   ])
 
   // Without a synthetic row, the loaded commit at row 0 is the node.
-  assert.equal(nodeAt(commits, 0), 'c1')
-  assert.equal(nodeAt(commits, 1), 'c2')
+  const realRows = timelineRows(commits, [], [])
+  assert.equal(nodeAt(realRows, 0), 'c1')
+  assert.equal(nodeAt(realRows, 1), 'c2')
   assert.equal(rowOf(index, WORKING_COPY), -1)
-  assert.deepEqual(graphInput(commits, []), commits)
+  assert.deepEqual(graphInput(realRows), commits)
 })
 
 test('Jujutsu workspace paths index real commits, including two workspaces sharing one head', () => {
@@ -1182,12 +1186,13 @@ test('Jujutsu workspace paths index real commits, including two workspaces shari
   assert.deepEqual(commits[0].workingCopies, [main, sibling])
   assert.equal(commits[0].workingCopy, true)
   assert.equal(commits[1].workingCopy, false, 'unchecked working-copy commits are ordinary history')
-  const index = indexCommits(commits)
-  assert.equal(nodeAt(commits, 0), worktreeNode(main.path))
+  const rows = timelineRows(commits, [], [])
+  const index = indexTimelineRows(rows)
+  assert.equal(nodeAt(rows, 0), worktreeNode(main.path))
   assert.equal(rowOf(index, worktreeNode(sibling.path)), 0)
   assert.equal(index.get('c1'), 0)
-  assert.equal(nodeAt(commits, 1), 'c2')
-  assert.deepEqual(graphInput(commits, []), commits)
+  assert.equal(nodeAt(rows, 1), 'c2')
+  assert.deepEqual(graphInput(rows), commits)
   const legacy = { repo: '/repo', node: WORKING_COPY, nodeChosen: true }
   assert.equal(preferredViewNode(legacy, [main, sibling], null, true), worktreeNode(main.path))
   assert.equal(preferredViewNode(legacy, [sibling], null, true), worktreeNode(sibling.path))
@@ -1255,10 +1260,9 @@ test('the working tree has staged and unstaged groups, with untracked files merg
     ['unstaged'],
   )
 
-  assert.deepEqual(commitGroups({ files: [{ path: 'x' }] }).map(group => group.id), ['commit'])
-  assert.equal(commitGroups({ files: [{ path: 'x' }] })[0].header, false, 'commits draw no group row')
-  assert.deepEqual(commitGroups({ files: [] }), [])
-  assert.deepEqual(commitGroups(null), [])
+  assert.deepEqual(revisionGroups('commit', [{ path: 'x', status: 'M' }]).map(group => group.id), ['commit'])
+  assert.equal(revisionGroups('commit', [{ path: 'x', status: 'M' }])[0].header, false, 'commits draw no group row')
+  assert.deepEqual(revisionGroups('commit', []), [])
 })
 
 test('merged worktree keeps both file sources and same-name untracked directories', () => {
@@ -1600,5 +1604,116 @@ test('commitOpMessage and createApi.commitOp handle branch checkout option', asy
     assert.equal('checkout' in calls[1].body, false)
   } finally {
     globalThis.fetch = savedFetch
+  }
+})
+
+test('stash graph input places rows at each loaded base rather than sorting by date', () => {
+  const commits = [{ sha: 'base1', parents: ['base2'], refs: [] }, { sha: 'base2', parents: [], refs: [] }]
+  const worktrees = [{ id: worktreeNode('/repo'), head: 'base1' }]
+  const stash = (n, base) => ({
+    sha: n.toString(16).padStart(40, 'a'), selector: 'stash@{' + n + '}', base,
+    index: 'b'.repeat(40), untracked: null, branch: null, message: 'test', time: 0,
+  })
+  const [onOlder, fresh, older, absent] = [stash(0, 'base2'), stash(1, 'base1'), stash(2, 'base1'), stash(3, 'missing')]
+  const rows = timelineRows(commits, worktrees, [onOlder, fresh, older, absent])
+  const index = indexTimelineRows(rows)
+  const nodes = [worktrees[0].id, stashNode(fresh.sha), stashNode(older.sha), 'base1', stashNode(onOlder.sha), 'base2']
+  assert.deepEqual(rows.map(row => row.node), nodes)
+  for (const [i, node] of nodes.entries()) {
+    assert.equal(nodeAt(rows, i), node)
+    assert.equal(rowOf(index, node), i)
+  }
+  assert.equal(rowOf(index, stashNode(absent.sha)), -1)
+  assert.equal(rowOf(index, fresh.sha), -1, 'stash tokens never alias commit ids')
+  const input = graphInput(rows)
+  assert.deepEqual(input[1], { sha: stashNode(fresh.sha), kind: 'stash', parents: ['base1'], refs: [] })
+  const graph = buildGraph(input)
+  assert.deepEqual(graph.dots.map(dot => dot.type), ['worktree', 'stash', 'stash', 'default', 'stash', 'default'])
+  assert.equal(graph.dots[1].center.x, graph.dots[2].center.x, 'several stashes on one base can share a lane')
+  assert.ok(graph.paths.some(path => path.dashed && path.points.at(-1)?.y === graph.dots[3].center.y))
+
+  const token = stashNode(fresh.sha)
+  assert.equal(sanitizeState({ node: token, nodeChosen: true }).node, token)
+  assert.equal(sanitizeState({ node: 'stash:stash@{0}', nodeChosen: true }).node, null)
+  assert.deepEqual(timelineRows(commits, [], [fresh, { ...fresh, selector: 'stash@{10}' }]).filter(row => row.kind === 'stash'),
+    [{ kind: 'stash', node: token, stash: fresh }])
+})
+
+test('stash detail keeps both comparisons on one read-only tree, even for the same path', () => {
+  const rev = 'd'.repeat(40)
+  const entries = [
+    { path: 'a/x.txt', status: 'D', added: 0, deleted: 1 },
+    { path: 'a/x.txt', status: 'U', untracked: true },
+    { path: 'a/new.txt', status: 'R', origPath: 'old.txt' },
+  ]
+  const groups = revisionGroups('stash', entries)
+  assert.deepEqual(groups.map(group => [group.id, group.header]), [['stash', false]])
+  const rows = buildNodeRows(groups)
+  assert.deepEqual(rows.map(row => row.key), ['stash-dir|a', 'stash|a/new.txt', 'stash|a/x.txt', 'stash-untracked|a/x.txt'])
+  assert.ok(rows.every(row => row.kind !== 'group' && row.loadable !== true))
+  assert.deepEqual(streamSections(groups, {}, rev).map(section => section.target), [
+    { scope: 'stash', path: 'a/new.txt', oldPath: 'old.txt', rev },
+    { scope: 'stash', path: 'a/x.txt', rev },
+    { scope: 'stash-untracked', path: 'a/x.txt', rev },
+  ])
+})
+
+test('stash menu, save availability and apply-dialog states are capability- and reason-driven', () => {
+  assert.deepEqual(stashActions(true), ['apply', 'branch', 'drop'])
+  assert.deepEqual(stashActions(false), [])
+  assert.equal(stashActionMeta('drop').destructive, true)
+  assert.equal(stashActionMeta('apply').group, stashActionMeta('branch').group)
+  assert.notEqual(stashActionMeta('apply').group, stashActionMeta('drop').group)
+  assert.equal(stashActionMeta('anything-else'), undefined)
+
+  assert.equal(stashSaveReason({ total: 0, groups: {} }, true), 'stash.saveEmpty')
+  assert.equal(stashSaveReason({ total: 1, groups: { unstaged: [{ conflict: true }] } }, true), 'stash.saveConflict')
+  assert.equal(stashSaveReason({ total: 1, groups: {} }, true), 'error.busy')
+  assert.equal(stashSaveReason({ total: 1, groups: {} }, false), undefined)
+  assert.equal(validNewBranchName('recover/topic'), true)
+  for (const name of ['', '-topic', 'topic..more', '@{-1}', 'topic/.lock', 'space name', 'HEAD']) {
+    assert.equal(validNewBranchName(name), false, name)
+  }
+
+  assert.deepEqual(stashCheckView(null), { state: 'checking', block: null, canConfirm: false, offerBranch: false })
+  const clean = { head: 'on-head', baseIsHead: true, block: null }
+  assert.deepEqual(stashCheckView(clean), { state: 'ok', block: null, canConfirm: true, offerBranch: false })
+  for (const reason of ['operation', 'dirty', 'untracked-exists', 'overwrite', 'index-conflict', 'conflict']) {
+    const block = { reason, paths: ['folder/file.txt'], pathsTruncated: false }
+    const blocked = { state: 'blocked', block, canConfirm: false, offerBranch: reason === 'conflict' }
+    assert.deepEqual(stashCheckView({ ...clean, block }), blocked)
+    assert.deepEqual(stashCheckView(clean, block), blocked, 'the write can reject a previously green preview')
+  }
+})
+
+test('stash API sends full ids and returns structured blocked failures', async () => {
+  const sha = 'd'.repeat(40)
+  const repo = '/repo'
+  const calls = []
+  const api = createApi('session', { fetchImpl: async (url, options) => {
+    calls.push([url, options])
+    return options.method === 'POST'
+      ? Response.json({ error: { code: 'stash-blocked', reason: 'conflict', paths: ['f'], pathsTruncated: false } }, { status: 409 })
+      : Response.json({ head: null, baseIsHead: false, block: null })
+  } })
+  const abort = new AbortController()
+  await api.stashCheck(repo, sha, 'apply', true, abort.signal)
+  assert.equal(calls[0][0], '/api/vcs.stash-check?sessionId=session&repo=%2Frepo&sha=' + sha + '&mode=apply&index=1')
+  assert.equal(calls[0][1].signal, abort.signal)
+  await assert.rejects(api.stashOp(repo, { action: 'apply', sha, index: true, drop: false }), error => {
+    assert.equal(error.status, 409)
+    assert.equal(error.code, 'stash-blocked')
+    assert.deepEqual(error.stashBlock, { reason: 'conflict', paths: ['f'], pathsTruncated: false })
+    return true
+  })
+  assert.equal(calls[1][0], '/api/vcs.stash')
+  assert.deepEqual(JSON.parse(calls[1][1].body), { sessionId: 'session', repo, action: 'apply', sha, index: true, drop: false })
+  assert.equal(calls[1][1].signal, undefined)
+  for (const scope of ['stash', 'stash-untracked']) {
+    await api.diff(repo, { scope, path: 'draft/theme.js', rev: sha }, abort.signal)
+    const query = new URL(calls.at(-1)[0], 'http://localhost').searchParams
+    assert.equal(query.get('scope'), scope)
+    assert.equal(query.get('path'), 'draft/theme.js')
+    assert.equal(query.get('rev'), sha, 'opening either stash file scope sends the W id')
   }
 })

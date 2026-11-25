@@ -6,10 +6,41 @@
  * `redactDetail` keeps credentials out of the Host log.
  */
 
+import { isAbsolute, join } from 'node:path'
+import type { Context } from '@deepseek-ai/cordis'
+
 import { REMOTE_TIMEOUT_MS } from './command.js'
+import { canonicalDirectory } from './contain.js'
 import { outputTooLarge, VcsError } from './errors.js'
 import type { VcsErrorCode } from './errors.js'
 import type { GitRunner } from './git.js'
+
+export type GitOperation = 'rebase' | 'merge' | 'cherry-pick' | 'revert' | 'bisect'
+
+const OPERATION_FILES: ReadonlyArray<readonly [string, GitOperation]> = [
+  ['rebase-merge', 'rebase'], ['rebase-apply', 'rebase'], ['MERGE_HEAD', 'merge'],
+  ['CHERRY_PICK_HEAD', 'cherry-pick'], ['REVERT_HEAD', 'revert'],
+  ['BISECT_START', 'bisect'], ['BISECT_LOG', 'bisect'],
+]
+
+/** Resolve the checkout's own Git metadata directory, not the shared store. */
+export async function gitDirectory(ctx: Context, git: GitRunner, root: string, signal: AbortSignal): Promise<string | null> {
+  const result = await git.run(['rev-parse', '--absolute-git-dir'], { cwd: root, signal })
+  if (result.lossy || result.exitCode !== 0 || !result.stdout.endsWith('\n')) return null
+  const directory = result.stdout.slice(0, -1)
+  return isAbsolute(directory) ? canonicalDirectory(ctx, directory, signal) : null
+}
+
+export async function readGitOperation(ctx: Context, gitDir: string, signal: AbortSignal): Promise<GitOperation | null> {
+  const state = await Promise.all(OPERATION_FILES.map(([file]) => ctx.fs.lstat(join(gitDir, file), undefined, signal)))
+  return OPERATION_FILES.find((_, index) => state[index] !== undefined)?.[1] ?? null
+}
+
+/** The sequencer also covers an interrupted series between individual commits. */
+export async function hasGitOperation(ctx: Context, gitDir: string, signal: AbortSignal): Promise<boolean> {
+  return await readGitOperation(ctx, gitDir, signal) !== null
+    || await ctx.fs.lstat(join(gitDir, 'sequencer'), undefined, signal) !== undefined
+}
 
 /** Names that would read as an option or carry control characters are refused. */
 export const UNSAFE_NAME = /^-|[\u0000-\u001f\u007f]/u

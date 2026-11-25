@@ -1,12 +1,12 @@
 /**
- * Pure rules for the timeline: selected working trees above shared commits.
+ * Pure rules for the timeline: worktrees first, then stashes and shared commits.
  *
- * The timeline is one list with worktree rows followed by loaded commits in
- * `--topo-order`. These helpers translate
- * between row indexes and timeline nodes and build the lane-graph input.
+ * The row model is also the source of the graph and the keyboard's row index.
  */
 
 import { worktreeNode } from '../state.js'
+import { stashNode } from '../stash.js'
+import type { StashEntry } from '../../lib/stash-types.js'
 import type { GraphCommit } from './layout.js'
 
 /** The commit fields the row↔node mapping reads; commit rows may carry more. */
@@ -20,6 +20,11 @@ export interface WorktreeHead {
   id: string
   head: string | null
 }
+
+export type TimelineRow<C extends TimelineCommitRow = TimelineCommitRow> =
+  | { kind: 'worktree'; node: string; head: string | null }
+  | { kind: 'stash'; node: string; stash: StashEntry }
+  | { kind: 'commit'; node: string; commit: C }
 
 /** One changed file's line counts inside a status group. */
 export interface WorktreeStatusEntry {
@@ -50,57 +55,59 @@ export interface RepositoryEntry {
   enclosing?: boolean
 }
 
-/**
- * The lane-graph input.
- *
- * Each selected working tree contributes a virtual node linked to its HEAD;
- * a backend whose working copy is a commit contributes
- * the commits as they came.
- * @param commits - loaded commits in list order.
- * @param worktrees - virtual rows in display order.
- * @returns nodes for `buildGraph`.
- */
-export function graphInput(commits: readonly GraphCommit[], worktrees: readonly WorktreeHead[]): GraphCommit[] {
-  return [...worktrees.map(({ id, head }) => ({ sha: id, parents: head === null ? [] : [head], refs: [], worktree: true })), ...commits]
+/** Put each stash immediately above its loaded base, newest first at that base. */
+export function timelineRows<C extends TimelineCommitRow>(
+  commits: readonly C[], worktrees: readonly WorktreeHead[], stashes: readonly StashEntry[],
+): TimelineRow<C>[] {
+  const byBase = new Map<string, TimelineRow<C>[]>()
+  const seen = new Set<string>()
+  for (const stash of stashes) {
+    // Two reflog entries can contain the exact same W object. One node per
+    // object preserves the same identity used for writes (the newest match).
+    if (seen.has(stash.sha)) continue
+    seen.add(stash.sha)
+    const row = { kind: 'stash', node: stashNode(stash.sha), stash } as const
+    const group = byBase.get(stash.base)
+    if (group === undefined) byBase.set(stash.base, [row])
+    else group.push(row)
+  }
+  return [
+    ...worktrees.map(({ id, head }) => ({ kind: 'worktree', node: id, head } as const)),
+    ...commits.flatMap((commit): TimelineRow<C>[] => {
+      const copy = commit.workingCopies?.[0]
+      return [...byBase.get(commit.sha) ?? [], { kind: 'commit', node: copy === undefined ? commit.sha : worktreeNode(copy.path), commit }]
+    }),
+  ]
 }
 
-/**
- * The node shown on one timeline row.
- * @param commits - loaded commits.
- * @param index - row index.
- * @param [options] - virtual worktree rows before the commits.
- * @returns the node, or null past the end.
- */
-export function nodeAt(
-  commits: readonly TimelineCommitRow[],
-  index: number,
-  { worktrees = [] }: { worktrees?: readonly { id: string }[] } = {},
-): string | null {
-  if (index < worktrees.length) return worktrees[index]?.id ?? null
-  const commit: TimelineCommitRow | undefined = commits[index - worktrees.length]
-  if (commit === undefined || commit === null) return null
-  const copy = commit.workingCopies?.[0]
-  return copy === undefined ? commit.sha : worktreeNode(copy.path)
+export function graphInput(rows: readonly TimelineRow<GraphCommit>[]): GraphCommit[] {
+  return rows.map(row => row.kind === 'commit' ? row.commit : {
+    sha: row.node,
+    kind: row.kind,
+    parents: row.kind === 'stash' ? [row.stash.base] : row.head === null ? [] : [row.head],
+    refs: [],
+  })
 }
 
-/**
- * The timeline row showing one node.
- * @param commitIndex - commit id to commit index.
- * @param node - the node.
- * @param [worktrees] - worktree rows.
- * @returns the row index, or -1 when the node is not loaded.
- */
-export function rowOf(
-  commitIndex: ReadonlyMap<string, number>,
-  node: string | null,
-  worktrees: readonly { id: string }[] = [],
-): number {
-  if (node === null) return -1
-  const treeIndex = worktrees.findIndex(tree => tree.id === node)
-  if (treeIndex >= 0) return treeIndex
-  const index = commitIndex.get(node)
-  if (index === undefined) return -1
-  return index + worktrees.length
+export function nodeAt(rows: readonly TimelineRow[], index: number): string | null {
+  return rows[index]?.node ?? null
+}
+
+/** Jujutsu workspaces sharing a commit are aliases for the same row. */
+export function indexTimelineRows(rows: readonly TimelineRow[]): Map<string, number> {
+  const index = new Map<string, number>()
+  rows.forEach((row, position) => {
+    index.set(row.node, position)
+    if (row.kind === 'commit') {
+      index.set(row.commit.sha, position)
+      for (const copy of row.commit.workingCopies ?? []) index.set(worktreeNode(copy.path), position)
+    }
+  })
+  return index
+}
+
+export function rowOf(rowIndex: ReadonlyMap<string, number>, node: string | null): number {
+  return node === null ? -1 : rowIndex.get(node) ?? -1
 }
 
 /**

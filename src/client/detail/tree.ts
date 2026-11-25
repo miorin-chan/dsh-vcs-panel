@@ -130,7 +130,7 @@ interface FileNode {
 type TreeNode = DirNode | FileNode
 
 /** Keys of rows the current layouts can persist. */
-const ROW_KEY = /^(?:staged|unstaged|merged|merged-dir|commit)\|/u
+const ROW_KEY = /^(?:staged|unstaged|merged|merged-dir|commit|stash|stash-dir|stash-untracked)\|/u
 
 /**
  * The key of one tree row: a group key, a directory path without a trailing
@@ -223,7 +223,7 @@ function childDir(node: DirNode, name: string, path: string, loadable = false): 
  * @param entry - file or directory entry.
  * @param path - full path accumulated so far.
  */
-function insertAt(node: DirNode, segments: readonly string[], entry: FileEntry, path: string): void {
+function insertAt(node: DirNode, segments: readonly string[], entry: FileEntry, path: string, stash = false): void {
   let parent = path
   for (let index = 0; index < segments.length - 1; index += 1) {
     const name = segments[index]
@@ -237,7 +237,10 @@ function insertAt(node: DirNode, segments: readonly string[], entry: FileEntry, 
     childDir(node, name, full, true).entry = entry
     return
   }
-  node.children.set(name, { type: 'file', name, path: entry.path, entry })
+  // Staging a deletion and then recreating the file can put the same path
+  // in both stash comparisons. Keep both stops in the same tree.
+  const key = stash && entry.untracked === true ? `${name}\0` : name
+  node.children.set(key, { type: 'file', name, path: entry.path, entry })
 }
 
 /** Split one entry path into segments, ignoring a trailing slash. */
@@ -257,7 +260,7 @@ function buildTree(group: string, entries: readonly FileEntry[], state: TreeStat
   for (const entry of entries) {
     const segments = segmentsOf(entry.path)
     if (segments.length === 0) continue
-    insertAt(root, segments, entry, '')
+    insertAt(root, segments, entry, '', group === 'stash')
   }
   const directoryGroup = group === 'merged' ? 'unstaged' : group
   for (const [key, children] of Object.entries(state.dirChildren ?? {})) {
@@ -338,7 +341,7 @@ function flatten(node: DirNode, depth: number, group: string, state: TreeState, 
       rows.push({
         kind: 'file',
         group,
-        key: sectionKey(group, child.entry.path),
+        key: sectionKey(group === 'stash' && child.entry.untracked === true ? 'stash-untracked' : group, child.entry.path),
         depth,
         name: child.name,
         path: child.entry.path,
@@ -347,7 +350,7 @@ function flatten(node: DirNode, depth: number, group: string, state: TreeState, 
       continue
     }
     const { node: last, name } = chainOf(child)
-    const directoryGroup = group === 'merged' ? (last.loadable ? 'unstaged' : 'merged-dir') : group
+    const directoryGroup = group === 'stash' ? 'stash-dir' : group === 'merged' ? (last.loadable ? 'unstaged' : 'merged-dir') : group
     const key = dirKey(directoryGroup, last.path)
     const expanded = last.loadable
       ? state.dirs?.[key] === true

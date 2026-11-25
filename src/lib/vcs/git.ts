@@ -10,7 +10,7 @@
  * module, never from a shell.
  */
 
-import { isAbsolute, join } from 'node:path'
+import { join } from 'node:path'
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { FsTarget } from '@deepseek-ai/dsh-fs'
@@ -26,9 +26,8 @@ import {
 import {
   COMMIT_FILE_MAX,
   COMMIT_FORMAT,
-  mergeCommitFiles,
   parseCommitMetadata,
-  parseNameStatusZ,
+  readCommitFiles,
 } from '../commit.js'
 import type { DiffHunk } from '../diff.js'
 import {
@@ -48,8 +47,8 @@ import { EMPTY_TREE, isFullSha, validateRelPath, validateSha } from '../paths.js
 import type { IndexHead, IndexTransactionRunner } from '../index-transaction.js'
 import type { StatusBranch } from '../status.js'
 import { buildStatusGroups, parseNumstat, parsePorcelainV2 } from '../status.js'
-import { canonicalDirectory, containPath } from '../contain.js'
-import { listGitRemotes, redactDetail, remoteNames } from '../git-utils.js'
+import { containPath } from '../contain.js'
+import { gitDirectory, listGitRemotes, redactDetail, remoteNames } from '../git-utils.js'
 import { requireLocalBranch } from '../ref-utils.js'
 import type { GitBranchOpResult, GitBranchRequest } from '../branch-ops.js'
 import { runGitBranchOp } from '../branch-ops.js'
@@ -57,6 +56,9 @@ import type { GitTagOpResult, GitTagRequest } from '../tag-ops.js'
 import { runGitTagOp } from '../tag-ops.js'
 import type { GitCommitOpResult, GitCommitRequest } from '../commit-ops.js'
 import { runGitCommitOp } from '../commit-ops.js'
+import { listStashes, readStashDetail, requireStash } from '../stash.js'
+import type { StashCheck, StashDetailAnswer, StashMode, StashRequest, StashResult } from '../stash-types.js'
+import { checkStash, runStashOp } from '../stash-ops.js'
 import { syncGitBranch } from '../sync.js'
 import {
   applyIndexPatch, readStagingPatch, requireStagingFiles, requireStagingTarget, selectedIndexPatch,
@@ -103,8 +105,8 @@ const UNTRACKED_READS = 4
 /** Most local branches the switch menu lists. */
 const BRANCH_MAX = 500
 
-/** The four comparisons the diff route serves for Git. */
-const SCOPES: Set<string> = new Set(['staged', 'unstaged', 'untracked', 'commit'])
+/** The comparisons the diff route serves for Git. */
+const SCOPES: Set<string> = new Set(['staged', 'unstaged', 'untracked', 'commit', 'stash', 'stash-untracked'])
 
 /** A staging write applies only to the branch and commit its status read saw. */
 function requireHead(branch: StatusBranch, head: IndexHead): void {
@@ -149,7 +151,7 @@ type GitStageTarget = SingleFileStageTarget | StagingFilesRequest
 
 /** What one #readDiff call may receive: a route target or a staging target. */
 interface ReadDiffTarget {
-  /** `staged`, `unstaged`, `untracked`, or `commit`. */
+  /** `staged`, `unstaged`, `untracked`, `commit`, `stash`, or `stash-untracked`. */
   scope?: unknown
   /** Repository-relative file path. */
   path?: unknown
@@ -310,11 +312,8 @@ export class GitBackend {
     return gitCommonDirAt(this.git, root, signal)
   }
 
-  async gitDir(root: string, signal: AbortSignal): Promise<string | null> {
-    const result = await this.git.run(['rev-parse', '--absolute-git-dir'], { cwd: root, signal })
-    if (result.lossy || result.exitCode !== 0 || !result.stdout.endsWith('\n')) return null
-    const path = result.stdout.slice(0, -1)
-    return isAbsolute(path) ? await canonicalDirectory(this.ctx, path, signal) : null
+  gitDir(root: string, signal: AbortSignal): Promise<string | null> {
+    return gitDirectory(this.ctx, this.git, root, signal)
   }
 
   ignoredPaths(root: string, paths: string[], signal: AbortSignal): Promise<Set<string>> {
@@ -831,7 +830,7 @@ export class GitBackend {
   ): Promise<GitDiffAnswer> {
     const scope = target.scope
     if (typeof scope !== 'string' || !SCOPES.has(scope)) {
-      throw badRequest('scope is unstaged, staged, untracked, or commit.')
+      throw badRequest('scope is unstaged, staged, untracked, commit, stash, or stash-untracked.')
     }
     const rel = validateRelPath(target.path)
     if (rel === undefined) throw badRequest('path must be a repository-relative file path.')
@@ -841,9 +840,14 @@ export class GitBackend {
       throw badRequest('oldPath must be a repository-relative file path.')
     }
 
-    const resolvedTarget = await containPath(this.ctx, root, rel, signal)
-    if (scope === 'untracked') return this.untrackedDiff(root, rel, resolvedTarget, signal, target.readOnly !== true, git)
-    if (oldPath !== undefined) await containPath(this.ctx, root, oldPath, signal)
+    const stashScope = scope === 'stash' || scope === 'stash-untracked'
+    // Stash comparisons never access the checkout, which might now have a
+    // different file or symlink at the same path.
+    const resolvedTarget = stashScope ? undefined : await containPath(this.ctx, root, rel, signal)
+    if (scope === 'untracked' && resolvedTarget !== undefined) {
+      return this.untrackedDiff(root, rel, resolvedTarget, signal, target.readOnly !== true, git)
+    }
+    if (!stashScope && oldPath !== undefined) await containPath(this.ctx, root, oldPath, signal)
     // A rename is only detected when both sides are named; one path reads as a
     // brand-new or deleted file instead.
     const paths = oldPath === undefined || oldPath === rel ? [rel] : [oldPath, rel]
@@ -852,10 +856,20 @@ export class GitBackend {
     if (scope === 'commit') {
       const resolved = await this.resolveDiffCommit(target.rev, root, signal)
       range = { from: resolved.from, to: resolved.to }
+    } else if (stashScope) {
+      const stash = await requireStash(this.git, root, target.rev, signal)
+      if (scope === 'stash') range = { from: stash.base, to: stash.sha }
+      else {
+        if (stash.untracked === null) throw notFound('That stash has no untracked files.')
+        const empty = await git.run(['hash-object', '-t', 'tree', '--stdin'], { cwd: root, signal, stdin: '' })
+        const from = empty.stdout.trim()
+        if (empty.lossy || empty.exitCode !== 0 || !isFullSha(from)) throw new VcsError('internal', 'The empty tree could not be resolved.')
+        range = { from, to: stash.untracked }
+      }
     }
 
-    const current = await this.ctx.fs.stat(resolvedTarget, signal).catch(() => undefined)
-    if (scope === 'unstaged' && current?.type === 'directory') {
+    if (scope === 'unstaged' && resolvedTarget !== undefined
+      && (await this.ctx.fs.stat(resolvedTarget, signal).catch(() => undefined))?.type === 'directory') {
       throw badRequest('That path is a directory, not a file.')
     }
 
@@ -864,7 +878,10 @@ export class GitBackend {
       '--src-prefix=a/', '--dst-prefix=b/', '--output-indicator-old=-', '--output-indicator-new=+', '--output-indicator-context= ',
     ]
     if (scope === 'staged') args.push('--cached')
-    if (range !== undefined) args.push(range.from, range.to)
+    if (range !== undefined) {
+      if (stashScope) args.push('-M')
+      args.push(range.from, range.to)
+    }
     args.push('--', ...paths.map(literalPathspec))
     const output = await git.run(args, {
       cwd: root,
@@ -890,13 +907,14 @@ export class GitBackend {
       if (range !== undefined) {
         const type = await this.commitPathType(root, range.to, rel, signal)
         this.refuseDirectory(type)
-        if (type !== 'blob') throw notFound('That file is not part of the commit.')
+        if (type !== 'blob') throw notFound('That file is not part of the comparison.')
       } else if (scope === 'staged') {
         if (!(await this.trackedInIndex(root, rel, signal, git))) {
           throw notFound('That file is not staged.')
         }
       } else {
-        const fresh = await this.ctx.fs.stat(resolvedTarget, signal).catch(() => undefined)
+        const fresh = resolvedTarget === undefined ? undefined
+          : await this.ctx.fs.stat(resolvedTarget, signal).catch(() => undefined)
         if (fresh === undefined) throw notFound('That file is not present.')
         if (fresh.type === 'directory') throw badRequest('That path is a directory, not a file.')
       }
@@ -938,17 +956,18 @@ export class GitBackend {
       `--max-count=${limit}`,
       `--skip=${skip}`,
     ]
-    if (ref === 'all') args.push('--all')
+    const firstPage = () => skip === 0 ? listStashes(this.git, root, signal) : {}
+    if (ref === 'all') args.push('--exclude=refs/stash', '--all')
     else if (page.heads === undefined) args.push('HEAD')
-    else if (page.heads.length === 0) return { commits: [], truncated: false, nextSkip: null }
+    else if (page.heads.length === 0) return { ...await firstPage(), commits: [], truncated: false, nextSkip: null }
     else args.push(...new Set(page.heads), '--')
-    const result = await this.git.run(args, { cwd: root, signal })
+    const [result, stashPage] = await Promise.all([this.git.run(args, { cwd: root, signal }), firstPage()])
     if (result.lossy) throw outputTooLarge()
     if (result.exitCode !== 0) {
       // An unborn branch has no HEAD to walk; that is an empty history, not a
       // failure. Every other complaint is a real read failure.
       if (ref === 'HEAD' && /unknown revision|does not have any commits|bad revision|ambiguous argument/iu.test(result.stderr)) {
-        return { commits: [], truncated: false, nextSkip: null }
+        return { ...stashPage, commits: [], truncated: false, nextSkip: null }
       }
       throw new VcsError('internal', 'The history could not be read.')
     }
@@ -959,6 +978,7 @@ export class GitBackend {
       : parsed
     const truncated = skip + commits.length >= LOG_SKIP_MAX
     return {
+      ...stashPage,
       commits,
       truncated,
       nextSkip: commits.length === 0 ? null : skip + commits.length,
@@ -1017,24 +1037,17 @@ export class GitBackend {
     // selected file against the first parent, so that comparison is explicit.
     // `--no-ext-diff` keeps a repository-configured external diff program out
     // of every comparison, matching the diff route.
-    const base = ['diff-tree', '--no-ext-diff', '--no-commit-id', '-r', '-M', '-z']
     const tree = metadata.parents.length > 1
       ? [metadata.parents[0], full]
       : ['--root', full]
-    const [names, counts, remotes] = await Promise.all([
-      this.git.run([...base, '--name-status', ...tree], { cwd: root, signal }),
-      this.git.run([...base, '--numstat', ...tree], { cwd: root, signal }),
+    const [files, remotes] = await Promise.all([
+      readCommitFiles(this.git, root, tree, signal),
       hasRemoteRefs ? remoteNames(this.git, root, signal) : Promise.resolve(null),
     ])
-    if (names.lossy || counts.lossy) throw outputTooLarge()
-    if (names.exitCode !== 0 || counts.exitCode !== 0) {
-      throw new VcsError('internal', 'The commit files could not be read.')
-    }
     if (remotes !== null) {
       refs = annotateRemoteRefs([{ refs }], remotes)[0].refs
     }
 
-    const files = mergeCommitFiles(parseNameStatusZ(names.stdout), parseNumstat(counts.stdout))
     const truncated = files.length > COMMIT_FILE_MAX
     return {
       commit: {
@@ -1169,6 +1182,19 @@ export class GitBackend {
    */
   commitOp(root: string, request: GitCommitRequest, signal: AbortSignal): Promise<GitCommitOpResult> {
     return runGitCommitOp(this.git, root, request, signal)
+  }
+
+  stash(root: string, sha: string, signal: AbortSignal): Promise<StashDetailAnswer> {
+    return readStashDetail(this.git, root, sha, signal)
+  }
+
+  async stashCheck(root: string, sha: string, mode: StashMode, index: boolean, signal: AbortSignal): Promise<StashCheck> {
+    const stash = await requireStash(this.git, root, sha, signal)
+    return checkStash(this.ctx, this.git, root, stash, mode, index, signal)
+  }
+
+  stashOp(root: string, request: StashRequest, signal: AbortSignal): Promise<StashResult> {
+    return runStashOp(this.ctx, this.git, root, request, signal)
   }
 
   /**

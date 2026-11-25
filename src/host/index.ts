@@ -14,7 +14,8 @@
  * delete, merge, rebase, push, checkout-remote, delete-remote, merge-remote,
  * pull-remote), `POST /api/vcs.tag` deletes or pushes a tag, and
  * `POST /api/vcs.commit-op` tags, branches, checks out, cherry-picks, reverts,
- * drops, merges, rebases, or resets at one commit. `POST /api/vcs.stage`
+ * drops, merges, rebases, or resets at one commit. `POST /api/vcs.stash`
+ * saves, applies, retrieves on a new branch, or drops a stash. `POST /api/vcs.stage`
  * stages or unstages a file or selected lines. `POST /api/vcs.stage-history`
  * undoes or redoes those index changes. Reset and drop
  * only follow an explicit dialog. Jujutsu bookmarks and tags are never
@@ -71,6 +72,8 @@ const ROUTES: readonly RouteEntry[] = [
   { path: '/api/vcs.diff', key: 'diff', method: 'GET' },
   { path: '/api/vcs.log', key: 'log', method: 'GET' },
   { path: '/api/vcs.commit', key: 'commit', method: 'GET' },
+  { path: '/api/vcs.stash', handlers: { GET: 'stash', POST: 'stashOp' } },
+  { path: '/api/vcs.stash-check', key: 'stashCheck', method: 'GET' },
   { path: '/api/vcs.turn', key: 'turn', method: 'GET' },
   { path: '/api/vcs.sync', key: 'sync', method: 'POST' },
   { path: '/api/vcs.switch', key: 'switchBranch', method: 'POST' },

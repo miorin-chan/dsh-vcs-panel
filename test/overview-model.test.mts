@@ -280,13 +280,12 @@ test('traversal walks columns left to right and each column top to bottom, wrapp
   assert.deepEqual(tileOrder(entries, views, 'attention').map(entry => entry.path), ['/w/repo', '/w/unread', '/w/a-quiet'])
 })
 
-test('a pointer opens its working tree when unsaved, a stash its base, anything else its commit', () => {
+test('a pointer opens its working tree when unsaved, a stash its own node, anything else its commit', () => {
   const view = repositoryView(repository() as never, '/w')
   const named = (name: string) => view.pointers.find(entry => entry.name === name) as never
   assert.deepEqual(pointerTarget(named('dirty')), { worktree: '/w/repo/.claude/worktrees/x' })
-  assert.deepEqual(pointerTarget(named('stash@{0}')), { commit: sha('1') })
+  assert.deepEqual(pointerTarget(named('stash@{0}')), { stash: `stash:${sha('8')}` })
   assert.deepEqual(pointerTarget(named('pr')), { commit: sha('a') })
-  assert.equal(pointerTarget({ ...named('stash@{0}'), onto: null } as never), null)
 })
 
 test('panel state keeps the overview and tiled layout, clamping and dropping bad values', () => {

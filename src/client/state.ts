@@ -9,6 +9,7 @@
  */
 
 import { isRowKey } from './detail/tree.js'
+import { stashSha } from './stash.js'
 
 /** Prefix that keeps this plugin's keys apart from any other tab state. */
 const KEY_PREFIX = 'vcs:'
@@ -49,7 +50,7 @@ export const OVERVIEW_WIDTH = 400
 export type TileOrder = 'directory' | 'attention'
 
 /** Directory keys of the commit file group, which belong to one commit only. */
-const COMMIT_DIR_PREFIX = 'commit|'
+const REVISION_DIR_PREFIX = /^(?:commit|stash-dir)\|/u
 
 /** A persisted reading position in the change tree. */
 export interface ReadingAnchor {
@@ -183,14 +184,15 @@ function booleanKeys(value: unknown): Record<string, boolean> {
 }
 
 /**
- * Whether a value names a timeline node: the working tree or a commit id.
+ * Whether a value names a timeline node: a worktree, a commit, or a stash.
  * @param value - candidate node.
- * @returns true for {@link WORKTREE} or a hexadecimal commit id.
+ * @returns true for a worktree token, stash token, or hexadecimal commit id.
  */
 export function isNode(value: unknown): value is string {
   return value === WORKTREE
     || value === WORKING_COPY
     || worktreePath(value) !== null
+    || stashSha(value) !== null
     || (typeof value === 'string' && /^[0-9a-f]{7,64}$/iu.test(value))
 }
 
@@ -295,7 +297,7 @@ export function nodePatch(state: PanelState, node: string, chosen: boolean): Par
   }
   const collapsed: Record<string, boolean> = {}
   for (const key of Object.keys(state.collapsed ?? {})) {
-    if (!key.startsWith(COMMIT_DIR_PREFIX)) collapsed[key] = true
+    if (!REVISION_DIR_PREFIX.test(key)) collapsed[key] = true
   }
   return { node, nodeChosen: chosen, anchor: null, folds: {}, collapsed }
 }

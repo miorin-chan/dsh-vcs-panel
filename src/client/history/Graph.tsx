@@ -183,6 +183,10 @@ export function Graph({
         {visibleDots.map((dot) => {
           const cx = dot.center.x
           const cy = dot.center.y * rowHeight
+          if (dot.type === 'stash') {
+            return <rect key={`dot-${dot.index}`} className="vcs-graph-dot vcs-graph-dot-stash"
+              x={-4} y={-4} width={8} height={8} rx={1} transform={`translate(${cx} ${cy}) rotate(45)`} />
+          }
           if (dot.type === 'worktree' || dot.type === 'working') {
             return (
               <g key={`dot-${dot.index}`}>

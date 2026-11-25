@@ -294,15 +294,17 @@ function actionLabel(action: TileDirectAction['action'], t: Translate): string {
       ? t(BRANCH_ACTION_META[action.kind].labelKey) : t('tile.mergeInto', { name: action.receiver })
     case 'commit': return t(COMMIT_ACTION_META[action.kind].labelKey)
     case 'worktree': return t('worktree.removeWorktree')
+    case 'stash': return t(action.kind === 'apply' ? 'stash.apply' : 'stash.drop')
   }
 }
 
 /** The selected pointer's facts and buttons. */
-function ActionBar({ pointer, view, cwd, directActions, onOpen, onActions, onDirectAction, t, locale }: {
+function ActionBar({ pointer, view, cwd, directActions, stashOps, onOpen, onActions, onDirectAction, t, locale }: {
   pointer: PointerView
   view: RepositoryView
   cwd: string | null
   directActions: readonly TileDirectAction[]
+  stashOps: boolean
   onOpen: () => void
   onActions: (element: HTMLElement) => void
   onDirectAction: (action: TileDirectAction['action'], element: HTMLElement) => void
@@ -311,7 +313,7 @@ function ActionBar({ pointer, view, cwd, directActions, onOpen, onActions, onDir
 }) {
   const facts: string[] = [view.relativePath === '.' ? view.name : view.relativePath,
     pointer.state === 'op' ? headlineText(pointer, t, locale) : t(STATE_KEYS[pointer.state])]
-  if (pointer.kind === 'stash') facts.push(pointer.subject.replace(/^(?:WIP on|On) [^:]+: /u, ''))
+  if (pointer.kind === 'stash') facts.push(pointer.subject || t('stash.untitled'))
   else if (pointer.base !== null) {
     facts.push(t('tile.distance', { base: pointer.base, ahead: String(pointer.ahead ?? 0), behind: String(pointer.behind ?? 0) }))
     if (pointer.unique > 0) facts.push(formatPlural(t, 'tile.local', pointer.unique, locale))
@@ -324,8 +326,8 @@ function ActionBar({ pointer, view, cwd, directActions, onOpen, onActions, onDir
       : facts2)
   }
   facts.push(pointer.sha.slice(0, 7))
-  const hasActions = view.vcs === 'jujutsu' ? pointer.occupant !== null
-    : pointer.kind !== 'stash' && (pointer.kind !== 'detached' || pointer.occupant !== null)
+  const hasActions = pointer.kind === 'stash' ? stashOps
+    : view.vcs === 'jujutsu' || pointer.kind === 'detached' ? pointer.occupant !== null : true
   return (
     <>
       <span className="vcs-tile-actionbar-who" data-state={pointer.state}>
@@ -349,7 +351,7 @@ function ActionBar({ pointer, view, cwd, directActions, onOpen, onActions, onDir
             <button
               key={action.kind}
               type="button"
-              className="vcs-button vcs-tile-direct-action"
+              className={`vcs-button vcs-tile-direct-action${action.domain === 'stash' && action.kind === 'drop' ? ' vcs-button-danger' : ''}`}
               data-tile-action={action.kind}
               title={title}
               aria-disabled={reason === undefined ? undefined : true}
@@ -534,6 +536,7 @@ export function TiledView({
               view={focusedView}
               cwd={cwd}
               directActions={tileDirectActions(focused, focusedView, focusedColumn.entry.capabilities, inFlight.get(focused.repo), focusedColumn.entry)}
+              stashOps={focusedColumn.entry.capabilities.stashOps === true}
               onOpen={() => { onOpenTimeline(focused.repo, focused) }}
               onActions={element => {
                 const box = element.getBoundingClientRect()

@@ -42,7 +42,7 @@ export interface GraphLink {
 }
 
 /** The dot styles the timeline draws. */
-export type GraphDotType = 'default' | 'head' | 'merge' | 'worktree' | 'working'
+export type GraphDotType = 'default' | 'head' | 'merge' | 'worktree' | 'stash' | 'working'
 
 /** One commit dot. */
 export interface GraphDot {
@@ -66,12 +66,12 @@ export interface GraphRef {
   current?: boolean
 }
 
-/** One node the lane layout draws: a commit row or a virtual worktree row. */
+/** One node the lane layout draws: a commit or a virtual row. */
 export interface GraphCommit {
   sha: string
   parents: readonly string[]
   refs: readonly GraphRef[]
-  worktree?: boolean
+  kind?: 'worktree' | 'stash'
   workingCopy?: boolean
 }
 
@@ -243,9 +243,8 @@ class PathHelper {
 /**
  * Build the lane graph for commits already sorted by `git log --topo-order`.
  *
- * The timeline prepends virtual worktree nodes whose only parent is their
- * HEAD (if born). Dashed lanes end on those commits, and are not reused for
- * real commit edges. Several worktrees can end on the same commit dot.
+ * Each virtual row has a dashed lane ending on its HEAD or stash base. Real
+ * commit edges never reuse those lanes.
  *
  * @param commits Ordered nodes: selected worktrees, then commits from `vcs.log`.
  * @returns Layout with one dot per commit (in commit order) and the content offset for
@@ -267,6 +266,7 @@ export function buildGraph(commits: readonly GraphCommit[]): GraphLayout {
   // colors are in use so overflow lanes cycle instead of all reusing color 0.
   const colorOverflow = { n: 0 }
   let offsetY = -HALF_ROW_UNIT
+  const stashRun: { lane: PathHelper | null } = { lane: null }
 
   // Index solid lanes for merge-parent lookup. A dashed worktree lane
   // represents a checkout, never ancestry, even when both target one SHA.
@@ -293,7 +293,7 @@ export function buildGraph(commits: readonly GraphCommit[]): GraphLayout {
       const line = unsolved[index]
       if (line.next === sha) {
         if (major === null && line.path.dashed) {
-          // The dashed working-tree lane ends on HEAD; HEAD's own history
+          // The dashed virtual lane ends on its base; the commit's history
           // continues as a solid lane in the same slot and color.
           offsetX += LANE_UNIT
           line.end(offsetX, offsetY, HALF_ROW_UNIT)
@@ -341,6 +341,11 @@ export function buildGraph(commits: readonly GraphCommit[]): GraphLayout {
       ended.length = 0
     }
 
+    // Consecutive stashes on one base share its dashed lane, so a long
+    // reflog cannot push the diamonds or that commit beyond the graph gutter.
+    const stashLane = stashRun.lane
+    if (commit.kind === 'stash' && stashLane?.next === parents[0]) major = stashLane
+
     // New branch head: no active lane was waiting for this commit.
     if (major === null) {
       offsetX += LANE_UNIT
@@ -349,17 +354,18 @@ export function buildGraph(commits: readonly GraphCommit[]): GraphLayout {
           x: offsetX,
           y: offsetY,
         })
-        if (commit.worktree === true) major.path.dashed = true
+        if (commit.kind !== undefined) major.path.dashed = true
         unsolved.push(major)
         trackNext(major)
         result.paths.push(major.path)
       }
     }
+    stashRun.lane = commit.kind === 'stash' ? major : null
 
     const center = { x: major ? major.lastX : offsetX, y: offsetY }
     const color = major ? major.path.color : 0
     let type: GraphDotType = 'default'
-    if (commit?.worktree === true) type = 'worktree'
+    if (commit?.kind !== undefined) type = commit.kind
     else if (commit?.workingCopy === true) type = 'working'
     else if (refs.some((ref) => ref && (ref.kind === 'head' || ref.current === true))) type = 'head'
     else if (parents.length > 1) type = 'merge'

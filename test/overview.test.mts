@@ -8,8 +8,9 @@ import { tmpdir } from 'node:os'
 
 import { createHandlers } from '../index.js'
 import {
-  countStatusEntries, parseGitVersion, parseRefRecords, parseStashList, parseTrack, unpublishedCounts, versionAtLeast,
+  countStatusEntries, parseGitVersion, parseRefRecords, parseTrack, unpublishedCounts, versionAtLeast,
 } from '../lib/overview.js'
+import { parseStashList } from '../lib/stash.js'
 
 process.env.GIT_CONFIG_GLOBAL = '/dev/null'
 process.env.GIT_CONFIG_NOSYSTEM = '1'
@@ -307,7 +308,7 @@ test('overview streams every discovered repository with bases, distances, unique
   assert.equal(loose.subject, 'loose')
 
   const stash = pointer(fork, 'stash', 'stash@{0}')
-  assert.equal(stash.subject, 'On main: keep this')
+  assert.equal(stash.subject, 'keep this')
   assert.equal(stash.onto, git(fixture.fork, ['rev-parse', 'main']))
   assert.equal(stash.unique, 1)
 
@@ -424,8 +425,15 @@ test('overview parsers read git output and reject malformed records', () => {
   assert.deepEqual(parseRefRecords(['refs/heads/x', sha, '', '', '', '', '123', 'subject', 'with nul'].join('\x00') + '\nbroken\n' + ['refs/heads/y', 'nothex', '', '', '', '', '', 's'].join('\x00')), [
     { refname: 'refs/heads/x', oid: sha, symref: '', upstream: '', upstreamShort: '', track: '', time: 123, subject: 'subject\x00with nul' },
   ])
-  assert.deepEqual(parseStashList([`stash@{0}`, sha, `${'b'.repeat(40)} ${'c'.repeat(40)}`, '100', 'On main: x'].join('\x00') + `\nnot a stash\x00${sha}`), [
-    { name: 'stash@{0}', sha, onto: 'b'.repeat(40), time: 100, subject: 'On main: x' },
+  const [base, index, untracked] = ['b', 'c', 'd'].map(digit => digit.repeat(40))
+  assert.deepEqual(parseStashList([
+    ['stash@{0}', sha, `${base} ${index}`, '100', 'On main: x: y'],
+    ['stash@{1}', sha, `${base} ${index} ${untracked}`, '99', 'WIP on (no branch): 7d2b0bb HEAD'],
+    ['stash@{2}', sha, base, '98', 'not a stash commit'],
+    ['not a selector', sha, `${base} ${index}`, '97', 'not a stash reflog'],
+  ].map(row => row.join('\0')).join('\n')), [
+    { selector: 'stash@{0}', sha, base, index, untracked: null, time: 100, branch: 'main', message: 'x: y' },
+    { selector: 'stash@{1}', sha, base, index, untracked, time: 99, branch: null, message: '7d2b0bb HEAD' },
   ])
 
   // A rename record carries its original path as a separate field.

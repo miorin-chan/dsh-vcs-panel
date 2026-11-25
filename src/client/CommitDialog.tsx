@@ -17,6 +17,7 @@ import type { DialogConfirmValues, CommitDialogRequest } from './useRepoActions.
 import { Dialog } from './Dialog.jsx'
 import { errorMessage } from './format.js'
 import { COMMIT_BUSY_KEYS } from './commit.js'
+import { validNewBranchName } from './branch.js'
 import { Chevron } from './ui.jsx'
 
 /** Copy for each commit dialog kind. */
@@ -79,7 +80,8 @@ export function CommitDialog({ request, error, busy, blocked = false, onCancel, 
   const needsName = request.kind === 'tag' || request.kind === 'branch'
   const destructive = request.kind === 'drop' || (request.kind === 'reset' && mode === 'hard')
   const trimmed = name.trim()
-  const canSubmit = !busy && !blocked && (!needsName || trimmed !== '') && (request.kind !== 'reset' || mode !== '')
+  const canSubmit = !busy && !blocked && (!needsName || trimmed !== '')
+    && (request.kind !== 'branch' || validNewBranchName(trimmed)) && (request.kind !== 'reset' || mode !== '')
 
   const submit = () => {
     if (!canSubmit) return

@@ -53,6 +53,10 @@
   stroke-dasharray: 2.2 1.8;
 }
 
+.vcs-graph-dot-stash {
+  fill: var(--vcs-state-stash);
+}
+
 /* Subtle outer ring on the selected commit dot. */
 .vcs-graph-dot-selected {
   fill: none;

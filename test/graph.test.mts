@@ -324,7 +324,7 @@ test('empty commit list yields an empty layout', () => {
 
 /** The working-tree node the timeline prepends, waiting for HEAD. */
 function worktree(head, id = 'worktree') {
-  return { sha: id, parents: head === null ? [] : [head], refs: [], worktree: true }
+  return { sha: id, parents: head === null ? [] : [head], refs: [], kind: 'worktree' }
 }
 
 test('the working-tree lane is dashed and ends on HEAD, which continues solid in its color', () => {

@@ -110,3 +110,11 @@ export function remoteBranchActions({ currentBranch }: { currentBranch: string |
 export function isDestructiveAction(action: string): boolean {
   return branchActionMeta(action)?.destructive === true
 }
+
+/** Immediate syntax check for new branch inputs; the Host checks Git and occupied names. */
+export function validNewBranchName(name: string): boolean {
+  return name !== '' && name.length <= 255 && name !== 'HEAD' && !name.startsWith('-')
+    && !name.includes('..') && !name.includes('@{') && !name.endsWith('.')
+    && !/[\u0000-\u0020\u007f~^:?*\[\\]/u.test(name)
+    && name.split('/').every(part => part !== '' && !part.startsWith('.') && !part.endsWith('.lock'))
+}
