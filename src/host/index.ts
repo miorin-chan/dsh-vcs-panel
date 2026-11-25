@@ -139,13 +139,16 @@ export function apply(ctx: Context, config: unknown): void {
         path: route.path,
         methods: Object.keys(byMethod) as RouteMethod[],
         requestBody: 'buffered',
-        fetch: async (request: Request): Promise<Response> => handlerFor(handlers, byMethod, request.method)(
-          new Request(request, {
+        fetch: async (request: Request): Promise<Response> => {
+          // The watch hub owns the original request for the lifetime of its
+          // stream. A transient Request clone can lose its abort link to GC.
+          if (route.key === 'watch') return handlers.watch(request)
+          return handlerFor(handlers, byMethod, request.method)(new Request(request, {
             signal: request.method === 'GET'
               ? AbortSignal.any([request.signal, lifetime.signal])
               : lifetime.signal,
-          }),
-        ),
+          }))
+        },
       }),
       `dsh-vcs-panel: ${route.path}`,
     )

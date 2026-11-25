@@ -112,8 +112,8 @@ export interface WatchOpenOptions {
   common: string | null
   /** The panel's client id, echoed back with its own post-write refresh. */
   client: string | undefined
-  /** Request cancellation. */
-  signal: AbortSignal
+  /** The streaming request, whose abort link must stay alive until close. */
+  request: Request
 }
 
 /** The callback that ends one write's bookkeeping. */
@@ -121,6 +121,7 @@ export type WriteFinish = (changes: readonly string[] | undefined, origin: strin
 
 /** The refresh signals the Host routes share. */
 export interface WatchHub {
+  readonly signal: AbortSignal
   /** Open one authenticated invalidation stream. */
   open(options: WatchOpenOptions): Promise<Response>
   /** Subscribe to Session lifecycle events. */
@@ -417,11 +418,14 @@ export function createWatchHub(
     }
   }
 
-  async function open({ sessionId, cwd, repo, roots, common, client, signal }: WatchOpenOptions): Promise<Response> {
+  async function open({ sessionId, cwd, repo, roots, common, client, request }: WatchOpenOptions): Promise<Response> {
     if (streams.size >= STREAM_MAX) throw new VcsError('busy', 'Too many panels are watching repositories.')
     const closeSignal = new AbortController()
-    const active = AbortSignal.any([signal, lifetime.signal, closeSignal.signal])
+    request.signal.throwIfAborted()
+    const active = AbortSignal.any([lifetime.signal, closeSignal.signal])
     active.throwIfAborted()
+    const abortRequest = () => closeSignal.abort(request.signal.reason)
+    request.signal.addEventListener('abort', abortRequest, { once: true })
     const stops: Array<() => void> = []
     let controller: ReadableStreamDefaultController<Uint8Array> | undefined
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -436,6 +440,7 @@ export function createWatchHub(
     }
 
     function dispose(): void {
+      request.signal.removeEventListener('abort', abortRequest)
       streams.delete(stream)
       if (timer !== undefined) clearTimeout(timer)
       for (const stop of stops.splice(0)) stop()
@@ -509,5 +514,5 @@ export function createWatchHub(
     return new Response(body, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store, no-transform', 'x-accel-buffering': 'no' } })
   }
 
-  return { open, attach, beginWrite, repositoryConfigChanged, gitStatus }
+  return { signal: lifetime.signal, open, attach, beginWrite, repositoryConfigChanged, gitStatus }
 }

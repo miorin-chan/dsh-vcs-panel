@@ -564,27 +564,28 @@ export function createHandlers(ctx: HandlersContext, {
   /** Handle `GET /api/vcs.watch` with the same repository and worktree validation as reads. */
   async function watch(request: Request): Promise<Response> {
     const query = new URL(request.url).searchParams
+    const signal = AbortSignal.any([request.signal, watchHub.signal])
     const { sessionId, cwd: sessionCwd } = await requireSession(query)
-    const cwd = await canonicalDirectory(ctx, sessionCwd, request.signal)
+    const cwd = await canonicalDirectory(ctx, sessionCwd, signal)
     if (cwd === null) throw new VcsError('no-cwd', 'The session working directory is not available.')
-    const repo = query.has('repo') ? await requireRepository(query, request.signal) : null
+    const repo = query.has('repo') ? await requireRepository(query, signal) : null
     const paths = query.getAll('worktree')
     validateWorktreeSelection(paths)
     if (repo === null && paths.length > 0) throw badRequest('A worktree selection requires a repository.')
     let roots: string[] = []
     let common: string | null = null
     if (repo !== null) {
-      await repo.backend.require(request.signal)
+      await repo.backend.require(signal)
       const siblings = paths.filter(path => !sameRepoPath(path, repo.root))
-      const selected = await requireWorktrees(repo, siblings, request.signal)
+      const selected = await requireWorktrees(repo, siblings, signal)
       roots = selected.map(tree => tree.path)
       if (paths.length === 0 || paths.some(path => sameRepoPath(path, repo.root))) roots.unshift(repo.root)
-      const path = await repo.backend.commonDir?.(repo.root, request.signal)
-      if (path != null) common = await canonicalDirectory(ctx, path, request.signal)
+      const path = await repo.backend.commonDir?.(repo.root, signal)
+      if (path != null) common = await canonicalDirectory(ctx, path, signal)
     }
     return watchHub.open({
       sessionId, cwd, repo, roots, common,
-      client: watchClientId(query.get('client')), signal: request.signal,
+      client: watchClientId(query.get('client')), request,
     })
   }
 
