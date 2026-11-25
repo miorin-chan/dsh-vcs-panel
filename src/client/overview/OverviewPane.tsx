@@ -2,18 +2,23 @@
  * The overview column switches repositories as soon as discovery lists them,
  * then fills in their pointers as they arrive. Selecting a pointer also moves
  * the timeline to its node, and the timeline's selection marks the pointer here.
+ * Each repository row carries the sync of the branch checked out at its entry,
+ * so any repository can sync without becoming the current one.
  */
 
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, Ref } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 
-import type { ApiFailure, RepositoryInfo } from '../api.js'
+import type { ApiFailure, RepositoryCapabilities, RepositoryInfo } from '../api.js'
 import { errorMessage, formatCommitTime, formatPlural } from '../format.js'
 import { Bar, Skeleton } from '../skeleton.jsx'
-import { AllRepositoriesIcon, Chevron, IconButton, SettingsIcon } from '../ui.jsx'
+import { AllRepositoriesIcon, Chevron, IconButton, SettingsIcon, SyncButton } from '../ui.jsx'
+import { findAncestor, hasClass } from '../keys.js'
+import type { Notice, RepoWrite } from '../useRepoActions.js'
 import type { OverviewData } from './useOverview.js'
-import type { FilterId, PointerView, RepositoryView } from './model.js'
+import type { FilterId, OverviewRepository, PointerView, RepositoryView } from './model.js'
+import { repositorySync } from './directActions.js'
 import {
   byAttention, checkoutLabel, elementWithData, FILTERS, filterCounts, gauge, headline, matchesFilter, matchesSearch, relativeTo,
 } from './model.js'
@@ -51,6 +56,12 @@ export interface OverviewPaneProps {
   onPointerActions: (pointer: PointerView, point: { clientX: number, clientY: number }, element: HTMLElement | null) => void
   onManageRepositories: (restoreFocus: () => void) => void
   onAddUnlisted: (paths: string[]) => void
+  /** Each repository's write in flight. */
+  writes: ReadonlyMap<string, RepoWrite>
+  /** Each repository's last result; a sync outcome shows under its row. */
+  notices: ReadonlyMap<string | null, Notice>
+  /** Sync the branch checked out at one repository's entry. */
+  onSync: (path: string) => void
   control: Ref<OverviewControl | null>
   t: Translate
   locale?: string
@@ -135,7 +146,45 @@ type NavigationRow =
 
 const ALL_ROW: NavigationRow = { key: 'all', all: true }
 
+/** The key of the row an element sits in. */
+const rowKeyOf = (element: unknown) => findAncestor(element, null, node => node.dataset?.overviewKey !== undefined)?.dataset?.overviewKey
+
+/** Whether an element is, or sits in, a row's sync control. */
+const onSyncControl = (element: unknown, row: unknown) => findAncestor(element, row, node => hasClass(node, 'vcs-sync')) !== null
+
 const repoKey = (path: string) => `repo:${path}`
+
+/**
+ * Repositories whose sync, or the overview read it starts, is running. That
+ * read belongs to the sync, so a row's icon keeps turning until the line it
+ * showed is replaced and the counts it settled are back.
+ * @param writes - each repository's write in flight.
+ * @param data - the overview so far.
+ * @returns the repositories to draw as syncing.
+ */
+function useSyncing(writes: ReadonlyMap<string, RepoWrite>, data: OverviewData): ReadonlySet<string> {
+  const [settling, setSettling] = useState<ReadonlyMap<string, OverviewRepository | ApiFailure | undefined>>(() => new Map())
+  const runningRef = useRef<readonly string[]>([])
+  const running = [...writes].filter(([, write]) => write.domain === 'sync').map(([path]) => path)
+  const runningKey = running.join('\u0000')
+  const shown = (path: string) => data.repositories.get(path) ?? data.failures.get(path)
+  // Layout effects keep the icon turning through the commit that ends the write.
+  useLayoutEffect(() => {
+    const ended = runningRef.current.filter(path => !running.includes(path))
+    runningRef.current = running
+    if (ended.length > 0) setSettling(previous => new Map([...previous, ...ended.map(path => [path, shown(path)] as const)]))
+    // `running` changes identity every render; its key names the same set.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningKey])
+  useLayoutEffect(() => {
+    setSettling(previous => {
+      const kept = [...previous].filter(([path, line]) => data.status !== 'error' && shown(path) === line)
+      return kept.length === previous.size ? previous : new Map(kept)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data])
+  return new Set([...running, ...settling.keys()])
+}
 
 function PendingPointers() {
   return (
@@ -155,7 +204,7 @@ function PendingPointers() {
 
 export function OverviewPane({
   data, repositories, views, cwd, currentRepo, selected, width, onResize, onSelectRepository, onSelectPointer, onPointerActions,
-  allRepositories, onSelectAll, onManageRepositories, onAddUnlisted, control, t, locale,
+  allRepositories, onSelectAll, onManageRepositories, onAddUnlisted, writes, notices, onSync, control, t, locale,
 }: OverviewPaneProps) {
   const titleRef = useRef<HTMLDivElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
@@ -168,7 +217,12 @@ export function OverviewPane({
   const [quietOpen, setQuietOpen] = useState(false)
   const [unlistedOpen, setUnlistedOpen] = useState(false)
   const [cursor, setCursor] = useState<string | null>(null)
-  const discovered = useMemo(() => new Set(repositories.map(entry => entry.path)), [repositories])
+  const capabilities = useMemo(
+    () => new Map<string, RepositoryCapabilities>(repositories.map(entry => [entry.path, entry.capabilities])),
+    [repositories],
+  )
+  const discovered = useMemo(() => new Set(capabilities.keys()), [capabilities])
+  const syncing = useSyncing(writes, data)
   const registered = useMemo(() => views.filter(view => view.registered && discovered.has(view.path)), [discovered, views])
   const unlisted = useMemo(() => views.filter(view => !view.registered && !discovered.has(view.path)).sort(byAttention), [discovered, views])
   const counts = useMemo(() => filterCounts(registered), [registered])
@@ -191,8 +245,11 @@ export function OverviewPane({
   // Moving a keyed element to another section can detach it in the DOM. Capture
   // only actual list focus, so an inactive cursor never steals focus on a read.
   const focused = listRef.current?.ownerDocument.activeElement as HTMLElement | null | undefined
-  const focusedKey = focused != null && listRef.current?.contains(focused) ? focused.dataset.overviewKey : undefined
+  const inList = focused != null && listRef.current?.contains(focused) === true
+  const focusedKey = inList ? focused.dataset.overviewKey : undefined
   const focusedTop = focusedKey === undefined ? null : focused?.offsetTop
+  // A row's sync control, followed when its row moves to another section.
+  const focusedSyncKey = inList && hasClass(focused, 'vcs-sync') ? rowKeyOf(focused) : undefined
   const quietExpanded = quietOpen || quiet.some(view => {
     const key = repoKey(view.path)
     return key === currentKey || key === cursor || key === focusedKey
@@ -265,6 +322,14 @@ export function OverviewPane({
         if (row !== null && row !== active) focusRow(focusedKey)
         else if (row !== null && row.offsetTop !== focusedTop) row.scrollIntoView?.({ block: 'nearest' })
       }
+    } else if (focusedSyncKey !== undefined) {
+      const doc = listRef.current?.ownerDocument
+      const active = doc?.activeElement
+      if (active === doc?.body || active === doc?.documentElement) {
+        const control = elementWithData(listRef.current, 'data-overview-key', focusedSyncKey)?.querySelector<HTMLElement>('.vcs-sync')
+        if (control == null) focusRow(focusedSyncKey)
+        else control.focus({ preventScroll: true })
+      }
     }
   })
 
@@ -284,10 +349,13 @@ export function OverviewPane({
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const key = (event.target as HTMLElement).dataset.overviewKey
+    const target = event.target as HTMLElement
+    // A row's sync control moves through the rows like its row; it keeps its own activation.
+    const onControl = hasClass(target, 'vcs-sync')
+    const key = onControl ? rowKeyOf(target) : target.dataset.overviewKey
     if (key === undefined || event.altKey || event.ctrlKey || event.metaKey) return
     const index = rows.findIndex(row => row.key === key)
-    const row = rows[index]
+    const row = onControl ? undefined : rows[index]
     let next: number | null = null
     if (event.key === 'ArrowDown' || event.key === 'j') next = Math.min(rows.length - 1, index + 1)
     else if (event.key === 'ArrowUp' || event.key === 'k') next = Math.max(0, index - 1)
@@ -349,6 +417,53 @@ export function OverviewPane({
     focusRow(repoKey(path))
     onSelectRepository(path, false)
   }
+  /** Select the row unless the click landed on its sync control, which acts on its own even while unavailable. */
+  const onRowClick = (path: string) => (event: ReactMouseEvent<HTMLElement>) => {
+    if (onSyncControl(event.target, event.currentTarget)) return
+    chooseRepository(path)
+  }
+
+  /** The row's sync control, for a repository whose entry has a branch the backend can sync. */
+  const syncControl = (view: RepositoryView) => {
+    const sync = repositorySync(view, capabilities.get(view.path), writes.get(view.path))
+    if (sync === null) return null
+    const key = repoKey(view.path)
+    return (
+      <SyncButton
+        className="vcs-overview-sync"
+        tabIndex={activeKey === key ? 0 : -1}
+        upstream={sync.upstream}
+        ahead={sync.ahead}
+        behind={sync.behind}
+        syncing={syncing.has(view.path)}
+        blocked={sync.blockedReason === undefined ? undefined : t(sync.blockedReason)}
+        onSync={() => {
+          // The row stays the cursor, so it stays open if the sync makes it quiet.
+          setCursor(key)
+          onSync(view.path)
+        }}
+        t={t}
+        locale={locale}
+      />
+    )
+  }
+
+  /** The last sync outcome under its row; the header already announces the current repository's. */
+  const syncNote = (path: string) => {
+    const notice = notices.get(path)
+    if (notice?.domain !== 'sync') return null
+    const announce = path !== currentRepo
+    return (
+      <span
+        className="vcs-overview-sync-note"
+        data-tone={notice.tone}
+        role={announce ? notice.tone === 'info' ? 'status' : 'alert' : undefined}
+        title={notice.text}
+      >
+        {notice.text}
+      </span>
+    )
+  }
 
   const allRow = allRepositories === null ? null : (
     <div
@@ -389,7 +504,7 @@ export function OverviewPane({
         data-repository={path}
         data-pending={summary.status === 'pending' || undefined}
         data-failed={summary.status === 'failed' || undefined}
-        onClick={() => { chooseRepository(path) }}
+        onClick={onRowClick(path)}
       >
         <button
           type="button"
@@ -416,6 +531,7 @@ export function OverviewPane({
               {view.checkouts.length > 1 ? <span className="vcs-overview-tag" title={formatPlural(t, 'overview.checkouts', view.checkouts.length, locale)}>⌂{view.checkouts.length}</span> : null}
               {view.registered ? null : <span className="vcs-overview-tag" data-off="">{t('overview.unlistedTag')}</span>}
               <span data-stale={fetch.stale || undefined}>{fetch.text}</span>
+              {syncControl(view)}
             </>
           ) : error === null ? (
             <span className="vcs-skeleton" aria-hidden="true"><Bar width="50px" /></span>
@@ -429,6 +545,7 @@ export function OverviewPane({
           </span>
         ) : null}
         {view !== null && !view.supported ? <span className="vcs-overview-drift">{t('overview.unsupported')}</span> : null}
+        {view === null ? null : syncNote(path)}
       </div>
     )
   }
@@ -487,13 +604,15 @@ export function OverviewPane({
         tabIndex={activeKey === key ? 0 : -1}
         data-overview-key={key}
         data-repository={view.path}
-        onClick={() => { chooseRepository(view.path) }}
+        onClick={onRowClick(view.path)}
       >
         <span className="vcs-overview-quiet-name">
           <span className="vcs-overview-repo-name">{view.relativePath === '.' ? view.name : view.relativePath.split('/').at(-1)}</span>
           {currentTag(view.path === currentRepo)}
         </span>
         <span className="vcs-overview-facts">{view.remotes.length === 0 ? t('overview.noRemote') : `${main?.branch ?? main?.head?.slice(0, 7) ?? ''} ≡ ${view.remotes[0]}`}</span>
+        {syncControl(view)}
+        {syncNote(view.path)}
       </div>
     )
   }

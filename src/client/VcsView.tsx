@@ -2352,6 +2352,9 @@ export function VcsView({
             onPointerActions={openPointerActions}
             onManageRepositories={restoreFocus => { setRepositoryManagement({ sessionId, restoreFocus }) }}
             onAddUnlisted={paths => { setAddingRepositories(paths) }}
+            writes={actions.inFlight}
+            notices={notices}
+            onSync={path => { void actions.syncRepository(path) }}
             control={overviewControl}
             t={t}
             locale={locale}

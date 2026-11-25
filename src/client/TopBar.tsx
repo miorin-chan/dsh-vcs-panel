@@ -24,8 +24,8 @@ import type {
 import type { ApiFailure } from './api.js'
 import type { MenuPoint, Notice, RefEntry } from './useRepoActions.js'
 import {
-  Arrow, BranchIcon, CheckIcon, Chevron, FilterIcon, IconButton, LockIcon, MoreIcon, OverviewIcon, PlusIcon, RefreshIcon,
-  RefBadge, SyncIcon, TileIcon, TimelineBesideIcon, Turning, WorkingCopyBadge,
+  AheadBehind, BranchIcon, CheckIcon, Chevron, FilterIcon, IconButton, LockIcon, MoreIcon, OverviewIcon, PlusIcon, RefreshIcon,
+  RefBadge, SyncButton, TileIcon, TimelineBesideIcon, Turning, WorkingCopyBadge,
 } from './ui.jsx'
 import { errorMessage, formatCount, formatPlural, sessionRelativePath, shortChangeId } from './format.js'
 import { BRANCH_BUSY_KEYS } from './branch.js'
@@ -67,16 +67,6 @@ function pickerPosition(trigger: HTMLElement | null | undefined): MenuPosition |
     left: Math.max(MENU_MARGIN, Math.min(rect.left, viewport - MENU_WIDTH - MENU_MARGIN)),
     top: rect.bottom + MENU_GAP,
   }
-}
-
-/** Ahead/behind counts as two small arrows; zero sides are left out. */
-function AheadBehind({ ahead, behind }: { ahead: number; behind: number }) {
-  return (
-    <>
-      {ahead > 0 ? <span className="vcs-ahead"><Arrow up />{ahead}</span> : null}
-      {behind > 0 ? <span className="vcs-behind"><Arrow />{behind}</span> : null}
-    </>
-  )
 }
 
 /** A segmented switch in a picker header: its choices, the chosen one, and its group name. */
@@ -699,49 +689,6 @@ function WorktreePicker({
   )
 }
 
-/** Branch facts and sync state of the header's sync control. */
-interface SyncButtonProps {
-  branch: StatusBranch | null | undefined
-  syncing: boolean
-  onSync: () => void
-  t: Translate
-  locale?: string
-}
-
-/**
- * The sync control: icon plus the counts it would settle.
- *
- * It stays focusable while unavailable or running (`aria-disabled` rather
- * than `disabled`), so keyboard focus is not dropped mid-sync and the reason
- * it is unavailable remains readable.
- * @param props - branch facts and sync state.
- */
-function SyncButton({ branch, syncing, onSync, t, locale }: SyncButtonProps) {
-  const upstream = branch?.upstream ?? null
-  const ahead = branch?.ahead ?? 0
-  const behind = branch?.behind ?? 0
-  const available = upstream !== null && upstream !== undefined
-  const label = available
-    ? t('top.syncLabel', { upstream, ahead: formatCount(ahead, locale), behind: formatCount(behind, locale) })
-    : t('top.syncNoUpstream')
-  const inert = syncing || !available
-  return (
-    <button
-      type="button"
-      className="vcs-sync"
-      aria-label={label}
-      aria-disabled={inert ? 'true' : undefined}
-      aria-busy={syncing ? 'true' : undefined}
-      title={syncing ? t('top.syncing') : available ? `${label}\n${t('top.syncHint')}` : label}
-      onClick={() => { if (!inert) onSync() }}
-    >
-      {/* The icon itself turns while the sync runs; the bar under the header announces it. */}
-      <Turning turning={syncing} restEvery={180}><SyncIcon /></Turning>
-      <AheadBehind ahead={ahead} behind={behind} />
-    </button>
-  )
-}
-
 /**
  * Render the header bar. `refreshing` is a refresh the refresh button
  * started; `syncing` covers a sync and the refresh it starts afterwards, so
@@ -987,7 +934,12 @@ export function TopBar({
           {syncable ? null : <AheadBehind ahead={branch?.ahead ?? 0} behind={branch?.behind ?? 0} />}
         </span>
       )}
-      {!all && syncable ? <SyncButton branch={branch} syncing={syncing} onSync={onSync} t={t} locale={locale} /> : null}
+      {!all && syncable ? (
+        <SyncButton
+          upstream={branch?.upstream ?? null} ahead={branch?.ahead ?? 0} behind={branch?.behind ?? 0}
+          syncing={syncing} onSync={onSync} t={t} locale={locale}
+        />
+      ) : null}
       {all ? <span className="vcs-activity-read-only" role="img" aria-label={t('all.readOnly')} title={t('all.readOnly')}><LockIcon /></span> : null}
       <span className="vcs-sr-only" role="status">{notice?.tone === 'info' ? notice.text : ''}</span>
       {notice === null || notice === undefined ? null : (

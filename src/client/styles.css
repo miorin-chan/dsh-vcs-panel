@@ -3333,9 +3333,33 @@ select.vcs-repository-kind {
 }
 
 .vcs-overview-quiet-row {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
   column-gap: 8px;
   padding-left: 22px;
+}
+
+/* The header's sync control, sized to a one-line row. */
+.vcs-overview-sync {
+  height: 18px;
+  padding: 0 4px;
+}
+
+.vcs-overview-sync-note {
+  grid-column: 2 / -1;
+  overflow: hidden;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vcs-overview-sync-note[data-tone='error'] {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.vcs-overview-quiet-row .vcs-overview-sync-note {
+  grid-column: 1 / -1;
 }
 
 .vcs-overview-quiet-name {

@@ -747,6 +747,8 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 弹窗自身写入中进行时传入 `busy` 锁定关闭，
 同仓库存在其他写入时传入 `blocked` 只禁用确认并显示 `error.busy` 而不阻断取消；
 同步写操作结束时在同一渲染批次先启动刷新再释放单飞锁，保持同步图标连贯转动。
+`syncRepository(repo)` 同步任一已发现仓库，顶部栏的 `sync()` 只是以当前仓库调用它；
+同步结果的提示带 `domain: 'sync'`，供全景仓库行认出。
 提交菜单打开前由 `reachableCommits` 与 `commitBranchRelation` 按已加载祖先关系裁剪不适用动作；
 提交历史中的分支/远程分支/标签徽标与提交行、顶部栏分支控件及详情头部可交互引用按钮（`RefBadge` `onRefActivate`，
 补充时间线每行最多 3 个徽标、超出展示 `+N` 的限制）均只上报目标与焦点归还元素。
@@ -868,6 +870,15 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 选中时当前标记与默认停靠点从仓库行移到该行，顶部栏隐藏单仓库控件并标明只读。
 点击贮藏指针选中 `stash:<sha>`，需要时续载历史寻找基底；时间线与全景按同一 ID 高亮，而不高亮基底提交。
 右键贮藏指针沿用时间线的贮藏菜单。
+
+仓库行与一致组的行尾放顶部栏同款的 `SyncButton`（`ui.tsx`，两处共用），点击调用 `useRepoActions.syncRepository`。
+`overview/directActions.ts` 的 `repositorySync` 决定按钮与计数：要求发现列表里该仓库的 `capabilities.sync`，
+取 `checkouts` 中路径等于仓库入口的检出所在分支，再取同名分支指针的 `upstream` 与 `track`；入口游离、
+尚无提交或分支指针超出全景引用上限时返回 `null`。 同一仓库有其他写入时返回该写入的进行中文案。
+`useSyncing` 把同步结束时该仓库在全景数据里的行（或失败项）记下，直到这一项被新的读取替换或整轮读取失败才停止转动，
+因此同步随后的全景重读仍算作同步。 行内按钮只在光标所在行可 `Tab` 到达，`↑` / `↓` 从按钮继续在行间移动；
+行的点击处理忽略来自按钮的点击。 渲染前记下按钮所在行的键，仓库换到另一分组后焦点落到新位置的按钮上。
+`notices` 中 `domain: 'sync'` 的结果写在行下，非当前仓库带 `status` 或 `alert` 角色，当前仓库由顶部栏播报。
 
 `overview/directActions.ts` 的 `tileDirectActions` 按[直接按钮的规则](DESIGN.md#操作条的直接按钮)从指针、仓库视图、
 后端能力和该仓库的写入状态选出动作；移除工作树时再用工作树清单中的保护信息。 平铺沿用指针菜单的仓库切换和状态读取，

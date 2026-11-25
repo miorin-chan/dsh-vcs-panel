@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { tileDirectActions } from '../lib/client/overview/directActions.js'
+import { repositorySync, tileDirectActions } from '../lib/client/overview/directActions.js'
 import { repositoryView } from '../lib/client/overview/model.js'
 import { GIT_CAPABILITIES, JUJUTSU_CAPABILITIES } from '../lib/vcs/capabilities.js'
 import type { RepositoryCapabilities, WorktreeInfo } from '../src/client/api.ts'
@@ -213,4 +213,59 @@ test('detached branch creation names the commit; missing checkouts and Jujutsu a
     .actions({ ...JUJUTSU_CAPABILITIES, worktreeForget: true, worktreeRemove: true }), [])
   assert.deepEqual(fixture({ ...foreign, name: 'other@origin' }, { vcs: 'jujutsu' }).actions(JUJUTSU_CAPABILITIES), [])
   assert.deepEqual(fixture(detached).actions(null), [])
+})
+
+/** A repository row whose entry is `path`, holding `main` at the root and `topic` in the sibling. */
+function syncRow(options: {
+  main?: Partial<OverviewPointer>
+  primary?: Partial<OverviewCheckout>
+  linked?: Partial<OverviewCheckout>
+  path?: string
+  supported?: boolean
+  pointers?: OverviewPointer[]
+} = {}) {
+  return repositoryView({
+    path: options.path ?? root, name: 'repo', vcs: 'git', registered: true, supported: options.supported ?? true,
+    remotes: ['origin'], fetchedAt: null, tags: 0, truncated: false, baselines: [],
+    checkouts: [{ ...mainTree, ...options.primary }, { ...topicTree, ...options.linked }],
+    pointers: options.pointers ?? [{ ...main, ...options.main }, { ...linked, track: { ahead: 3, behind: 0 } }],
+  }, '/work')
+}
+
+test('a repository row syncs the branch checked out at its entry against that branch’s upstream', () => {
+  assert.deepEqual(repositorySync(syncRow({ main: { track: { ahead: 1, behind: 2 } } }), GIT_CAPABILITIES, undefined), {
+    branch: 'main', upstream: 'origin/main', ahead: 1, behind: 2,
+  })
+  // Level rows still offer the sync: it fetches before it compares.
+  assert.deepEqual(repositorySync(syncRow(), GIT_CAPABILITIES, undefined), {
+    branch: 'main', upstream: 'origin/main', ahead: 0, behind: 0,
+  })
+  // A linked worktree registered as its own entry syncs its own branch.
+  assert.deepEqual(repositorySync(syncRow({ path: sibling }), GIT_CAPABILITIES, undefined), {
+    branch: 'topic', upstream: 'origin/topic', ahead: 3, behind: 0,
+  })
+  // An unpublished branch shows the control without an upstream, as the header does.
+  assert.deepEqual(repositorySync(syncRow({ main: { upstream: null, track: null } }), GIT_CAPABILITIES, undefined), {
+    branch: 'main', upstream: null, ahead: 0, behind: 0,
+  })
+})
+
+test('a repository row has no sync without the capability, a branch, commits, or the branch’s pointer', () => {
+  assert.equal(repositorySync(syncRow(), JUJUTSU_CAPABILITIES, undefined), null)
+  assert.equal(repositorySync(syncRow(), { ...GIT_CAPABILITIES, sync: false }, undefined), null)
+  assert.equal(repositorySync(syncRow(), null, undefined), null)
+  assert.equal(repositorySync(syncRow(), undefined, undefined), null, 'an unlisted repository has no discovered capabilities')
+  assert.equal(repositorySync(syncRow({ supported: false }), GIT_CAPABILITIES, undefined), null)
+  assert.equal(repositorySync(syncRow({ primary: { branch: null } }), GIT_CAPABILITIES, undefined), null, 'detached')
+  assert.equal(repositorySync(syncRow({ primary: { head: null } }), GIT_CAPABILITIES, undefined), null, 'unborn')
+  assert.equal(repositorySync(syncRow({ path: '/work/elsewhere' }), GIT_CAPABILITIES, undefined), null, 'no checkout at the entry')
+  assert.equal(repositorySync(syncRow({ pointers: [linked] }), GIT_CAPABILITIES, undefined), null, 'branch beyond the ref cap')
+})
+
+test('another write on the repository blocks its row sync, while a running sync does not', () => {
+  const row = syncRow({ main: { track: { ahead: 0, behind: 2 } } })
+  assert.equal(repositorySync(row, GIT_CAPABILITIES, { domain: 'branch', action: 'push' })?.blockedReason, 'branch.pushing')
+  assert.equal(repositorySync(row, GIT_CAPABILITIES, { domain: 'stage', action: 'stage' })?.blockedReason, 'stage.updatingIndex')
+  const running = repositorySync(row, GIT_CAPABILITIES, { domain: 'sync', action: 'sync' })
+  assert.ok(running !== null && !('blockedReason' in running))
 })

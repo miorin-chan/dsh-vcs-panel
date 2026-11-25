@@ -1,4 +1,7 @@
-/** The tiled pointer's usual next steps (DESIGN.md, 操作条的直接按钮). */
+/**
+ * The tiled pointer's usual next steps (DESIGN.md, 操作条的直接按钮), and the
+ * sync on each overview repository row (DESIGN.md, 全景栏).
+ */
 
 import type { RepositoryCapabilities, WorktreeInfo } from '../api.js'
 import { BRANCH_BUSY_KEYS, branchActions, remoteBranchActions } from '../branch.js'
@@ -20,6 +23,46 @@ export interface CheckoutCatalog {
   readonly worktrees?: readonly WorktreeInfo[]
   /** Whether the repository entry is the session's checkout. */
   readonly enclosing?: boolean
+}
+
+/** The branch one repository row's sync settles. */
+export interface RepositorySync {
+  /** The branch checked out at the repository entry, the one the Host syncs. */
+  branch: string
+  /** Its upstream's short name, or null when it has none. */
+  upstream: string | null
+  ahead: number
+  behind: number
+  /** Locale key of another write that holds the repository's lock; a running sync is not one. */
+  blockedReason?: string
+}
+
+/**
+ * The sync a repository row offers: the Host syncs whatever branch is checked
+ * out at the repository entry, so the row reads that checkout's branch pointer.
+ * @param repository - the row's repository.
+ * @param capabilities - its backend's capabilities.
+ * @param busy - the write holding its lock, if any.
+ * @returns the sync, or null without sync, on a detached or unborn entry, or when the branch was not read.
+ */
+export function repositorySync(
+  repository: RepositoryView,
+  capabilities: RepositoryCapabilities | null | undefined,
+  busy: RepoWrite | undefined,
+): RepositorySync | null {
+  if (capabilities?.sync !== true || !repository.supported) return null
+  const entry = repository.checkouts.find(tree => tree.path === repository.path)
+  if (entry === undefined || entry.branch === null || entry.head === null) return null
+  const pointer = repository.pointers.find(item => item.kind === 'branch' && item.name === entry.branch)
+  // A branch past the ref cap has no known upstream; the header still syncs it.
+  if (pointer === undefined) return null
+  return {
+    branch: entry.branch,
+    upstream: typeof pointer.upstream === 'string' ? pointer.upstream : null,
+    ahead: pointer.track?.ahead ?? 0,
+    behind: pointer.track?.behind ?? 0,
+    ...(busy === undefined || busy.domain === 'sync' ? {} : { blockedReason: writeReason(busy) }),
+  }
 }
 
 /** The step currently holding one repository's client write lock. */

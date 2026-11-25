@@ -3317,6 +3317,107 @@ test('VcsView scopes in-flight writes per repository without locking another rep
   }
 })
 
+test('overview rows sync their own repository in place and keep turning until the overview rereads it', async () => {
+  const alpha = tileRepo(tileAlpha, [])
+  const beta = tileRepo(tileBeta, [], undefined, { ahead: 1, behind: 0 })
+  const detached = tileRepo('/fixture/gamma', [], [tileTree('/fixture/gamma', { branch: null })])
+  const answers = new Map([[tileAlpha, Promise.withResolvers()], [tileBeta, Promise.withResolvers()]])
+  try {
+    await withGitPanel([alpha, beta, detached], {
+      panelState: { tiled: false, overview: true },
+      async write(path, body, json) {
+        assert.equal(path, '/api/vcs.sync')
+        return json(await answers.get(body.repo).promise)
+      },
+    }, async ({ harness, body, reads, writes, waits }) => {
+      const row = path => body.querySelector(`[data-overview-key="repo:${path}"]`)
+      const rowSync = path => row(path)?.querySelector('.vcs-overview-sync') ?? null
+      const note = path => row(path)?.querySelector('.vcs-overview-sync-note') ?? null
+      const headerSync = () => body.querySelectorAll('.vcs-sync').find(button => !button.props.className.includes('vcs-overview-sync'))
+      const trigger = () => body.querySelector('.vcs-repo-button')
+
+      assert.equal(rowSync('/fixture/gamma'), null, 'a detached entry has no branch to sync')
+      assert.match(rowSync(tileBeta).attributes.get('aria-label'), /^top\.syncLabel:.*"ahead":"1"/u)
+      assert.equal(rowSync(tileAlpha).props.tabIndex, 0, 'the cursor row’s control is in Tab order')
+      assert.equal(rowSync(tileBeta).props.tabIndex, -1)
+
+      // Another repository syncs without becoming current; a second click is ignored.
+      harness.mouseClick(rowSync(tileBeta))
+      await harness.settle()
+      harness.mouseClick(rowSync(tileBeta))
+      await harness.settle()
+      assert.deepEqual(writes.map(([, payload]) => payload.repo), [tileBeta])
+      assert.equal(textOf(trigger()), alpha.name, 'clicking the control does not select its row')
+      assert.equal(rowSync(tileBeta).attributes.get('aria-busy'), 'true')
+      assert.equal(headerSync().attributes.get('aria-busy'), undefined)
+
+      // The reread after the write is part of the sync.
+      const reread = Promise.withResolvers()
+      waits.overview = reread.promise
+      const overviewReads = reads.overview.length
+      answers.get(tileBeta).resolve({ upstream: 'origin/main', pulled: 0, pushed: 1 })
+      await harness.settle()
+      assert.ok(reads.overview.length > overviewReads)
+      assert.equal(rowSync(tileBeta).attributes.get('aria-busy'), 'true', 'still turning while the overview rereads')
+      assert.match(textOf(note(tileBeta)), /^sync\.pushed/u)
+      assert.equal(note(tileBeta).attributes.get('role'), 'status')
+      waits.overview = null
+      reread.resolve()
+      await harness.settle()
+      assert.equal(rowSync(tileBeta).attributes.get('aria-busy'), undefined)
+
+      // The current repository reports in the header too, so its row note stays silent.
+      harness.mouseClick(rowSync(tileAlpha))
+      await harness.settle()
+      assert.equal(headerSync().attributes.get('aria-busy'), 'true', 'one lock per repository, shared with the header')
+      answers.get(tileAlpha).resolve({ upstream: 'origin/main', pulled: 2, pushed: 0 })
+      await harness.settle()
+      assert.deepEqual(writes.map(([, payload]) => payload.repo), [tileBeta, tileAlpha])
+      assert.match(textOf(note(tileAlpha)), /^sync\.pulled/u)
+      assert.equal(note(tileAlpha).attributes.get('role'), undefined)
+      assert.match(textOf(body.querySelector('.vcs-notice')), /^sync\.pulled/u)
+    })
+  } finally {
+    for (const answer of answers.values()) answer.resolve({ upstream: 'origin/main', pulled: 0, pushed: 0 })
+  }
+})
+
+test('an overview row sync is unavailable while another write holds its repository', async () => {
+  const topic = tilePointer('topic', tileTopic, { ahead: 2, unique: 2, upstream: 'origin/topic' })
+  const alpha = tileRepo(tileAlpha, [topic], undefined, { ahead: 0, behind: 1 })
+  const push = Promise.withResolvers()
+  try {
+    await withGitPanel([alpha, tileRepo(tileBeta, [])], {
+      panelState: { tiled: false, overview: true },
+      async write(path, body, json) {
+        assert.equal(path, '/api/vcs.branch')
+        await push.promise
+        return json({ action: 'push', branch: 'topic', remote: 'origin' })
+      },
+    }, async ({ harness, body, writes }) => {
+      const rowSync = () => body.querySelector(`[data-overview-key="repo:${tileAlpha}"]`).querySelector('.vcs-overview-sync')
+      const chip = body.querySelectorAll('[data-pointer-id]').find(element => element.dataset.pointerId.endsWith('\0topic'))
+      chip.props.onContextMenu({ clientX: 20, clientY: 20, preventDefault() {}, stopPropagation() {}, currentTarget: chip })
+      await harness.settle()
+      const pushItem = body.querySelectorAll('[data-ops-item]').find(item => textOf(item) === 'branch.push')
+      harness.mouseClick(pushItem)
+      await harness.settle()
+      assert.deepEqual(writes.map(([path]) => path), ['/api/vcs.branch'])
+      assert.equal(rowSync().attributes.get('aria-disabled'), 'true')
+      assert.equal(rowSync().attributes.get('aria-busy'), undefined)
+      assert.equal(rowSync().props.title, 'branch.pushing')
+      harness.mouseClick(rowSync())
+      await harness.settle()
+      assert.deepEqual(writes.map(([path]) => path), ['/api/vcs.branch'], 'the blocked control does not write')
+      push.resolve()
+      await harness.settle()
+      assert.equal(rowSync().attributes.get('aria-disabled'), undefined)
+    })
+  } finally {
+    push.resolve()
+  }
+})
+
 test('VcsView stages a line directly, displays mixed file state, and replays the index action', async () => {
   const harness = createHarness({ width: 1000 })
   const restore = harness.installGlobals()

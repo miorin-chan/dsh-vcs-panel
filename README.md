@@ -91,6 +91,8 @@ or sync with the upstream.
   clicking it fetches the upstream, then fast-forwards or pushes.
   A diverged branch, a fast-forward that would overwrite local edits, or a branch
   without an upstream is left untouched with a note on what to do next.
+  Every Git repository row in the overview carries the same button for its checked-out branch,
+  so you can sync any repository in place and read the result under its row.
 - **Branch switching.** The branch name opens the repository's local branches; picking one checks it out.
   Only local branches are listed—no implicit remote-tracking branches;
   remote branches are checked out explicitly from their history badges.

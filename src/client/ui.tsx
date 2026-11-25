@@ -342,6 +342,68 @@ export function SyncIcon() {
   )
 }
 
+/** Ahead/behind counts as two small arrows; zero sides are left out. */
+export function AheadBehind({ ahead, behind }: { ahead: number; behind: number }) {
+  return (
+    <>
+      {ahead > 0 ? <span className="vcs-ahead"><Arrow up />{ahead}</span> : null}
+      {behind > 0 ? <span className="vcs-behind"><Arrow />{behind}</span> : null}
+    </>
+  )
+}
+
+/** One branch's upstream distance and the sync state of its control. */
+export interface SyncButtonProps {
+  /** The upstream the branch tracks, or null when it has none. */
+  upstream: string | null
+  ahead: number
+  behind: number
+  /** The sync and the refresh it starts are running. */
+  syncing: boolean
+  /** Localized reason another write keeps the sync from starting now. */
+  blocked?: string
+  onSync: () => void
+  className?: string
+  tabIndex?: number
+  t: Translate
+  locale?: string
+}
+
+/**
+ * The sync control: icon plus the counts it would settle. The header and the
+ * overview's repository rows share it.
+ *
+ * It stays focusable while unavailable or running (`aria-disabled` rather
+ * than `disabled`), so keyboard focus is not dropped mid-sync and the reason
+ * it is unavailable remains readable.
+ * @param props - branch facts and sync state.
+ */
+export function SyncButton({ upstream, ahead, behind, syncing, blocked, onSync, className, tabIndex, t, locale }: SyncButtonProps) {
+  const available = upstream !== null
+  const label = available
+    ? t('top.syncLabel', { upstream, ahead: formatCount(ahead, locale), behind: formatCount(behind, locale) })
+    : t('top.syncNoUpstream')
+  const inert = syncing || !available || blocked !== undefined
+  const title = syncing ? t('top.syncing') : blocked ?? (available ? `${label}\n${t('top.syncHint')}` : label)
+  return (
+    <button
+      type="button"
+      className={className === undefined ? 'vcs-sync' : `vcs-sync ${className}`}
+      tabIndex={tabIndex}
+      aria-label={label}
+      aria-disabled={inert ? 'true' : undefined}
+      aria-busy={syncing ? 'true' : undefined}
+      aria-description={syncing ? undefined : blocked}
+      title={title}
+      onClick={() => { if (!inert) onSync() }}
+    >
+      {/* The icon itself turns while the sync runs; the bar under the header announces it. */}
+      <Turning turning={syncing} restEvery={180}><SyncIcon /></Turning>
+      <AheadBehind ahead={ahead} behind={behind} />
+    </button>
+  )
+}
+
 /** Chevron pointing right (collapsed) or down (expanded). */
 export function Chevron({ open }: { open?: boolean }) {
   return (

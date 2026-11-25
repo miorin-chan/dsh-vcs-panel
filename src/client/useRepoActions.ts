@@ -44,11 +44,14 @@ export interface RepoWrite {
   action: string
 }
 
-/** A result notice in the top bar or tiled action bar. */
+/**
+ * A result notice in the top bar or tiled action bar. A worktree path stays
+ * below the header; a sync outcome also shows under its overview row.
+ */
 export interface Notice {
   tone: 'error' | 'info'
   text: string
-  domain?: 'worktree'
+  domain?: 'worktree' | 'sync'
 }
 
 /** The outcome of one write that was under the lock. */
@@ -298,6 +301,8 @@ export interface RepoActions {
   confirmWorktree: (request?: WorktreeCreateRequest) => void
   resetActionsUi: () => void
   sync: () => Promise<void>
+  /** Sync any discovered repository's checked-out branch, current or not. */
+  syncRepository: (repo: string) => Promise<void>
   stage: (target: StageRequest) => Promise<boolean>
   stageHistory: (action: string, id: string) => Promise<boolean>
   switchBranch: (branch: string) => Promise<void>
@@ -480,21 +485,30 @@ export function useRepoActions({
     })
   }, [api, stateRef])
 
-  /** Sync the chosen repository's branch with its upstream, then refresh. */
-  const sync = useCallback(async (): Promise<void> => {
-    const repo = writeRootRef.current
-    if (capabilities?.sync !== true || repo === null || inFlightRef.current.has(repo)) return
+  /**
+   * Sync one repository's checked-out branch with its upstream, then refresh.
+   * The overview rows name their repository; the Host checks that it can sync.
+   */
+  const syncRepository = useCallback(async (repo: string): Promise<void> => {
+    if (inFlightRef.current.has(repo)) return
     setNotice(null, repo)
     await runRepoWrite(repo, 'sync', 'sync', () => api.sync(repo), run => {
       const outcome: Notice = run.ok
-        ? { tone: 'info', text: syncMessage(t, run.value, locale) }
-        : { tone: 'error', text: errorMessage(t, run.error) }
+        ? { tone: 'info', text: syncMessage(t, run.value, locale), domain: 'sync' }
+        : { tone: 'error', text: errorMessage(t, run.error), domain: 'sync' }
       if (sessionRef.current === sessionId) {
         refresh('sync', repo)
         setNotice(outcome, repo)
       }
     })
-  }, [api, capabilities, locale, refresh, runRepoWrite, sessionId, sessionRef, setNotice, t])
+  }, [api, locale, refresh, runRepoWrite, sessionId, sessionRef, setNotice, t])
+
+  /** Sync the chosen repository's branch from the header. */
+  const sync = useCallback(async (): Promise<void> => {
+    const repo = writeRootRef.current
+    if (capabilities?.sync !== true || repo === null) return
+    await syncRepository(repo)
+  }, [capabilities, syncRepository])
 
   /** Check out one local branch, resetting reading state on success. */
   const switchBranch = useCallback(async (branch: string): Promise<void> => {
@@ -987,6 +1001,7 @@ export function useRepoActions({
     confirmWorktree,
     resetActionsUi,
     sync,
+    syncRepository,
     stage,
     stageHistory,
     switchBranch,
