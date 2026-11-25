@@ -7,7 +7,7 @@ import {
 } from '../lib/client/overview/model.js'
 import { onPanelCommand, sendPanelCommand } from '../lib/client/commands.js'
 import { createApi } from '../lib/client/api.js'
-import { loadState, OVERVIEW_MAX, OVERVIEW_MIN, sanitizeState } from '../lib/client/state.js'
+import { loadState, OVERVIEW_MAX, OVERVIEW_MIN, resolveOverviewDefault, sanitizeState } from '../lib/client/state.js'
 
 const sha = (digit: string) => digit.repeat(40)
 const checkout = (path: string, extra: Record<string, unknown> = {}) => ({
@@ -288,6 +288,29 @@ test('a pointer opens its working tree when unsaved, a stash its own node, anyth
   assert.deepEqual(pointerTarget(named('pr')), { commit: sha('a') })
 })
 
+test('the first repository listing opens an unset overview only for multiple repositories', () => {
+  const fresh = loadState('none', undefined)
+  assert.equal(fresh.overview, null)
+  assert.equal(sanitizeState({ overview: null }).overview, null)
+  assert.equal(resolveOverviewDefault(fresh, 0).overview, false)
+  const single = resolveOverviewDefault(fresh, 1)
+  const multiple = resolveOverviewDefault(fresh, 2)
+  assert.equal(single.overview, false)
+  assert.equal(multiple.overview, true)
+  assert.equal(resolveOverviewDefault(single, 2), single)
+  assert.equal(resolveOverviewDefault(multiple, 1), multiple)
+  assert.equal(resolveOverviewDefault(sanitizeState({ tiled: true }), 2).overview, false)
+})
+
+test('a saved overview choice takes precedence over the repository count', () => {
+  const closed = sanitizeState({ overview: false })
+  const open = sanitizeState({ overview: true })
+  assert.equal(closed.overview, false)
+  assert.equal(open.overview, true)
+  assert.equal(resolveOverviewDefault(closed, 2), closed)
+  assert.equal(resolveOverviewDefault(open, 1), open)
+})
+
 test('panel state keeps the overview and tiled layout, clamping and dropping bad values', () => {
   const state = sanitizeState({
     overview: true, overviewWidth: 9999, tiled: true, overviewBeforeTile: true, tileOrder: 'directory', tileExpanded: ['/a', '/a', 3],
@@ -299,7 +322,7 @@ test('panel state keeps the overview and tiled layout, clamping and dropping bad
   assert.equal(state.tileOrder, 'directory')
   assert.deepEqual(state.tileExpanded, ['/a'])
   const rejected = sanitizeState({ overview: 'yes', overviewWidth: 10, tiled: 1, tileOrder: 'random', tileExpanded: 'x' })
-  assert.equal(rejected.overview, false)
+  assert.equal(rejected.overview, null)
   assert.equal(rejected.overviewWidth, OVERVIEW_MIN)
   assert.equal(rejected.tiled, false)
   assert.equal(rejected.tileOrder, 'attention')

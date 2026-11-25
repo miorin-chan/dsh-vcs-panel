@@ -2644,7 +2644,7 @@ test('overview navigation restores each repository’s worktrees, commit, range,
   const alpha = tileRepo(tileAlpha, [], [tileTree(tileAlpha), tileTree(alphaTree, { primary: false })])
   const beta = tileRepo(tileBeta, [], [tileTree(tileBeta), tileTree(betaTree, { primary: false })])
   const commits = [tileMain, ...Array.from({ length: 330 }, (_, index) => (index + 100).toString(16).padStart(40, '0'))]
-  await withGitPanel([alpha, beta], { width: 1200, panelState: { tiled: false }, commits }, async ({ harness, body, persisted, discovery }) => {
+  await withGitPanel([alpha, beta], { width: 1200, panelState: { tiled: false, overview: false }, commits }, async ({ harness, body, persisted, discovery }) => {
     const q = selector => body.querySelector(selector)
     const repoRow = path => q(`[data-overview-key="repo:${path}"]`)
     const timelineRow = index => q(`[data-timeline-index="${index}"]`)
@@ -2791,9 +2791,9 @@ test('the overview switches to pending and failed repositories and follows the f
     const title = () => q('.vcs-picker-label')
     const sections = () => list().querySelectorAll('.vcs-overview-section').map(section => textOf(section).split(':')[0])
 
-    harness.keyClick(q('.vcs-repo-button'))
-    await harness.settle()
-    assert.equal(active(), row(tileAlpha))
+    assert.equal(q('.vcs-repo-button').attributes.get('aria-pressed'), 'true')
+    assert.ok(row(tileAlpha), 'the default overview lists the current repository before its pointers arrive')
+    row(tileAlpha).focus()
     assert.equal(textOf(row(tileAlpha).querySelector('[data-current]')), 'overview.current')
     assert.match(textOf(q('.vcs-overview-scope')), /"count":"3"/u)
     assert.deepEqual(list().querySelectorAll('[data-pending]').map(item => item.dataset.repository), repositories.map(repo => repo.path))
@@ -2871,7 +2871,9 @@ test('a drawer closes when selecting either another repository or the current re
       await harness.settle()
       assert.equal(q('.vcs-root').attributes.get('data-overview-drawer'), 'true')
     }
-    await open()
+    assert.equal(q('.vcs-root').attributes.get('data-overview-drawer'), 'true')
+    assert.ok(harness.document.activeElement === q(`[data-overview-key="repo:${tileAlpha}"]`),
+      'keyboard focus lands in the default drawer rather than the covered timeline')
     harness.mouseClick(q(`[data-overview-key="repo:${tileBeta}"]`))
     await harness.settle()
     assert.equal(persisted().repo, tileBeta)
@@ -2887,7 +2889,8 @@ test('a drawer closes when selecting either another repository or the current re
     assert.equal(persisted().repo, tileBeta)
     assert.equal(q('.vcs-repo-button').attributes.get('aria-pressed'), 'false')
     assert.equal(reads.log.length, before, 'choosing the current row does not switch or reread the timeline')
-    assert.ok(q('.vcs-sidebar').contains(harness.document.activeElement))
+    assert.ok(q('.vcs-sidebar').contains(harness.document.activeElement),
+      `focus after closing the drawer: ${harness.document.activeElement?.tagName} ${harness.document.activeElement?.props?.className}`)
   })
 })
 
@@ -3253,7 +3256,7 @@ test('VcsView scopes in-flight writes per repository without locking another rep
   const sync = Promise.withResolvers()
   try {
     await withGitPanel([alpha, beta], {
-      panelState: { tiled: false },
+      panelState: { tiled: false, overview: false },
       async write(path, body, json) {
         assert.equal(path, '/api/vcs.sync')
         if (body.repo === tileAlpha) await sync.promise

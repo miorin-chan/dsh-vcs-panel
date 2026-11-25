@@ -19,7 +19,7 @@ import type { StashEntry } from '../lib/stash-types.js'
 import { stashNode, stashSha } from './stash.js'
 import type { StashTarget } from './stash.js'
 import {
-  loadState, nodePatch, saveState, SIDEBAR_MAX, SIDEBAR_MIN, WORKING_COPY, WORKTREE, worktreeNode, worktreePath,
+  loadState, nodePatch, resolveOverviewDefault, saveState, SIDEBAR_MAX, SIDEBAR_MIN, WORKING_COPY, WORKTREE, worktreeNode, worktreePath,
 } from './state.js'
 import type { PanelState, ReadingAnchor } from './state.js'
 import type { DirRow, GroupRow, UntrackedChild } from './detail/tree.js'
@@ -377,7 +377,7 @@ export function VcsView({
 
   // The overview pushes the panel right; what remains decides the columns,
   // unless too little remains and the overview covers the panel instead.
-  const overviewOpen = state.overview && !state.tiled
+  const overviewOpen = state.overview === true && !state.tiled
   const overviewNeedsDrawer = width > 0 && width - state.overviewWidth < OVERVIEW_DRAWER_REST
   const overviewDrawer = overviewOpen && overviewNeedsDrawer
   const contentWidth = overviewOpen && !overviewDrawer ? width - state.overviewWidth : width
@@ -833,7 +833,7 @@ export function VcsView({
   widthRef.current = width
 
   const overviewData = useOverview(api, {
-    active: (state.overview || state.tiled) && !waitingForSnapshots,
+    active: (overviewOpen || state.tiled) && !waitingForSnapshots,
     reloadKey: JSON.stringify([sessionId, manual.repositories, background.repositories, manual.history, manual.working, overviewWriteRevision]),
     repo: state.repo,
     repoKey: JSON.stringify([state.repo, background.history, background.working]),
@@ -899,11 +899,11 @@ export function VcsView({
   }, [])
   const measured = width > 0
   useEffect(() => {
-    if (!measured) return
+    if (!visible || !measured) return
     if (state.tiled) requestRoom(TILE_ROOM)
-    else if (state.overview) requestRoom(stateRef.current.overviewWidth + NARROW_WIDTH)
+    else if (overviewOpen) requestRoom(stateRef.current.overviewWidth + NARROW_WIDTH)
     else releaseRoom()
-  }, [measured, releaseRoom, requestRoom, state.overview, state.tiled])
+  }, [measured, overviewOpen, releaseRoom, requestRoom, state.tiled, visible])
 
   // The overview slides in from the left and out again; reduced motion and the
   // switch into the tiled layout skip the slide.
@@ -946,7 +946,7 @@ export function VcsView({
         fadeOutInPlace(root, root?.querySelector<HTMLElement>('.vcs-content') ?? null)
       }
       motionRef.current = { into: 'tile', sources }
-      update({ tiled: true, overviewBeforeTile: current.overview, overview: false })
+      update({ tiled: true, overviewBeforeTile: current.overview === true, overview: false })
     } else {
       const boxes = animate ? tiledControl.current?.columnRects() : undefined
       motionRef.current = { into: 'timeline', tiles: boxes === undefined ? [] : copyTiles(root, boxes) }
@@ -1016,9 +1016,9 @@ export function VcsView({
       panelOwnsFocusRef.current = true
       pendingRestoreFocusRef.current = true
       pendingReadyFocusRef.current = true
-      setFocusTick(value => value + 1)
     }
     if (overviewDrawer) update({ overview: false })
+    if (keyboard) setFocusTick(value => value + 1)
   }, [overviewDrawer, repositories.list, selectNode, singleColumn, switchRepo, update])
 
   const selectOverviewRepository = useCallback((path: string, keyboard: boolean) => {
@@ -1031,9 +1031,9 @@ export function VcsView({
       panelOwnsFocusRef.current = true
       pendingRestoreFocusRef.current = true
       pendingReadyFocusRef.current = true
-      setFocusTick(value => value + 1)
     }
     if (overviewDrawer) update({ overview: false })
+    if (keyboard) setFocusTick(value => value + 1)
   }, [overviewDrawer, repositories.list, switchRepo, update])
 
   /** Both menu and direct actions first bring the pointer's repository into scope. */
@@ -1123,6 +1123,7 @@ export function VcsView({
     api.repositories(controller.signal).then(answer => {
       if (controller.signal.aborted) return
       const list: RepositoryInfo[] = Array.isArray(answer?.repositories) ? answer.repositories : []
+      setState(previous => resolveOverviewDefault(previous, list.length))
       setRepositories({
         status: 'ready', list, truncated: answer?.truncated === true, worktreesTruncated: answer?.worktreesTruncated === true,
         error: null, cwd: typeof answer?.cwd === 'string' ? answer.cwd : null,
@@ -1397,8 +1398,8 @@ export function VcsView({
   }, [missingTool, repositories.status, showTimeline, singleColumn, singleView, visible])
   restoreNavFocusRef.current = restoreNavFocus
 
-  // Only an explicit opening takes focus. Discovery is enough to land on the
-  // current row; the overview's pointer stream can still be pending.
+  // An explicit opening requests focus on the current repository. Discovery
+  // is enough to land on that row; the pointer stream can still be pending.
   useLayoutEffect(() => {
     const request = overviewFocusRequestRef.current
     if (request === null || !overviewOpen || overviewPresentation !== 'open'
@@ -1455,14 +1456,16 @@ export function VcsView({
       pendingReadyFocusRef.current = false
       return
     }
-    if (showTimeline && !timelineSettled) return
+    if (overviewDrawer ? overviewPresentation !== 'open' : showTimeline && !timelineSettled) return
     pendingReadyFocusRef.current = false
     if (hasOpenOverlay) return
     const active = typeof document === 'undefined' ? null : document.activeElement
     if (!canClaimFocusFrom(active, rootRef.current)) return
-    restoreNavFocus()
+    if (overviewDrawer) {
+      if (overviewControl.current?.focus() === true) panelOwnsFocusRef.current = true
+    } else restoreNavFocus()
   }, [
-    focusRequest, focusTick, hasOpenOverlay, missingTool, repositories.list.length,
+    focusRequest, focusTick, hasOpenOverlay, missingTool, overviewDrawer, overviewPresentation, repositories.list.length,
     repositories.status, restoreNavFocus, showTimeline, state.repo, timelineSettled, visible,
   ])
 

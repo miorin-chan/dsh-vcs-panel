@@ -92,8 +92,8 @@ export interface PanelState {
   sidebarWidth: number
   /** The timeline's vertical scroll offset. */
   timelineScroll: number
-  /** Whether the overview column is pushed in from the left. */
-  overview: boolean
+  /** Whether the overview is open, or null before discovery sets its default. */
+  overview: boolean | null
   /** The overview column width, in CSS pixels. */
   overviewWidth: number
   /** Whether the repositories are tiled as columns. */
@@ -139,7 +139,7 @@ export function defaultState(): PanelState {
     twoColumns: true,
     sidebarWidth: 320,
     timelineScroll: 0,
-    overview: false,
+    overview: null,
     overviewWidth: OVERVIEW_WIDTH,
     tiled: false,
     overviewBeforeTile: false,
@@ -244,7 +244,7 @@ export function sanitizeState(raw: unknown): PanelState {
   if (typeof stored.timelineScroll === 'number' && Number.isFinite(stored.timelineScroll) && stored.timelineScroll >= 0) {
     state.timelineScroll = stored.timelineScroll
   }
-  state.overview = stored.overview === true
+  if (typeof stored.overview === 'boolean') state.overview = stored.overview
   if (typeof stored.overviewWidth === 'number' && Number.isFinite(stored.overviewWidth)) {
     state.overviewWidth = clamp(Math.round(stored.overviewWidth), OVERVIEW_MIN, OVERVIEW_MAX)
   }
@@ -252,6 +252,11 @@ export function sanitizeState(raw: unknown): PanelState {
   state.overviewBeforeTile = stored.overviewBeforeTile === true
   if (stored.tileOrder === 'directory') state.tileOrder = 'directory'
   return state
+}
+
+/** Let the first successful repository listing set the layout if none was restored or chosen. */
+export function resolveOverviewDefault(state: PanelState, repositoryCount: number): PanelState {
+  return state.overview === null ? { ...state, overview: !state.tiled && repositoryCount > 1 } : state
 }
 
 /**
