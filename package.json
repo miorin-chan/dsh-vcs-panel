@@ -1,6 +1,6 @@
 {
   "name": "@miorin/dsh-vcs-panel",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
@@ -92,5 +92,13 @@
     "esbuild": "0.28.2",
     "react": "18.3.1",
     "typescript": "5.7.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/miorin-chan/dsh-vcs-panel.git"
+  },
+  "homepage": "https://github.com/miorin-chan/dsh-vcs-panel#readme",
+  "bugs": {
+    "url": "https://github.com/miorin-chan/dsh-vcs-panel/issues"
   }
 }
