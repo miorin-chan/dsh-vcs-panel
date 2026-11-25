@@ -2287,15 +2287,26 @@ function tileRepo(path, pointers, checkouts = [tileTree(path)], track = { ahead:
   }
 }
 
-/** Exercise the real panel and route payloads with controllable status, writes, and rereads. */
-async function withTiledGit(repositories, { initialWorktrees = [], expanded = [], commits = [tileTopic, tileMain, tileLoose], write }, run) {
-  const harness = createHarness()
+function overviewResponse(repositories, cwd = '/fixture') {
+  return new Response([
+    { type: 'scope', cwd, repositories: repositories.length },
+    ...repositories.map(repository => ({ type: 'repository', repository })),
+    { type: 'done' },
+  ].map(line => JSON.stringify(line)).join('\n'))
+}
+
+/** Exercise the real panel and route payloads with controllable discovery, status, writes, and rereads. */
+async function withGitPanel(repositories, {
+  width = 1000, panelState = {}, initialWorktrees = [], expanded = [], commits = [tileTopic, tileMain, tileLoose],
+  write = () => assert.fail('unexpected write'),
+}, run) {
+  const harness = createHarness({ width })
   const restore = harness.installGlobals()
   const savedFetch = globalThis.fetch
   const savedStorage = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
   const sessionId = 'tiled-git'
   const store = new Map([[storageKey(sessionId), JSON.stringify({
-    repo: repositories[0].path, repositoryScope: 'all', tiled: true, tileExpanded: expanded, worktrees: initialWorktrees,
+    repo: repositories[0].path, tiled: true, tileExpanded: expanded, worktrees: initialWorktrees, ...panelState,
   })]])
   Object.defineProperty(globalThis, 'sessionStorage', {
     value: { getItem: key => store.get(key) ?? null, setItem: (key, value) => { store.set(key, value) } },
@@ -2305,6 +2316,7 @@ async function withTiledGit(repositories, { initialWorktrees = [], expanded = []
   const reads = { overview: [], log: [], status: [] }
   const writes = []
   const waits = { status: new Map(), overview: null }
+  const discovery = { repositories }
 
   globalThis.fetch = async (url, init) => {
     const query = new URL(url, 'http://127.0.0.1')
@@ -2318,19 +2330,17 @@ async function withTiledGit(repositories, { initialWorktrees = [], expanded = []
     }
     switch (query.pathname) {
       case '/api/vcs.repositories':
-        return json({ cwd: '/fixture', repositories: repositories.map(repo => ({
+        return json({ cwd: '/fixture', repositories: discovery.repositories.map(repo => ({
           path: repo.path, name: repo.name, vcs: repo.vcs, capabilities: repo.capabilities ?? GIT_CAPABILITIES,
-          worktrees: repo.checkouts.map(tree => ({ ...tree, name: tree.path.split('/').at(-1), canRemove: !tree.primary })),
+          enclosing: repo.enclosing,
+          worktrees: repo.checkouts.filter(tree => tree.path === repo.path || !discovery.missingWorktrees?.has(tree.path))
+            .map(tree => ({ ...tree, name: tree.path.split('/').at(-1), canRemove: !tree.primary })),
         })) })
       case '/api/vcs.overview': {
         reads.overview.push(path)
         await waits.overview
-        const selected = path === null ? repositories : [current]
-        return new Response([
-          { type: 'scope', cwd: '/fixture', repositories: selected.length },
-          ...selected.map(repository => ({ type: 'repository', repository })),
-          { type: 'done' },
-        ].map(line => JSON.stringify(line)).join('\n'))
+        const selected = path === null ? discovery.repositories : discovery.repositories.filter(repo => repo.path === path)
+        return overviewResponse(selected)
       }
       case '/api/vcs.status': {
         reads.status.push([path, worktree])
@@ -2346,9 +2356,12 @@ async function withTiledGit(repositories, { initialWorktrees = [], expanded = []
           },
         })
       }
-      case '/api/vcs.log':
+      case '/api/vcs.log': {
         reads.log.push(path)
-        return json({ commits: commits.map(sha => ({ sha, parents: [], refs: [], subject: sha })) })
+        const skip = Number(query.searchParams.get('skip') ?? 0)
+        const limit = Number(query.searchParams.get('limit') ?? commits.length)
+        return json({ commits: commits.slice(skip, skip + limit).map(sha => ({ sha, parents: [], refs: [], subject: sha })) })
+      }
       default:
         return json({})
     }
@@ -2371,7 +2384,7 @@ async function withTiledGit(repositories, { initialWorktrees = [], expanded = []
       assert.equal(dialog(), null)
     }
     await run({
-      harness, body, columns, chip, bar, action, dialog, submit, escape, reads, writes, waits,
+      harness, body, columns, chip, bar, action, dialog, submit, escape, reads, writes, waits, discovery,
       current: () => body.querySelector('.vcs-tile-column[data-current]')?.dataset.repository,
       persisted: () => JSON.parse(store.get(storageKey(sessionId))),
     })
@@ -2387,7 +2400,7 @@ async function withTiledGit(repositories, { initialWorktrees = [], expanded = []
 test('tiled direct actions wait for another repository’s status and share the existing dialogs', async () => {
   const remote = tilePointer('origin/next', tileLoose, { kind: 'remote', remote: 'origin', branch: 'next' })
   const topic = tilePointer('topic', tileTopic, { ahead: 2, unique: 2, upstream: 'origin/topic' })
-  await withTiledGit([tileRepo(tileAlpha, []), tileRepo(tileBeta, [topic, remote])], {
+  await withGitPanel([tileRepo(tileAlpha, []), tileRepo(tileBeta, [topic, remote])], {
     expanded: [tileAlpha], write: () => assert.fail('the cancelled dialogs must not write'),
   }, async ({ harness, body, columns, bar, chip, action, dialog, escape, reads, waits, writes, current }) => {
     assert.equal(current(), tileAlpha)
@@ -2449,7 +2462,7 @@ test('direct writes preserve the worktree filter, lock only their repository, an
   const publish = tilePointer('publish', tileTopic, { ahead: 2, unique: 2, upstream: 'origin/publish' })
   const beta = tileRepo(tileBeta, [publish])
   const pushing = Promise.withResolvers()
-  await withTiledGit([alpha, beta], {
+  await withGitPanel([alpha, beta], {
     initialWorktrees: [alphaSibling],
     write: async (route, request, json) => {
       if (route === '/api/vcs.branch') {
@@ -2527,7 +2540,7 @@ test('a vanished tiled pointer hands focus to the next chip or the column header
     tileTree(loosePath, { head: tileLoose, branch: null, primary: false }),
     tileTree(uniquePath, { head: uniqueHead, branch: null, primary: false }),
   ])
-  await withTiledGit([alpha], {
+  await withGitPanel([alpha], {
     commits: [uniqueHead, tileTopic, tileMain, tileLoose],
     write: (route, request, json) => {
       if (route === '/api/vcs.commit-op') return json({ branch: request.name, sha: request.sha })
@@ -2591,6 +2604,290 @@ test('a vanished tiled pointer hands focus to the next chip or the column header
     assert.equal(chip(tileAlpha, loosePath), undefined)
     assert.equal(harness.document.activeElement, body.querySelector('.vcs-tile-head'))
     assert.match(textOf(bar().querySelector('.vcs-notice')), /^worktree\.removed:/u)
+  })
+})
+
+test('tiling shows all discovered repositories, defaults to attention, and restores a saved directory order', async () => {
+  const alpha = tileRepo(tileAlpha, [])
+  const beta = tileRepo(tileBeta, [tilePointer('topic', tileTopic, { ahead: 2, unique: 2 })])
+  for (const tileOrder of [undefined, 'directory']) {
+    await withGitPanel([alpha, beta], { panelState: { tileOrder } }, async ({ harness, body, columns, persisted }) => {
+      const directory = [tileAlpha, tileBeta]
+      const attention = [...directory].reverse()
+      const orderButtons = body.querySelector('.vcs-tile-order').children
+      assert.deepEqual(orderButtons.map(textOf), ['tile.orderAttention', 'tile.orderDirectory'])
+      assert.deepEqual(columns(), tileOrder === 'directory' ? directory : attention)
+      assert.equal(persisted().tileOrder, tileOrder ?? 'attention')
+      assert.deepEqual(orderButtons.map(button => button.attributes.get('aria-pressed')), tileOrder === 'directory'
+        ? ['false', 'true'] : ['true', 'false'])
+      harness.mouseClick(orderButtons[tileOrder === 'directory' ? 0 : 1])
+      assert.deepEqual(columns(), tileOrder === 'directory' ? attention : directory)
+      assert.equal(persisted().tileOrder, tileOrder === 'directory' ? 'attention' : 'directory')
+
+      const trigger = body.querySelector('.vcs-repo-button')
+      assert.equal(textOf(trigger), alpha.name, 'the repository button stays first in the tiled toolbar')
+      assert.equal(trigger.attributes.get('aria-pressed'), 'false')
+      harness.keyClick(trigger)
+      await harness.settle()
+      assert.equal(body.querySelector('.vcs-tiled'), null)
+      assert.equal(body.querySelector('.vcs-repo-button').attributes.get('aria-pressed'), 'true')
+      const current = body.querySelector(`[data-overview-key="repo:${tileAlpha}"]`)
+      assert.ok(current.classList.contains('vcs-overview-quiet-row'))
+      assert.equal(harness.document.activeElement, current, 'leaving tiles with the repository button opens and focuses the overview')
+    })
+  }
+})
+
+test('overview navigation restores each repository’s worktrees, commit, range, and timeline scroll', async () => {
+  const alphaTree = '/fixture/trees/alpha-preview'
+  const betaTree = '/fixture/trees/beta-preview'
+  const alpha = tileRepo(tileAlpha, [], [tileTree(tileAlpha), tileTree(alphaTree, { primary: false })])
+  const beta = tileRepo(tileBeta, [], [tileTree(tileBeta), tileTree(betaTree, { primary: false })])
+  const commits = [tileMain, ...Array.from({ length: 330 }, (_, index) => (index + 100).toString(16).padStart(40, '0'))]
+  await withGitPanel([alpha, beta], { width: 1200, panelState: { tiled: false }, commits }, async ({ harness, body, persisted, discovery }) => {
+    const q = selector => body.querySelector(selector)
+    const repoRow = path => q(`[data-overview-key="repo:${path}"]`)
+    const timelineRow = index => q(`[data-timeline-index="${index}"]`)
+    const worktreeRows = () => body.querySelectorAll('.vcs-worktree-row').map(row => row.attributes.get('title'))
+    const timeline = () => q('.vcs-timeline-scroll')
+    async function setReading(tree, ref, index, scrollTop) {
+      harness.mouseClick(q('.vcs-worktree-button'))
+      const menu = q('.vcs-worktree-menu')
+      const [primary, sibling] = menu.querySelectorAll('[role="menuitemcheckbox"]')
+      harness.mouseClick(sibling)
+      harness.mouseClick(primary)
+      assert.deepEqual(worktreeRows(), [tree])
+      if (ref === 'HEAD') harness.mouseClick(menu.querySelectorAll('.vcs-range-option')[1])
+      harness.keyDown(harness.document.activeElement, 'Escape')
+      await harness.settle()
+      if (index > 300) {
+        harness.mouseClick(q('.vcs-load-more'))
+        await harness.settle()
+      }
+      timeline().scrollTop = scrollTop
+      timeline().props.onScroll({ currentTarget: timeline() })
+      harness.mouseClick(timelineRow(index))
+    }
+
+    harness.mouseClick(q('.vcs-repo-button'))
+    await harness.settle()
+    assert.equal(harness.document.activeElement, repoRow(tileAlpha))
+    await setReading(alphaTree, 'HEAD', 5, 148)
+    harness.mouseClick(repoRow(tileBeta))
+    await harness.settle()
+    assert.deepEqual(worktreeRows(), [tileBeta], 'a new repository starts with its own entry worktree')
+    assert.equal(timeline().scrollTop, 0)
+    await setReading(betaTree, 'all', 308, 13380)
+
+    for (const [path, tree, ref, index, offset] of [
+      [tileAlpha, alphaTree, 'HEAD', 5, 148], [tileBeta, betaTree, 'all', 308, 13380],
+    ]) {
+      const row = repoRow(path)
+      row.focus()
+      assert.ok(harness.keyDown(row, 'Enter').prevented)
+      await harness.settle()
+      assert.equal(persisted().repo, path)
+      assert.equal(persisted().ref, ref)
+      assert.deepEqual(persisted().worktrees, [tree], 'the selected worktree is restored even when its row is offscreen')
+      assert.equal(timeline().scrollTop, offset)
+      assert.equal(timelineRow(index).attributes.get('aria-current'), 'true')
+      assert.equal(harness.document.activeElement, timelineRow(index))
+      assert.ok(harness.keyDown(timelineRow(index), 'ArrowLeft').prevented)
+      assert.equal(harness.document.activeElement, row, 'left returns to the overview cursor')
+      assert.equal(body.querySelectorAll('.vcs-timeline').length, 1)
+    }
+
+    // A saved checkout that vanished while away must not contaminate the next timeline.
+    discovery.missingWorktrees = new Set([alphaTree])
+    harness.mouseClick(q('[aria-label="top.refresh"]'))
+    await harness.settle()
+    harness.mouseClick(repoRow(tileAlpha))
+    await harness.settle()
+    assert.deepEqual(worktreeRows(), [tileAlpha])
+    assert.equal(persisted().repo, tileAlpha)
+  })
+})
+
+test('the active timeline follows discovery when the current repository disappears', async () => {
+  const first = tileRepo('/fixture/first', [])
+  const enclosing = { ...tileRepo(tileAlpha, []), enclosing: true }
+  const chosen = tileRepo(tileBeta, [])
+  await withGitPanel([first, enclosing, chosen], { panelState: { repo: chosen.path, tiled: false } }, async ({
+    harness, body, reads, persisted, discovery,
+  }) => {
+    assert.equal(persisted().repo, chosen.path)
+    const refresh = async repositories => {
+      discovery.repositories = repositories
+      harness.mouseClick(body.querySelector('[aria-label="top.refresh"]'))
+      await harness.settle()
+    }
+    await refresh([first, enclosing, chosen])
+    assert.equal(persisted().repo, chosen.path, 'a current repository that still exists stays selected')
+    await refresh([first, enclosing])
+    assert.equal(persisted().repo, enclosing.path)
+    assert.equal(reads.log.at(-1), enclosing.path)
+    await refresh([first])
+    assert.equal(persisted().repo, first.path)
+    assert.equal(reads.log.at(-1), first.path)
+    await refresh([])
+    assert.equal(persisted().repo, null)
+    assert.equal(body.querySelector('.vcs-timeline'), null)
+    assert.equal(textOf(body.querySelector('.vcs-repo-button')), 'top.noRepository')
+    assert.equal(reads.log.at(-1), first.path, 'empty discovery does not read another repository')
+  })
+})
+
+test('the overview switches to pending and failed repositories and follows the focused row as it moves', async () => {
+  const harness = createHarness({ width: 1200 })
+  const restore = harness.installGlobals()
+  const savedFetch = globalThis.fetch
+  const failedPath = '/fixture/plugins/failed'
+  const alpha = tileRepo(tileAlpha, [tilePointer('topic', tileTopic, { ahead: 2, unique: 2 })])
+  const beta = tileRepo(tileBeta, [])
+  const failed = tileRepo(failedPath, [])
+  const repositories = [alpha, beta, failed]
+  const timelineReads = []
+  let stream
+  const send = line => { stream.enqueue(new TextEncoder().encode(`${JSON.stringify(line)}\n`)) }
+  const finish = () => {
+    if (stream === undefined) return
+    send({ type: 'done' })
+    stream.close()
+    stream = undefined
+  }
+  globalThis.fetch = async url => {
+    const query = new URL(url, 'http://127.0.0.1')
+    const path = query.searchParams.get('repo')
+    switch (query.pathname) {
+      case '/api/vcs.repositories':
+        return Response.json({ cwd: '/fixture', repositories: repositories.map(repo => ({ ...repo, capabilities: GIT_CAPABILITIES })) })
+      case '/api/vcs.overview':
+        if (path !== null) return overviewResponse(repositories.filter(repo => repo.path === path))
+        return new Response(new ReadableStream({
+          start(controller) {
+            stream = controller
+            // The header must trust discovery, not the transport's count.
+            send({ type: 'scope', cwd: '/fixture', repositories: 7 })
+          },
+        }))
+      case '/api/vcs.status':
+        return Response.json({ repo: { path }, defaultNode: tileMain, vcs: 'git', capabilities: GIT_CAPABILITIES, total: 0 })
+      case '/api/vcs.log':
+        timelineReads.push(path)
+        return path === failedPath ? Response.json({ error: { code: 'not-a-repo' } }, { status: 400 })
+          : Response.json({ commits: [{ sha: tileMain, subject: path, parents: [], refs: [] }] })
+      default:
+        return Response.json({})
+    }
+  }
+  try {
+    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
+    harness.mount(harness.react.createElement(VcsView, { sessionId: 'overview-stream', t }))
+    await harness.settle()
+    const q = selector => harness.document.body.querySelector(selector)
+    const row = path => q(`[data-overview-key="repo:${path}"]`)
+    const list = () => q('.vcs-overview-list')
+    const active = () => harness.document.activeElement
+    const title = () => q('.vcs-picker-label')
+    const sections = () => list().querySelectorAll('.vcs-overview-section').map(section => textOf(section).split(':')[0])
+
+    harness.keyClick(q('.vcs-repo-button'))
+    await harness.settle()
+    assert.equal(active(), row(tileAlpha))
+    assert.equal(textOf(row(tileAlpha).querySelector('[data-current]')), 'overview.current')
+    assert.match(textOf(q('.vcs-overview-scope')), /"count":"3"/u)
+    assert.deepEqual(list().querySelectorAll('[data-pending]').map(item => item.dataset.repository), repositories.map(repo => repo.path))
+    assert.deepEqual(sections(), ['overview.loading.other'])
+    const status = list().querySelectorAll('[role="status"]')
+    assert.equal(status.length, 1, 'the section heading is the only live region')
+    assert.match(textOf(status[0]), /"count":"3"/u)
+    assert.equal(textOf(row(failedPath).querySelector('.vcs-overview-dir')), 'plugins/')
+    assert.equal(row(failedPath).querySelector('.vcs-overview-twist').props.disabled, true)
+    assert.equal(q('.vcs-overview-pending').attributes.get('aria-hidden'), 'true')
+
+    harness.keyDown(active(), 'ArrowDown')
+    assert.equal(active(), row(tileBeta))
+    harness.keyDown(active(), 'Enter')
+    await harness.settle()
+    assert.equal(textOf(title()), beta.name)
+    assert.deepEqual(timelineReads, [tileAlpha, tileBeta])
+    assert.ok(row(tileBeta).attributes.has('data-pending'), 'the timeline switches before overview data arrives')
+    assert.ok(q('.vcs-sidebar').contains(active()))
+    harness.keyDown(active(), 'ArrowLeft')
+    assert.equal(active(), row(tileBeta))
+
+    send({ type: 'repository', repository: alpha })
+    send({ type: 'repository', repository: beta })
+    await harness.settle()
+    assert.deepEqual(sections(), ['overview.attention.one', 'overview.loading.one', 'overview.quietTitle.one'])
+    assert.ok(row(tileBeta).classList.contains('vcs-overview-quiet-row'))
+    assert.equal(row(tileBeta).attributes.get('aria-current'), 'true')
+    assert.equal(active(), row(tileBeta), 'settling into the quiet group preserves focus')
+    assert.equal(row(tileBeta).props.tabIndex, 0)
+
+    send({ type: 'error', path: failedPath, registered: true, error: { code: 'not-a-repo' } })
+    send({ type: 'error', path: '/fixture/not-discovered', registered: false, error: { code: 'timeout' } })
+    finish()
+    await harness.settle()
+    assert.equal(list().querySelectorAll('[role="status"]').length, 0)
+    assert.deepEqual(list().querySelectorAll('[data-repository]').map(item => item.dataset.repository), [tileAlpha, failedPath, tileBeta])
+    assert.ok(row(failedPath).attributes.has('data-failed'))
+    assert.equal(textOf(row(failedPath).querySelector('.vcs-overview-error')), 'error.notARepo')
+    assert.equal(row('/fixture/not-discovered'), null)
+    // An unlisted repository's failed read stays silent, as before the overview navigated.
+    assert.deepEqual(list().querySelectorAll('.vcs-note').map(textOf), [])
+    harness.mouseClick(row(failedPath))
+    await harness.settle()
+    assert.equal(textOf(title()), failed.name)
+    assert.equal(timelineReads.at(-1), failedPath)
+    assert.match(textOf(q('.vcs-timeline-note')), /history\.error.*error\.notARepo/u)
+  } finally {
+    finish()
+    harness.unmount()
+    restore()
+    globalThis.fetch = savedFetch
+  }
+})
+
+test('restoring an open overview expands the current quiet group and sets its cursor without taking focus', async () => {
+  const alpha = tileRepo(tileAlpha, [tilePointer('topic', tileTopic, { ahead: 2, unique: 2 })])
+  const beta = tileRepo(tileBeta, [])
+  await withGitPanel([alpha, beta], { panelState: { tiled: false, overview: true, repo: tileBeta } }, async ({ harness, body }) => {
+    const current = body.querySelector(`[data-overview-key="repo:${tileBeta}"]`)
+    assert.ok(current.classList.contains('vcs-overview-quiet-row'))
+    assert.equal(current.props.tabIndex, 0)
+    assert.equal(textOf(current.querySelector('[data-current]')), 'overview.current')
+    assert.equal(harness.document.activeElement, body, 'restoring the layout is not an explicit overview focus request')
+  })
+})
+
+test('a drawer closes when selecting either another repository or the current repository', async () => {
+  const alpha = tileRepo(tileAlpha, [])
+  const beta = tileRepo(tileBeta, [tilePointer('topic', tileTopic, { ahead: 2, unique: 2 })])
+  await withGitPanel([alpha, beta], { width: 700, panelState: { tiled: false } }, async ({ harness, body, reads, persisted }) => {
+    const q = selector => body.querySelector(selector)
+    const open = async () => {
+      harness.mouseClick(q('.vcs-repo-button'))
+      await harness.settle()
+      assert.equal(q('.vcs-root').attributes.get('data-overview-drawer'), 'true')
+    }
+    await open()
+    harness.mouseClick(q(`[data-overview-key="repo:${tileBeta}"]`))
+    await harness.settle()
+    assert.equal(persisted().repo, tileBeta)
+    assert.equal(q('.vcs-repo-button').attributes.get('aria-pressed'), 'false')
+    assert.equal(reads.log.at(-1), tileBeta)
+
+    await open()
+    const before = reads.log.length
+    const current = q(`[data-overview-key="repo:${tileBeta}"]`)
+    assert.equal(harness.document.activeElement, current)
+    assert.ok(harness.keyDown(current, 'Enter').prevented)
+    await harness.settle()
+    assert.equal(persisted().repo, tileBeta)
+    assert.equal(q('.vcs-repo-button').attributes.get('aria-pressed'), 'false')
+    assert.equal(reads.log.length, before, 'choosing the current row does not switch or reread the timeline')
+    assert.ok(q('.vcs-sidebar').contains(harness.document.activeElement))
   })
 })
 
@@ -2674,36 +2971,6 @@ test('floating menus survive internal scroll, close on outside scroll/blur, and 
     harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-menu', t, locale: 'en-US' }))
     await harness.settle()
     const body = harness.document.body
-    const repoBtn = body.querySelector('.vcs-repo-button')
-    const timeline = body.querySelector('.vcs-timeline-scroll')
-    assert.notEqual(timeline, null)
-    harness.keyDown(repoBtn, 'ArrowDown')
-    await harness.settle()
-    const repoMenu = body.querySelector('.vcs-repo-menu')
-    assert.notEqual(repoMenu, null)
-    const repoItem = repoMenu.querySelector('[aria-checked="true"]')
-    assert.ok(harness.document.activeElement === repoItem, 'opening the repository menu focuses the current repository')
-
-    fakeWin.window.dispatch('scroll', { target: body }, true)
-    await harness.settle()
-    assert.ok(body.querySelector('.vcs-repo-menu') === repoMenu, 'page scroll keeps the repository menu open')
-    fakeWin.window.dispatch('scroll', { target: timeline }, true)
-    await harness.settle()
-    assert.ok(body.querySelector('.vcs-repo-menu') === repoMenu, 'timeline scroll keeps the repository menu open')
-    assert.ok(harness.document.activeElement === repoItem, 'scroll keeps focus on the current repository')
-
-    harness.keyDown(repoItem, 'Escape')
-    await harness.settle()
-    assert.equal(body.querySelector('.vcs-repo-menu'), null, 'Escape closes the repository menu')
-    assert.ok(harness.document.activeElement === repoBtn, 'Escape restores focus to the repository button')
-
-    harness.keyDown(repoBtn, 'ArrowDown')
-    await harness.settle()
-    assert.notEqual(body.querySelector('.vcs-repo-menu'), null)
-    harness.dispatchDocument('pointerdown', { target: body })
-    await harness.settle()
-    assert.equal(body.querySelector('.vcs-repo-menu'), null, 'outside click closes the repository menu')
-
     const branchBtn = body.querySelector('.vcs-branch-button')
     assert.notEqual(branchBtn, null)
 
@@ -2847,20 +3114,20 @@ test('TopBar keeps the tile toggle first in the right-hand actions in both layou
     const { TopBar } = await loadClientModule('src/client/TopBar.tsx', harness)
     let tiled = false
     const render = () => harness.mount(harness.react.createElement(TopBar, {
-      repositories: [], refreshing: false, onRefresh: () => {},
+      repository: null, refreshing: false, onRefresh: () => {},
       onOverview: () => {}, tiled, onTile: () => { tiled = !tiled }, t,
     }))
     const header = () => harness.document.body.querySelector('.vcs-topbar')
     const actions = () => header().querySelector('.vcs-topbar-actions').children
     const labels = () => actions().map(button => button.attributes.get('aria-label'))
     render()
-    assert.equal(header().children[0].attributes.get('aria-label'), 'overview.toggle')
+    assert.equal(header().children[0].querySelector('.vcs-repo-button').attributes.get('aria-label'), 'top.noRepository')
     assert.equal(header().querySelector('.vcs-readonly'), null)
     assert.deepEqual(labels(), ['tile.toggle', 'top.twoColumns', 'top.refresh'])
     assert.equal(actions()[0].attributes.get('aria-pressed'), 'false')
     harness.keyClick(actions()[0])
     render()
-    assert.equal(header().children[0].attributes.get('aria-label'), 'overview.toggle')
+    assert.equal(header().children[0].querySelector('.vcs-repo-button').attributes.get('aria-label'), 'top.noRepository')
     assert.deepEqual(labels(), ['tile.toggle', 'top.refresh'])
     assert.equal(actions()[0].attributes.get('aria-pressed'), 'true')
     harness.keyClick(actions()[0])
@@ -2873,105 +3140,60 @@ test('TopBar keeps the tile toggle first in the right-hand actions in both layou
   }
 })
 
-test('TopBar repository rows filter in place and return keyboard focus to the trigger on Escape', async () => {
+test('TopBar repository button shows a relative path and toggles the overview without a menu', async () => {
   const harness = createHarness({ width: 300 })
   const restore = harness.installGlobals()
   try {
     const { TopBar } = await loadClientModule('src/client/TopBar.tsx', harness)
-    const repositories = [
-      { path: '/project/frontend/shared', name: 'shared' },
-      { path: '/project/backend/shared', name: 'shared' },
-    ]
-    const calls = []
-    const render = list => harness.mount(harness.react.createElement(TopBar, {
-      repositories: list,
-      cwd: '/project',
-      repo: repositories[1].path,
-      checkedRepositories: [repositories[1].path],
-      onRepositoryScope: () => {},
-      onToggleRepository: path => { calls.push(path) },
-      t,
+    let open = false
+    let calls = 0
+    const render = repository => harness.mount(harness.react.createElement(TopBar, {
+      repository, cwd: '/project', overviewOpen: open, onOverview: () => { calls += 1; open = !open }, t,
     }))
     const body = harness.document.body
-    const menu = () => body.querySelector('.vcs-repo-menu')
-    render(repositories)
+    const nested = { path: '/project/backend/shared', name: 'shared' }
+    render(nested)
     const trigger = body.querySelector('.vcs-repo-button')
-    assert.equal(textOf(trigger), 'shared')
-    assert.equal(trigger.attributes.get('title'), '/project/backend/shared\nrepositories.selectedTitle')
-    assert.equal(trigger.attributes.get('aria-haspopup'), 'menu')
-    assert.equal(trigger.attributes.get('aria-expanded'), 'false')
+    assert.equal(trigger.parentElement.props.className, 'vcs-picker-wrap')
+    assert.ok(trigger.classList.contains('vcs-picker-button') && trigger.classList.contains('vcs-overview-toggle'))
+    assert.equal(textOf(trigger.querySelector('.vcs-picker-label')), 'shared')
+    assert.equal(trigger.attributes.get('aria-label'), t('top.repositoryLabel', { name: 'shared' }))
+    assert.equal(trigger.attributes.get('title'), 'backend/shared\noverview.show')
+    assert.equal(trigger.attributes.get('aria-haspopup'), undefined)
+    assert.equal(trigger.querySelector('.vcs-chevron'), null)
+    assert.equal(trigger.querySelector('.vcs-filter-icon'), null)
 
     trigger.focus()
-    harness.keyDown(trigger, 'ArrowDown')
-    await harness.settle()
-    const [first, current] = menu().querySelectorAll('[role="menuitemcheckbox"]')
-    assert.equal(trigger.attributes.get('aria-expanded'), 'true')
-    assert.equal(menu().attributes.get('aria-label'), 'top.repositories')
-    assert.equal(first.attributes.get('aria-checked'), 'false')
-    assert.equal(current.attributes.get('aria-checked'), 'true')
-    assert.match(textOf(current), /backend\/shared/u, 'the relative path distinguishes same-named repositories')
-    assert.equal(harness.document.activeElement, current)
-
-    harness.keyDown(current, 'Home')
-    assert.equal(harness.document.activeElement, menu().querySelector('.vcs-range-option'))
-    harness.keyDown(harness.document.activeElement, 'End')
-    assert.equal(harness.document.activeElement, current)
-    harness.keyDown(current, 'ArrowUp')
-    assert.equal(harness.document.activeElement, first)
-    harness.keyDown(first, 'Escape')
-    assert.equal(harness.document.activeElement, trigger)
-    assert.equal(menu(), null)
-    assert.deepEqual(calls, [])
-
-    harness.keyDown(trigger, 'ArrowDown')
-    await harness.settle()
-    harness.keyDown(harness.document.activeElement, 'Tab', { shiftKey: true })
-    assert.equal(menu(), null, 'backward Tab closes the menu when returning to its trigger')
-    assert.equal(harness.document.activeElement, trigger)
-
     harness.keyClick(trigger, ' ')
-    await harness.settle()
-    const [available, last] = menu().querySelectorAll('[role="menuitemcheckbox"]')
-    harness.keyClick(last)
-    assert.deepEqual(calls, [], 'the last checked repository stays included')
-    assert.equal(last.attributes.get('aria-disabled'), 'true')
-    harness.keyDown(last, 'ArrowUp')
-    assert.equal(harness.document.activeElement, available)
-    harness.keyClick(available)
-    assert.deepEqual(calls, [repositories[0].path])
-    assert.notEqual(menu(), null, 'toggling a filter leaves the menu open')
-    assert.equal(harness.document.activeElement, available)
+    render(nested)
+    assert.equal(calls, 1)
+    assert.equal(trigger.attributes.get('aria-pressed'), 'true')
+    assert.equal(trigger.attributes.get('title'), 'backend/shared\noverview.hide')
+    harness.keyClick(trigger)
+    render({ path: '/project', name: 'project' })
+    assert.equal(calls, 2)
+    assert.equal(trigger.attributes.get('aria-pressed'), 'false')
+    assert.equal(trigger.attributes.get('title'), 'overview.show', 'the session directory has no path line')
 
-    harness.dispatchDocument('pointerdown', { target: body })
-    assert.equal(menu(), null)
-
-    // If discovery empties while the menu is open, it stays closed even when the list returns.
-    harness.mouseClick(trigger)
-    assert.notEqual(menu(), null)
-    render([])
-    assert.equal(menu(), null)
-    assert.equal(trigger.props.disabled, true)
+    render(null)
+    assert.equal(trigger.attributes.get('aria-label'), 'top.noRepository')
     assert.equal(textOf(trigger), 'top.noRepository')
-    harness.keyDown(trigger, 'ArrowDown')
-    assert.equal(menu(), null)
-    render(repositories)
-    assert.equal(trigger.props.disabled, false)
-    assert.equal(menu(), null)
+    assert.ok(!trigger.props.disabled)
+    harness.mouseClick(trigger)
+    render(null)
+    assert.equal(calls, 3)
+    assert.equal(trigger.attributes.get('aria-pressed'), 'true')
   } finally {
     harness.unmount()
     restore()
   }
 })
 
-test('TopBar menus open on one header row with icon actions and show notes only when they apply', async () => {
+test('the worktree menu keeps its icon action in the header and explains only locked rows', async () => {
   const harness = createHarness({ width: 300 })
   const restore = harness.installGlobals()
   try {
     const { TopBar } = await loadClientModule('src/client/TopBar.tsx', harness)
-    const repositories = [
-      { path: '/project', name: 'project' },
-      { path: '/project/packages/api', name: 'api' },
-    ]
     const worktrees = [
       { path: '/project', name: 'project', branch: 'main' },
       { path: '/topic', name: 'topic', branch: 'topic' },
@@ -2980,16 +3202,10 @@ test('TopBar menus open on one header row with icon actions and show notes only 
       { value: 'all', label: 'history.all', title: 'history.allTitle' },
       { value: 'HEAD', label: 'history.selectedWorktrees', title: 'history.selectedWorktreesTitle' },
     ]
-    const managed = []
     const created = []
     const render = checkedPaths => harness.mount(harness.react.createElement(TopBar, {
-      repositories,
+      repository: { path: '/project', name: 'project' },
       cwd: '/project',
-      repo: '/project',
-      checkedRepositories: ['/project'],
-      onRepositoryScope: () => {},
-      onToggleRepository: () => {},
-      onManageRepositories: restoreFocus => { managed.push(restoreFocus) },
       capabilities: { ranges, worktreeCreate: true },
       refMode: 'all',
       onRefMode: () => {},
@@ -3006,25 +3222,6 @@ test('TopBar menus open on one header row with icon actions and show notes only 
     const body = harness.document.body
     render(['/project'])
 
-    // Repository menu: name, scope switch, and the manage action share the header row.
-    harness.mouseClick(body.querySelector('.vcs-repo-button'))
-    const repoMenu = () => body.querySelector('.vcs-repo-menu')
-    const repoHeader = repoMenu().querySelector('.vcs-picker-header')
-    assert.equal(textOf(repoHeader.querySelector('.vcs-picker-header-title')), 'top.repositories')
-    assert.deepEqual(repoHeader.querySelectorAll('.vcs-range-option').map(textOf), ['repositories.all', 'repositories.selected'])
-    const manage = repoHeader.querySelector('.vcs-repo-manage')
-    assert.equal(manage.attributes.get('role'), 'menuitem')
-    assert.equal(manage.attributes.get('aria-label'), 'repositoryConfig.manage')
-    assert.equal(manage.attributes.get('title'), 'repositoryConfig.manage')
-    assert.equal(repoMenu().querySelectorAll('[role="menuitem"]').length, 1, 'no manage row is left under the list')
-    const [root, nested] = repoMenu().querySelectorAll('.vcs-repo-item')
-    assert.equal(root.querySelector('.vcs-picker-item-detail'), null, 'the session directory shows no "." path')
-    assert.equal(textOf(nested.querySelector('.vcs-picker-item-detail')), 'packages/api')
-    harness.keyClick(manage)
-    assert.equal(managed.length, 1)
-    assert.equal(repoMenu(), null, 'opening the manager closes the menu')
-
-    // Worktree menu: the create action uses the same header action shape.
     harness.mouseClick(body.querySelector('.vcs-worktree-button'))
     const worktreeMenu = () => body.querySelector('.vcs-worktree-menu')
     const worktreeHeader = worktreeMenu().querySelector('.vcs-picker-header')
@@ -3050,236 +3247,62 @@ test('TopBar menus open on one header row with icon actions and show notes only 
 })
 
 test('VcsView scopes in-flight writes per repository without locking another repository', async () => {
-  const harness = createHarness({ width: 1000 })
-  const restore = harness.installGlobals()
-  const fakeWin = installFakeWindow()
-  const shaA = 'a'.repeat(40)
-  const shaB = 'b'.repeat(40)
-  let releaseSyncA = null
-  let failJujutsuHistory = false
-  const syncTargets = []
-  const json = body => ({ ok: true, status: 200, async json() { return body } })
-  const savedFetch = globalThis.fetch
-  const savedStorage = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
-  const stored = new Map()
-  Object.defineProperty(globalThis, 'sessionStorage', {
-    configurable: true,
-    value: { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value) },
-  })
-  globalThis.fetch = async (url, init) => {
-    const parsed = new URL(url, 'http://127.0.0.1')
-    const repo = parsed.searchParams.get('repo') ?? (init?.body ? JSON.parse(init.body).repo : null)
-    if (parsed.pathname === '/api/vcs.repositories') {
-      return json({
-        cwd: '/repo-a',
-        truncated: false,
-        repositories: [
-          { path: '/repo-a', name: 'repo-a', enclosing: true, vcs: 'git', capabilities: GIT_CAPABILITIES },
-          { path: '/repo-b', name: 'repo-b', enclosing: false,
-            vcs: failJujutsuHistory ? 'jujutsu' : 'git', capabilities: failJujutsuHistory ? JUJUTSU_CAPABILITIES : GIT_CAPABILITIES },
-        ],
-      })
-    }
-    if (parsed.pathname === '/api/vcs.status') {
-      const branch = repo === '/repo-b'
-        ? { name: 'feat', oid: shaB, detached: false, unborn: false, upstream: 'origin/feat', ahead: 0, behind: 0 }
-        : { name: 'main', oid: shaA, detached: false, unborn: false, upstream: 'origin/main', ahead: 1, behind: 0 }
-      return json({
-        repo: { path: repo, name: repo.slice(1) },
-        vcs: 'git',
-        capabilities: GIT_CAPABILITIES,
-        defaultNode: branch.oid,
-        branch,
-        groups: { staged: [], unstaged: [], untracked: [] },
-        total: 0,
-        truncated: false,
-      })
-    }
-    if (parsed.pathname === '/api/vcs.sync') {
-      syncTargets.push(repo)
-      if (repo === '/repo-a') await new Promise(resolve => { releaseSyncA = resolve })
-      return json({ upstream: 'origin/main', pulled: 0, pushed: 1 })
-    }
-    if (parsed.pathname === '/api/vcs.log') {
-      if (failJujutsuHistory && repo === '/repo-b') throw new Error('Jujutsu history unavailable')
-      const oid = repo === '/repo-b' ? shaB : shaA
-      return json({
-        truncated: false,
-        nextSkip: null,
-        commits: [{ sha: oid, parents: [], refs: [], author: 'Ada', authorTime: 1_700_000_000_000, subject: 'c' }],
-      })
-    }
-    if (parsed.pathname === '/api/vcs.commit') {
-      const oid = repo === '/repo-b' ? shaB : shaA
-      return json({
-        truncated: false,
-        commit: { sha: oid, parents: [], refs: [], author: 'Ada', authorTime: 1_700_000_000_000, committer: 'Ada', committerTime: 1_700_000_000_000, subject: 'c', message: '', files: [] },
-      })
-    }
-    return json({ kind: 'text', path: 'a.js', before: true, after: true, hunks: [] })
-  }
+  const ahead = { ahead: 1, behind: 0 }
+  const alpha = tileRepo(tileAlpha, [], undefined, ahead)
+  const beta = tileRepo(tileBeta, [], undefined, ahead)
+  const sync = Promise.withResolvers()
   try {
-    const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
-    harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-multirepo', t, locale: 'en-US' }))
-    await harness.settle()
-    const body = harness.document.body
-    const picker = body.querySelector('.vcs-repo-button')
-    const menu = () => body.querySelector('.vcs-repo-menu')
-    const checks = () => menu().querySelectorAll('.vcs-repo-item[role="menuitemcheckbox"]')
-    const ranges = () => menu().querySelectorAll('.vcs-range-option')
-    const groups = () => body.querySelectorAll('.vcs-repository-group-header')
-    const syncBtn = body.querySelector('.vcs-sync')
+    await withGitPanel([alpha, beta], {
+      panelState: { tiled: false },
+      async write(path, body, json) {
+        assert.equal(path, '/api/vcs.sync')
+        if (body.repo === tileAlpha) await sync.promise
+        return json({ upstream: 'origin/main', pulled: 0, pushed: 1 })
+      },
+    }, async ({ harness, body, reads, writes }) => {
+      const q = selector => body.querySelector(selector)
+      const trigger = () => q('.vcs-repo-button')
+      const syncButton = () => q('.vcs-sync')
+      const row = path => q(`[data-overview-key="repo:${path}"]`)
+      const branchMenu = async () => {
+        q('.vcs-branch-button').props.onContextMenu({ clientX: 20, clientY: 20, preventDefault() {}, stopPropagation() {} })
+        await harness.settle()
+        return q('[data-ops-item]')
+      }
 
-    assert.equal(picker.attributes.has('data-filtered'), true)
-    assert.equal(groups().length, 1, 'a fresh session shows only the default repository')
-    assert.equal(groups()[0].attributes.get('aria-expanded'), 'true')
-    picker.focus()
-    harness.keyDown(picker, 'ArrowDown')
-    await harness.settle()
-    harness.keyDown(harness.document.activeElement, 'Home')
-    assert.equal(harness.document.activeElement, ranges()[0])
-    assert.deepEqual(checks().map(item => item.attributes.get('aria-checked')), ['true', 'false'])
-    harness.keyClick(ranges()[0])
-    await harness.settle()
-    assert.equal(picker.attributes.has('data-filtered'), false)
-    assert.equal(groups().length, 2, 'All shows every discovered repository')
-    harness.keyDown(ranges()[0], 'ArrowRight')
-    assert.equal(harness.document.activeElement, ranges()[1])
-    harness.keyClick(ranges()[1])
-    await harness.settle()
-    assert.equal(picker.attributes.has('data-filtered'), true)
-    assert.equal(groups().length, 1, 'filtering keeps the remaining group independently collapsible')
-    assert.equal(harness.document.activeElement, ranges()[1])
-    assert.equal(checks()[0].attributes.get('aria-disabled'), 'true')
-    harness.keyClick(checks()[0])
-    assert.equal(checks()[0].attributes.get('aria-checked'), 'true', 'the last choice cannot be removed')
-    checks()[1].focus()
-    harness.keyClick(checks()[1])
-    await harness.settle()
-    assert.equal(harness.document.activeElement, checks()[1])
-    assert.equal(groups().length, 2)
-    assert.equal(groups()[0].attributes.get('aria-expanded'), 'true', 'checking B leaves A current')
-    assert.equal(textOf(picker), 'repo-a')
-    harness.keyDown(checks()[1], 'Escape')
-    assert.equal(harness.document.activeElement, picker)
+      assert.deepEqual(reads.log, [tileAlpha])
+      harness.mouseClick(syncButton())
+      await harness.settle()
+      assert.equal(syncButton().attributes.get('aria-busy'), 'true')
+      assert.equal((await branchMenu()).attributes.get('aria-disabled'), 'true')
+      harness.keyDown(harness.document.activeElement, 'Escape')
 
-    // Start sync on repo-a.
-    syncBtn.props.onClick()
-    await harness.settle()
-    assert.notEqual(releaseSyncA, null)
-    assert.equal(body.querySelector('.vcs-sync').attributes.get('aria-busy'), 'true')
+      harness.keyClick(trigger())
+      await harness.settle()
+      assert.equal(harness.document.activeElement, row(tileAlpha))
+      assert.deepEqual(reads.log, [tileAlpha], 'opening the overview does not mount preview timelines')
+      harness.mouseClick(row(tileBeta))
+      await harness.settle()
+      assert.equal(textOf(trigger()), beta.name)
+      assert.equal(body.querySelectorAll('.vcs-timeline').length, 1)
+      assert.equal(syncButton().attributes.get('aria-busy'), undefined)
+      assert.equal((await branchMenu()).attributes.get('aria-disabled'), undefined, 'beta stays unlocked while alpha syncs')
+      harness.keyDown(harness.document.activeElement, 'Escape')
 
-    // Open ref menu on repo-a while sync is running: actions are disabled due to repoBusy.
-    const branchBtn = body.querySelector('.vcs-branch-button')
-    branchBtn.props.onContextMenu({ clientX: 20, clientY: 20, preventDefault() {}, stopPropagation() {} })
-    await harness.settle()
-    assert.equal(body.querySelector('[data-ops-item]').attributes.get('aria-disabled'), 'true')
-    harness.keyDown(harness.document.activeElement, 'Escape')
-    await harness.settle()
-
-    // Activate a timeline row in repo-b while repo-a is syncing.
-    const groupList = () => body.querySelectorAll('.vcs-repository-group')
-    harness.keyClick(groups()[1])
-    await harness.settle()
-    const rowB = groupList()[1].querySelector('[data-timeline-index="0"]')
-    rowB.focus()
-    harness.keyDown(rowB, 'Enter')
-    await harness.settle()
-    assert.equal(textOf(picker), 'repo-b')
-    assert.equal(body.querySelector('.vcs-sync').attributes.get('aria-busy'), undefined)
-    body.querySelector('.vcs-branch-button').props.onContextMenu({ clientX: 20, clientY: 20, preventDefault() {}, stopPropagation() {} })
-    await harness.settle()
-    assert.equal(body.querySelector('[data-ops-item]').attributes.get('aria-disabled'), undefined, 'repo-b stays unlocked while repo-a syncs')
-    harness.keyDown(harness.document.activeElement, 'Escape')
-    await harness.settle()
-
-    // Returning to repo-a through the timeline restores its pending sync indicator.
-    harness.mouseClick(groupList()[0].querySelector('[data-timeline-index="0"]'))
-    await harness.settle()
-    assert.equal(textOf(picker), 'repo-a')
-    assert.equal(body.querySelector('.vcs-sync').attributes.get('aria-busy'), 'true')
-    releaseSyncA()
-    await harness.settle()
-    groups()[0].focus()
-    harness.keyDown(groups()[0], 'ArrowDown')
-    assert.equal(harness.document.activeElement, groups()[1])
-    harness.keyClick(groups()[1])
-    assert.deepEqual(groups().map(header => header.attributes.get('aria-expanded')), ['true', 'false'])
-    harness.keyClick(groups()[1])
-    await harness.settle()
-    assert.deepEqual(groups().map(header => header.attributes.get('aria-expanded')), ['true', 'true'])
-    assert.equal(textOf(picker), 'repo-a', 'expanding B does not change the operation target')
-    assert.equal(body.querySelectorAll('.vcs-timeline').length, 2)
-    harness.keyClick(groups()[0])
-    harness.keyClick(groups()[1])
-    await harness.settle()
-    assert.equal(body.querySelectorAll('.vcs-timeline').length, 0, 'both timelines can be collapsed')
-    assert.equal(textOf(picker), 'repo-a')
-    assert.equal(harness.document.activeElement, groups()[1])
-    harness.keyClick(groups()[1])
-    await harness.settle()
-    const preview = body.querySelectorAll('.vcs-repository-group')[1]
-    const first = preview.querySelector('[data-timeline-index="0"]')
-    first.focus()
-    harness.keyDown(first, 'ArrowDown')
-    await harness.settle()
-    const commit = preview.querySelector('[data-timeline-index="1"]')
-    assert.equal(harness.document.activeElement, commit)
-    assert.equal(textOf(picker), 'repo-a', 'moving within B leaves A current')
-    harness.keyDown(commit, 'Enter')
-    await harness.settle()
-    assert.equal(textOf(picker), 'repo-b')
-    assert.equal(preview.querySelector('[data-timeline-index="1"]').attributes.get('aria-current'), 'true')
-    harness.mouseClick(body.querySelector('.vcs-sync'))
-    await harness.settle()
-    assert.deepEqual(syncTargets, ['/repo-a', '/repo-b'])
-
-    harness.unmount()
-    harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-multirepo', t, locale: 'en-US' }))
-    await harness.settle()
-    const restoredPicker = body.querySelector('.vcs-repo-button')
-    assert.equal(textOf(restoredPicker), 'repo-b')
-    assert.deepEqual(groups().map(header => header.attributes.get('aria-expanded')), ['false', 'true'])
-    assert.equal(restoredPicker.attributes.has('data-filtered'), true)
-    harness.mouseClick(restoredPicker)
-    await harness.settle()
-    assert.deepEqual(checks().map(item => item.attributes.get('aria-checked')), ['true', 'true'])
-    checks()[1].focus()
-    harness.keyClick(checks()[1])
-    await harness.settle()
-    assert.equal(harness.document.activeElement, checks()[1], 'filtering out the current repository keeps menu focus')
-    assert.equal(textOf(restoredPicker), 'repo-a', 'a hidden current repository falls back to a visible one')
-    assert.equal(groups().length, 1)
-    assert.equal(groups()[0].attributes.get('aria-expanded'), 'false')
-    harness.keyClick(ranges()[0])
-    await harness.settle()
-    assert.equal(groups().length, 2)
-    assert.equal(restoredPicker.attributes.has('data-filtered'), false)
-    assert.deepEqual(checks().map(item => item.attributes.get('aria-checked')), ['true', 'false'])
-
-    // An unavailable Jujutsu history still offers a working-copy row for activation.
-    harness.unmount()
-    failJujutsuHistory = true
-    stored.set('vcs:session-multirepo-unavailable', JSON.stringify({ repositoryScope: 'all' }))
-    harness.mount(harness.react.createElement(VcsView, { sessionId: 'session-multirepo-unavailable', t, locale: 'en-US' }))
-    await harness.settle()
-    assert.equal(groups().length, 2, 'a saved All scope is restored')
-    harness.keyClick(groups()[1])
-    await harness.settle()
-    const unavailable = groupList()[1]
-    assert.match(textOf(unavailable.querySelector('.vcs-timeline-note')), /history\.error/u)
-    const workingCopy = unavailable.querySelector('[data-timeline-index="0"]')
-    workingCopy.focus()
-    harness.keyDown(workingCopy, 'Enter')
-    await harness.settle()
-    assert.equal(textOf(body.querySelector('.vcs-repo-button')), 'repo-b')
+      harness.mouseClick(row(tileAlpha))
+      await harness.settle()
+      assert.equal(textOf(trigger()), alpha.name)
+      assert.equal(syncButton().attributes.get('aria-busy'), 'true', 'the sync indicator returns with its repository')
+      sync.resolve()
+      await harness.settle()
+      harness.mouseClick(row(tileBeta))
+      await harness.settle()
+      harness.mouseClick(syncButton())
+      await harness.settle()
+      assert.deepEqual(writes.map(([, payload]) => payload.repo), [tileAlpha, tileBeta])
+    })
   } finally {
-    globalThis.fetch = savedFetch
-    fakeWin.restore()
-    harness.unmount()
-    if (savedStorage === undefined) delete globalThis.sessionStorage
-    else Object.defineProperty(globalThis, 'sessionStorage', savedStorage)
-    restore()
+    sync.resolve()
   }
 })
 
@@ -4087,7 +4110,7 @@ test('VcsView combines Git worktree and range choices and isolates diffs by work
     if (parsed.pathname === '/api/vcs.repositories') {
       const worktrees = [{ path: source, name: 'repo', branch: 'main', head: main.sha }]
       if (offered) worktrees.push({ path: sibling, name: 'other tree', branch: 'topic/preview', head: topic.sha })
-      return json({ repositories: [{ path: source, name: 'repo', enclosing: true, worktrees, capabilities: GIT_CAPABILITIES }] })
+      return json({ cwd: source, repositories: [{ path: source, name: 'repo', enclosing: true, worktrees, capabilities: GIT_CAPABILITIES }] })
     }
     assert.equal(parsed.searchParams.get('repo'), source)
     const preview = target === sibling
@@ -4141,12 +4164,6 @@ test('VcsView combines Git worktree and range choices and isolates diffs by work
     const ranges = () => menu().querySelectorAll('[role="menuitemradio"]')
     const rows = () => body.querySelectorAll('.vcs-worktree-row')
     assert.equal(body.querySelector('[aria-label="history.refLabel"]'), null, 'the closed menu leaves no range control in the header')
-    harness.mouseClick(chooseRepo)
-    await harness.settle()
-    const repoOptions = body.querySelector('.vcs-repo-menu').querySelectorAll('[role="menuitemcheckbox"]')
-    assert.deepEqual(repoOptions.map(option => option.attributes.get('title').split('\n')[0]), [source])
-    assert.equal(repoOptions[0].attributes.get('aria-disabled'), 'true')
-    harness.keyDown(repoOptions[0], 'Escape')
     const branchButton = body.querySelector('.vcs-branch-button')
     assert.notEqual(branchButton, null)
     assert.equal(branchButton.attributes.get('data-filtered'), undefined)
@@ -4295,7 +4312,7 @@ test('VcsView combines Git worktree and range choices and isolates diffs by work
     offered = false
     body.querySelector('[aria-label="top.refresh"]').props.onClick()
     await harness.settle()
-    assert.equal(chooseRepo.attributes.get('title'), source)
+    assert.equal(chooseRepo.attributes.get('title'), 'overview.show')
     assert.equal(rows().length, 1)
     assert.equal(rows()[0].attributes.get('title'), source, 'a removed selection falls back to the session worktree')
     assert.deepEqual(historyReads.at(-1), { ref: 'all', paths: [] }, 'refresh preserves the chosen history range')
@@ -5229,8 +5246,8 @@ test('VcsView claims keyboard readiness on window focus and visibility without s
   }
 })
 
-test('VcsView manages repositories from an empty picker and refreshes after a successful save', async () => {
-  const harness = createHarness()
+test('the overview gear opens repository management with an empty drawer and refreshes after a successful save', async () => {
+  const harness = createHarness({ width: 700 })
   const restore = harness.installGlobals()
   const previousFetch = globalThis.fetch
   const requests = []
@@ -5272,6 +5289,7 @@ test('VcsView manages repositories from an empty picker and refreshes after a su
     assert.equal(parsed.searchParams.get('sessionId'), sessionId)
     switch (parsed.pathname) {
       case '/api/vcs.repositories': return response({ repositories: listed, cwd: '/workspace' })
+      case '/api/vcs.overview': return overviewResponse(listed.map(repo => tileRepo(repo.path, [])), '/workspace')
       case '/api/vcs.repository-config': return response(config)
       case '/api/vcs.repository-preview': {
         const path = parsed.searchParams.get('path')
@@ -5302,25 +5320,32 @@ test('VcsView manages repositories from an empty picker and refreshes after a su
     }
     const submit = () => dialog().props.onSubmit({ preventDefault() {} })
     const change = (id, value) => q(`[id="vcs-repository-config-${id}"]`).props.onChange({ target: { value } })
-    const open = async trigger => {
-      trigger.focus()
-      harness.keyDown(trigger, 'ArrowDown')
-      await harness.settle()
-      assert.ok(q('[role="menuitem"]') === document.activeElement, 'the empty picker focuses its only action')
-      assert.match(textOf(q('.vcs-repo-menu')), /top\.noRepository/u, 'the empty list says so under the header')
-      harness.keyClick(document.activeElement)
+    const gear = () => q('.vcs-overview-manage')
+    const open = async () => {
+      gear().focus()
+      harness.keyClick(gear())
       await harness.settle()
       assert.equal(document.activeElement, q('[id="vcs-repository-config-title"]'))
+      assert.ok(q('.vcs-overview'), 'opening management does not dismiss the drawer')
     }
     harness.mount(react.createElement(VcsView, { sessionId, t }))
     await harness.settle()
     const trigger = q('.vcs-repo-button')
-    assert.equal(trigger.props.disabled, false)
-    await open(trigger)
+    assert.equal(trigger.attributes.get('aria-label'), 'top.noRepository')
+    assert.ok(!trigger.props.disabled)
+    harness.keyClick(trigger)
+    await harness.settle()
+    assert.equal(q('.vcs-root').attributes.get('data-overview-drawer'), 'true')
+    assert.equal(document.activeElement, gear(), 'an empty overview lands at the management entry')
+    assert.equal(q('.vcs-overview-title').querySelector('.vcs-overview-manage'), gear())
+    assert.equal(gear().attributes.get('aria-label'), 'repositoryConfig.manage')
+    assert.equal(gear().attributes.get('title'), 'repositoryConfig.manage')
+    await open()
     harness.keyDown(document.activeElement, 'Escape')
     assert.equal(dialog(), null)
-    assert.equal(document.activeElement, trigger)
-    await open(trigger)
+    assert.equal(document.activeElement, gear())
+    assert.ok(q('.vcs-overview'), 'dismissing management leaves the drawer open')
+    await open()
     assert.match(textOf(dialog()), /repositoryConfig.scope.*\/workspace/u)
     assert.match(textOf(dialog()), /repositoryConfig.directoryHint/u)
     assert.match(textOf(dialog()), /missing\/repo.*repositoryConfig.unavailable/u)
@@ -5377,20 +5402,10 @@ test('VcsView manages repositories from an empty picker and refreshes after a su
     })
     assert.equal(dialog(), null)
     assert.equal(textOf(trigger), 'repo')
+    assert.equal(document.activeElement, gear())
     assert.equal(requests.filter(path => path === '/api/vcs.repositories').length, 2)
 
-    trigger.focus()
-    harness.keyDown(trigger, 'ArrowDown')
-    await harness.settle()
-    const manage = q('.vcs-repo-manage')
-    assert.ok(q('.vcs-repo-menu').querySelector('.vcs-picker-header').querySelector('.vcs-repo-manage') === manage,
-      'the manage action sits in the menu header row')
-    assert.equal(q('.vcs-repo-menu').querySelectorAll('[role="menuitem"]').length, 1, 'the list keeps no second manage entry')
-    assert.equal(manage.attributes.get('aria-label'), 'repositoryConfig.manage')
-    harness.keyDown(document.activeElement, 'Home')
-    assert.ok(document.activeElement === manage, 'Home reaches the header action first')
-    harness.keyClick(manage)
-    await harness.settle()
+    await open()
     const disclosure = dialog().querySelector('[aria-controls="vcs-repository-sources"]')
     const sources = dialog().querySelector('[id="vcs-repository-sources"]')
     assert.equal(disclosure.attributes.get('aria-expanded'), 'false')
@@ -5428,6 +5443,7 @@ test('VcsView leaves repository configuration read-only when the Host reports in
   globalThis.fetch = async (url, options) => {
     assert.equal(options.method, 'GET')
     const path = new URL(url, 'http://127.0.0.1').pathname
+    if (path === '/api/vcs.overview') return overviewResponse([])
     assert.ok(path === '/api/vcs.repositories' || path === '/api/vcs.repository-config')
     const data = path === '/api/vcs.repositories'
       ? { repositories: [], configError: code }
@@ -5443,7 +5459,7 @@ test('VcsView leaves repository configuration read-only when the Host reports in
     assert.equal(textOf(body.querySelector('[role="alert"]')), 'error.repositoryConfigInvalid')
     harness.keyClick(body.querySelector('.vcs-repo-button'))
     await harness.settle()
-    harness.keyClick(body.querySelector('[role="menuitem"]'))
+    harness.keyClick(body.querySelector('.vcs-overview-manage'))
     await harness.settle()
     const dialog = body.querySelector('[role="dialog"]')
     assert.match(textOf(dialog), /error.repositoryConfigInvalid/u)

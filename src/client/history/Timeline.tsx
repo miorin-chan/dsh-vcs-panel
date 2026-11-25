@@ -202,6 +202,7 @@ export function Timeline({
     if (element === null) return
     element.scrollTop = restoreRef.current
     setScrollTop(element.scrollTop)
+    onScrollOffsetRef.current?.(element.scrollTop)
     restoreRef.current = null
   }, [commits.length])
 
@@ -390,12 +391,14 @@ export function Timeline({
   }, [onMove, onOpen, pageStep, rowCount])
 
   const restoreFocus = useCallback(() => {
-    if (rowCount === 0 || focusRow < 0) return false
-    const target = scrollRef.current?.querySelector<HTMLElement>(`[data-timeline-index="${focusRow}"]`)
-    if (target === null || target === undefined) return false
+    const scroll = scrollRef.current
+    if (scroll === null) return false
+    // The selected row can be outside a restored reading position. Focus the
+    // timeline without moving that position just to mount the selected row.
+    const target = scroll.querySelector<HTMLElement>(`[data-timeline-index="${focusRow}"]`) ?? scroll
     target.focus({ preventScroll: true })
     return true
-  }, [focusRow, rowCount])
+  }, [focusRow])
 
   useLayoutEffect(() => {
     if (control === undefined || control === null) return undefined
@@ -429,6 +432,7 @@ export function Timeline({
           className="vcs-timeline-scroll"
           role="region"
           aria-label={t('timeline.label')}
+          tabIndex={-1}
           data-zone="timeline"
           onKeyDown={onKeyDown}
           onScroll={event => {

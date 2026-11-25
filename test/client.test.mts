@@ -45,7 +45,6 @@ test('defaultState is fresh each time', () => {
   const second = defaultState()
   assert.notEqual(first, second)
   assert.deepEqual(first, second)
-  assert.equal(first.repositoryScope, 'selected')
   assert.equal(first.node, null)
   assert.equal(first.nodeChosen, false)
   assert.equal(first.ref, 'all')
@@ -60,8 +59,6 @@ test('defaultState is fresh each time', () => {
 test('sanitizeState keeps accepted values and drops unknown ones', () => {
   const state = sanitizeState({
     repo: '/repo',
-    repositoryScope: 'selected',
-    checkedRepositories: ['/repo', '/other', '/repo', 1, ''],
     node: 'abcdef1234567890',
     nodeChosen: true,
     dirs: { 'unstaged|tmp': true, 'untracked|old': true, bad: 'yes' },
@@ -76,14 +73,6 @@ test('sanitizeState keeps accepted values and drops unknown ones', () => {
     tab: 'history',
   })
   assert.equal(state.repo, '/repo')
-  assert.equal(state.repositoryScope, 'selected')
-  assert.deepEqual(state.checkedRepositories, ['/repo', '/other'])
-  assert.equal(state.expandedRepositories, null)
-  assert.deepEqual(sanitizeState({ expandedRepositories: [] }).expandedRepositories, [])
-  assert.deepEqual(sanitizeState({ expandedRepositories: ['/repo', '/repo', 1] }).expandedRepositories, ['/repo'])
-  assert.equal(sanitizeState({ repositoryScope: 'all' }).repositoryScope, 'all')
-  assert.equal(sanitizeState({}).repositoryScope, 'selected')
-  assert.equal(sanitizeState({ repositoryScope: 'unknown' }).repositoryScope, 'selected')
   assert.equal(state.node, 'abcdef1234567890')
   assert.equal(state.nodeChosen, true)
   assert.deepEqual(state.dirs, { 'unstaged|tmp': true })
@@ -99,6 +88,16 @@ test('sanitizeState keeps accepted values and drops unknown ones', () => {
   assert.equal(sanitizeState({ node: WORKTREE }).node, WORKTREE)
   assert.equal(sanitizeState({ node: WORKING_COPY }).node, WORKING_COPY)
   assert.equal(sanitizeState({ ref: '@' }).ref, '@')
+})
+
+test('sanitizeState ignores old repository filters and groups without changing the current selection', () => {
+  const retained = { repo: '/repo', worktrees: ['/repo/worktree'], ref: 'HEAD', timelineScroll: 88 }
+  for (const removed of [
+    { repositoryScope: 'all', checkedRepositories: ['/other'], expandedRepositories: [] },
+    { repositoryScope: 12, checkedRepositories: 'invalid', expandedRepositories: false },
+  ]) {
+    assert.deepEqual(sanitizeState({ ...retained, ...removed }), sanitizeState(retained))
+  }
 })
 
 test('sanitizeState drops the old untracked row keys and keeps current ones', () => {

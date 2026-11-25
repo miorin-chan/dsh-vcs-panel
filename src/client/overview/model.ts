@@ -538,7 +538,7 @@ export function pointerTarget(pointer: PointerView): { commit: string } | { work
   return { commit: pointer.sha }
 }
 
-/** The repositories in tiled order: kept as stacked, or the loud ones by attention first. */
+/** Tiled columns in discovery order, or ranked by attention with quiet columns last. */
 export function tileOrder<T extends { path: string }>(
   entries: readonly T[],
   views: ReadonlyMap<string, RepositoryView>,
@@ -552,7 +552,9 @@ export function tileOrder<T extends { path: string }>(
     ...loud.sort((first, second) => {
       const a = rank(first)
       const b = rank(second)
-      return a === undefined || b === undefined ? 0 : byAttention(a, b)
+      if (a === undefined) return b === undefined ? 0 : 1
+      if (b === undefined) return -1
+      return byAttention(a, b)
     }),
     ...quiet,
   ]

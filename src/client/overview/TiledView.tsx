@@ -1,6 +1,6 @@
 /**
- * The tiled layout: the repository groups stacked in the timeline column laid
- * side by side as columns. Each column is the repository's vertical skeleton,
+ * The tiled layout: the repositories in the overview laid side by side as
+ * columns. Each column is the repository's vertical skeleton,
  * only the commits pointers name and the fork points between them; a quiet
  * repository is a narrow spine. The state buttons step through pointers, the
  * action bar acts on the focused one, and the rail shows where the viewport is.
@@ -10,11 +10,11 @@ import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } fro
 import type { MouseEvent as ReactMouseEvent, Ref, WheelEvent as ReactWheelEvent } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 
+import type { RepositoryInfo } from '../api.js'
 import { BRANCH_ACTION_META } from '../branch.js'
 import { COMMIT_ACTION_META } from '../commit.js'
 import { formatCount, formatPlural } from '../format.js'
 import { resolveColor } from '../history/layout.js'
-import type { RepositoryRow } from '../TopBar.jsx'
 import type { Notice, RepoWrite } from '../useRepoActions.js'
 import { tileDirectActions } from './directActions.js'
 import type { TileDirectAction } from './directActions.js'
@@ -22,6 +22,7 @@ import type { FilterId, LaneStep, PointerView, RepositoryView, Skeleton } from '
 import { elementWithData, FILTERS, LOUD_STATES, matchesFilter, STATE_RANK } from './model.js'
 import { STATE_KEYS, FILTER_KEYS } from './labels.js'
 import { arrows, fetchNote, headlineText, KindGlyph, pointerFacts } from './OverviewPane.jsx'
+import { reducedMotion, repositoryRects } from './motion.js'
 
 /** One repository's loaded history for its skeleton. */
 export interface TileHistory {
@@ -30,7 +31,7 @@ export interface TileHistory {
 
 /** One column in display order. */
 export interface TileColumn {
-  entry: RepositoryRow
+  entry: RepositoryInfo
   view: RepositoryView | null
   skeleton: Skeleton | null
   history: TileHistory
@@ -430,20 +431,17 @@ export function TiledView({
     return () => { observer.disconnect() }
   }, [columns.length, expanded])
 
-  const reduced = () => typeof window !== 'undefined' && typeof window.matchMedia === 'function'
-    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-
   useImperativeHandle(control, () => ({
     scrollColumns(direction) {
       const scroller = scrollerRef.current
       if (scroller === null) return
       const column = scroller.querySelector<HTMLElement>('.vcs-tile-column:not([data-spine])')
-      scroller.scrollBy({ left: direction * ((column?.offsetWidth ?? 360) + 12), behavior: reduced() ? 'auto' : 'smooth' })
+      scroller.scrollBy({ left: direction * ((column?.offsetWidth ?? 360) + 12), behavior: reducedMotion() ? 'auto' : 'smooth' })
     },
     reveal(pointerId) {
       const element = elementWithData(scrollerRef.current, 'data-pointer-id', pointerId)
       if (element === null) return
-      element.scrollIntoView({ block: 'center', inline: 'center', behavior: reduced() ? 'auto' : 'smooth' })
+      element.scrollIntoView({ block: 'center', inline: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' })
       element.focus({ preventScroll: true })
     },
     focus() {
@@ -451,12 +449,7 @@ export function TiledView({
       ;(chip ?? scrollerRef.current)?.focus({ preventScroll: true })
     },
     columnRects() {
-      const rects = new Map<string, DOMRect>()
-      for (const element of scrollerRef.current?.querySelectorAll<HTMLElement>('.vcs-tile-column') ?? []) {
-        const path = element.dataset.repository
-        if (path !== undefined) rects.set(path, element.getBoundingClientRect())
-      }
-      return rects
+      return repositoryRects(scrollerRef.current, '.vcs-tile-column[data-repository]')
     },
   }))
 
@@ -577,7 +570,7 @@ export function TiledView({
           const scroller = scrollerRef.current
           if (scroller === null) return
           const box = event.currentTarget.getBoundingClientRect()
-          scroller.scrollTo({ left: ((event.clientX - box.left) / box.width) * scroller.scrollWidth - scroller.clientWidth / 2, behavior: reduced() ? 'auto' : 'smooth' })
+          scroller.scrollTo({ left: ((event.clientX - box.left) / box.width) * scroller.scrollWidth - scroller.clientWidth / 2, behavior: reducedMotion() ? 'auto' : 'smooth' })
         }}
       >
         <span className="vcs-tile-rail-segments">

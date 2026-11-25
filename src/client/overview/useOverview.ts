@@ -12,21 +12,14 @@ import type { Api, ApiFailure, OverviewLine } from '../api.js'
 import { failureOf } from '../api.js'
 import type { OverviewRepository } from './model.js'
 
-/** One repository the read could not summarize. */
-export interface OverviewFailure {
-  path: string
-  registered: boolean
-  code: string
-}
+type RepositoryLine = Extract<OverviewLine, { type: 'repository' | 'error' }>
 
 /** The overview data and the read around it. */
 export interface OverviewData {
   status: 'idle' | 'loading' | 'ready' | 'error'
   cwd: string | null
   repositories: ReadonlyMap<string, OverviewRepository>
-  failures: ReadonlyMap<string, OverviewFailure>
-  /** Repositories the running read announced and has not answered yet. */
-  pending: number
+  failures: ReadonlyMap<string, ApiFailure>
   unlistedTruncated: boolean
   error: ApiFailure | null
 }
@@ -36,7 +29,6 @@ const EMPTY: OverviewData = Object.freeze({
   cwd: null,
   repositories: new Map(),
   failures: new Map(),
-  pending: 0,
   unlistedTruncated: false,
   error: null,
 })
@@ -54,6 +46,20 @@ export interface UseOverviewOptions {
 
 function isAbort(error: unknown): boolean {
   return failureOf(error).name === 'AbortError'
+}
+
+/** Replace a repository's last summary or failure with the latest answer. */
+function mergeRepository(data: OverviewData, line: RepositoryLine): OverviewData {
+  const repositories = new Map(data.repositories)
+  const failures = new Map(data.failures)
+  if (line.type === 'repository') {
+    repositories.set(line.repository.path, line.repository)
+    failures.delete(line.repository.path)
+  } else {
+    failures.set(line.path, line.error)
+    repositories.delete(line.path)
+  }
+  return { ...data, repositories, failures }
 }
 
 /**
@@ -77,37 +83,27 @@ export function useOverview(api: Api, { active, reloadKey, repo, repoKey }: UseO
     const seen = new Set<string>()
     setData(previous => ({ ...previous, status: 'loading', error: null }))
     const apply = (line: OverviewLine) => {
+      if (controller.signal.aborted) return
+      if (line.type === 'repository' || line.type === 'error') {
+        seen.add(line.type === 'repository' ? line.repository.path : line.path)
+        setData(previous => mergeRepository(previous, line))
+        return
+      }
       setData(previous => {
-        if (line.type === 'scope') return { ...previous, cwd: line.cwd, pending: line.repositories }
-        if (line.type === 'repository') {
-          seen.add(line.repository.path)
-          const repositories = new Map(previous.repositories)
-          repositories.set(line.repository.path, line.repository)
-          const failures = new Map(previous.failures)
-          failures.delete(line.repository.path)
-          return { ...previous, repositories, failures, pending: Math.max(0, previous.pending - 1) }
-        }
-        if (line.type === 'error') {
-          seen.add(line.path)
-          const failures = new Map(previous.failures)
-          failures.set(line.path, { path: line.path, registered: line.registered !== false, code: line.error.code })
-          const repositories = new Map(previous.repositories)
-          repositories.delete(line.path)
-          return { ...previous, repositories, failures, pending: Math.max(0, previous.pending - 1) }
-        }
+        if (line.type === 'scope') return { ...previous, cwd: line.cwd }
         // Done: drop the rows this read no longer reported.
         const repositories = new Map([...previous.repositories].filter(([path]) => seen.has(path)))
         const failures = new Map([...previous.failures].filter(([path]) => seen.has(path)))
-        return { ...previous, repositories, failures, pending: 0, unlistedTruncated: line.unlistedTruncated === true, status: 'ready' }
+        return { ...previous, repositories, failures, unlistedTruncated: line.unlistedTruncated === true, status: 'ready' }
       })
     }
     api.overview(apply, { signal: controller.signal }).then(() => {
       if (controller.signal.aborted) return
       setLoaded({ reloadKey, repoKey: startedWith })
-      setData(previous => previous.status === 'loading' ? { ...previous, status: 'ready', pending: 0 } : previous)
+      setData(previous => previous.status === 'loading' ? { ...previous, status: 'ready' } : previous)
     }, error => {
       if (controller.signal.aborted || isAbort(error)) return
-      setData(previous => ({ ...previous, status: 'error', error: failureOf(error), pending: 0 }))
+      setData(previous => ({ ...previous, status: 'error', error: failureOf(error) }))
     })
     return () => { controller.abort() }
     // `loaded` only gates the start; a finished read does not start another.
@@ -120,13 +116,10 @@ export function useOverview(api: Api, { active, reloadKey, repo, repoKey }: UseO
     // Wait for a burst of changes to settle before rereading.
     const timer = setTimeout(() => {
       api.overview(line => {
-        if (line.type !== 'repository' || line.repository.path !== repo) return
-        setData(previous => {
-          const repositories = new Map(previous.repositories)
-          // Keep the registration the full read found.
-          repositories.set(repo, { ...line.repository, registered: previous.repositories.get(repo)?.registered ?? true })
-          return { ...previous, repositories }
-        })
+        if (controller.signal.aborted) return
+        if ((line.type === 'repository' && line.repository.path === repo) || (line.type === 'error' && line.path === repo)) {
+          setData(previous => mergeRepository(previous, line))
+        }
       }, { repo, signal: controller.signal }).then(() => {
         if (!controller.signal.aborted) setLoaded(previous => previous === null ? previous : { ...previous, repoKey })
       }, () => {})

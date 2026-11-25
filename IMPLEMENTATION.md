@@ -294,7 +294,7 @@ Git 工作树预览保留 Git 的读取能力。
 
 `vcs.overview` 为[全景栏与平铺](DESIGN.md#全景栏)提供每个指针的基线、领先 / 落后、独有与占用。
 带 `repo` 时只读这一个仓库，目标按读取路由的规则校验；参数无效或缺少后端命令时在流开始前返回 JSON 错误。
-不带 `repo` 时按仓库菜单的发现与分组列出全部仓库，每次最多读 4 个，读完一个就写出一行，单个仓库失败只写一行 `error`。
+不带 `repo` 时沿用仓库发现及同仓库工作树的归组规则，每次最多读 4 个，读完一个就写出一行，单个仓库失败只写一行 `error`。
 已登记的仓库读完后，Host 从会话目录逐层列目录（最深 6 层、最多 20,000 次列举，跳过 `.git`、`.jj`、`node_modules`，
 只进入解析后仍在会话目录内的目录），把带标记、却与已登记仓库不共用后端元数据目录的仓库按 `registered: false` 写出；
 主检出在会话目录外的仓库不列出。
@@ -617,26 +617,29 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 会话状态保存在 `sessionStorage` 的 `vcs:<sessionId>`，包含 `repo`、`worktrees`、`node`、
 `nodeChosen`、`ref`（默认 `all`）、`dirs`、`collapsed`、`folds`、`anchor`（`{ key, offset }`）、`split`、`wrap`、
 `mergeStaging`、`twoColumns`（`wrap`、`mergeStaging`、`twoColumns` 均默认 `true`，只有显式 `false` 才关闭）、
-`sidebarWidth`、`timelineScroll`，以及全景与平铺的 `overview`、`overviewWidth`（320–600，默认 400）、
-`tiled`、`overviewBeforeTile`、`tileOrder`（`directory` / `attention`）与展开的窄条 `tileExpanded`；
-内存另外按仓库记住切换前的勾选、选中节点、目录折叠与历史范围。
+`sidebarWidth`、`timelineScroll`，以及全景与平铺的 `overview`、`overviewWidth`（320–600，默认 400）、`tiled`、
+`overviewBeforeTile`、`tileOrder`（默认 `attention`，保留已保存的 `directory`）与展开的窄条 `tileExpanded`。
+切换仓库时，`perRepoRef` 在内存按仓库保留勾选、选中节点、历史范围、详情锚点与展开状态。
+`repositoryScrollRef` 单独保留各仓库时间线的滚动偏移；恢复时重读之前已加载的历史页，让偏移仍有对应的内容。
 页签身份与右侧栏布局由宿主的 `sidebarRight` 存储按会话保存，应用重启后恢复；面板自己的阅读状态（含时间线宽度）单独保存。
 
-`repo` 保存仓库入口，`worktrees` 保存当前仓库勾选的路径。
+`repo` 保存仓库入口。 `pickRepository` 保留仍可用的入口；入口消失时先找包含会话目录的仓库，再取发现列表第一项。
+`worktrees` 保存当前仓库勾选的路径。
 恢复时只保留目录仍可用的项，选集为空则回到入口树。 Git 工作区行与 Jujutsu 工作副本提交都可用 `worktree:<path>` 选中。
 旧的单工作区节点 `worktree` / `@` 在恢复时归一为对应的工作树节点。 工作区状态和 diff 分别按根路径加载；
 详情跨工作树切换时取消旧目录展开请求并重置目录阅读状态，避免串用同名文件和目录。
 
 `folds` 只为用户显式操作过的文件保存布尔值：空记录表示文件全部收起，也就是详情的默认形态。
 行键前缀白名单为 `staged|`、`unstaged|`、`merged|`、`merged-dir|`、`commit|`；
-`sanitizeState` 在读取时丢弃未知字段与旧版遗留的 `untracked|` 键。
+`sanitizeState` 在读取时丢弃未知字段与旧版遗留的 `untracked|` 键。 仓库范围、
+仓库勾选与时间线分组的旧字段也按未知字段忽略。
 数据刷新、折叠全部文件或收起吸顶文件头时，统一先记录锚点行与行内像素偏移，重排后恢复；
 锚点行未渲染时沿“文件行 → 父目录链 → 分组行”降级。
 
-顶部栏的菜单只保留临时打开状态。仓库与工作树菜单共用 `HeaderPicker`，本地分支菜单每次打开时重读，
-期间保留上一份列表。 三个菜单共用 `PickerHeader` 顶栏（`.vcs-picker-header`）：`.vcs-picker-header-title` 名称、可选的
+顶部栏的仓库按钮写当前仓库名，按下开合[全景栏](#全景栏与平铺)，平铺时按下则退出平铺并打开全景栏。
+工作树菜单由 `HeaderPicker` 打开，本地分支菜单每次打开时重读，期间保留上一份列表。
+这两个菜单共用 `PickerHeader` 顶栏（`.vcs-picker-header`）：`.vcs-picker-header-title` 名称、可选的
 `.vcs-picker-range` 分段胶囊（支持 `←`/`→` 与 `↑`/`↓` 导航）和 `.vcs-picker-actions` 里的 `PickerAction` 图标操作。
-仓库菜单为 `仓库` 配 `全部`/`仅所选` 与齿轮 `.vcs-repo-manage`；
 工作树菜单为 `提交` 配 `全部`/`仅所选` 与 `+ 新建`（`.vcs-worktree-create`）；
 单工作树 Git 分支菜单为 `提交` 配 `全部`/`仅 HEAD`。
 提交范围的选项来自 `capabilities.ranges` 并同步更新同一个 `ref`；
@@ -735,8 +738,16 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 数据由两个 hook 读取：`useOverview` 在全景或平铺显示时读一次 `vcs.overview` 流，逐行合并，
 `done` 时丢弃本轮未报告的仓库；当前仓库的后台刷新信号在 400ms 防抖后只重读这一个仓库，
 整轮读取期间到达的信号在读完后补读。
-`useTileHistories` 在平铺时按列序每次读 4 个仓库的历史首页。
+`useTileHistories` 在平铺时每次按发现顺序读 4 个仓库的历史首页，列序由 `tileOrder` 另行决定。
 手动刷新时，两者等待 Jujutsu 的勾选工作区快照完成再读。
+
+`OverviewPane` 以发现列表为切换入口：读取中的仓库按发现顺序显示指针行的轮廓，
+读取失败的仓库带错误说明并排在「需要处理」末尾。
+两类行都可以选中；时间线只读当前仓库，独立报告历史与工作树的读取结果。 栏头只用发现列表计数，
+齿轮打开同一个 `RepositoryConfigDialog`，没有仓库时仍可进入，关闭对话框后焦点回到齿轮。
+仓库行以 `repo:<path>` 为键，流式读取重排时光标与焦点留在原行；
+当前仓库或光标所在的仓库进入一致组时自动展开该组。 用户打开全景时聚焦当前仓库，恢复已展开的布局时只设置默认停靠点，
+不移动焦点；从时间线向左则回到全景上次的停靠点。
 
 `overview/directActions.ts` 的 `tileDirectActions` 按[直接按钮的规则](DESIGN.md#操作条的直接按钮)从指针、仓库视图、
 后端能力和该仓库的写入状态选出动作；移除工作树时再用工作树清单中的保护信息。 平铺沿用指针菜单的仓库切换和状态读取，
@@ -744,13 +755,19 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
 菜单选择也走同一入口。 依赖当前分支的合并和同步只在主检出同时为已授权仓库入口时提供，
 工作树预览保持只读。 写入触发全景与骨架重读，结果按仓库显示；原按钮消失时，焦点留在同列的指针或列头。
 
-布局：全景栏绝对定位在 `.vcs-root` 左侧，打开时根节点获得同宽的 `padding-left`，
-两者沿同一条曲线移动 280ms；扣除全景栏后不足 360px 时改为覆盖的抽屉，选中指针后收起。
-收起且不平铺时不渲染全景栏，根节点不带新增属性。
-平铺时 `.vcs-main` 换成 `TiledView`，顶部栏的仓库、工作树、分支与同步控件换成状态按钮与列序开关。
-进出平铺由 `overview/motion.ts` 做 FLIP：记录叠放的 `.vcs-repository-group[data-repository]` 或平铺列的位置，
-重排后从旧位置移到新位置，错开 26ms、时长 520ms；详情面板留下一个淡出并右移的副本，退出时详情从右侧滑回。
-减少动效时不播放。指针 id 由仓库路径、种类与名称以 NUL 连接；同名的 Jujutsu 匿名头再用提交 ID 区分。
+布局：全景栏绝对定位在 `.vcs-root` 左侧，打开时根节点获得同宽的 `padding-left`，两者沿同一条曲线移动 280ms；
+扣除全景栏后不足 360px 时改为顶部栏下的抽屉，选中仓库或指针后收起。
+收起且不平铺时不渲染全景栏，根节点不带新增属性。平铺时 `.vcs-main` 换成 `TiledView`，
+列出全部已发现的仓库；顶部栏保留仓库按钮，工作树、分支与同步控件换成状态按钮与列序开关。
+「按关注」把需要关注的列排在前面、窄条排在最后；「按目录」始终按发现顺序排列。
+
+进出平铺由 `overview/motion.ts` 做 FLIP：当前仓库的列从时间线 `.vcs-sidebar` 的位置展开，
+其余列从全景仓库行（或一致组摘要）的位置展开，没有对应行时从面板左缘外 24px 滑入。
+位移用 520ms 的 `cubic-bezier(.2,.7,.2,1)`，相邻列错开 26ms，最多错开 16 级。
+退出时记录列的位置，时间线从当前列移回；其余列的不可交互副本向恢复的全景行或面板左缘移动，
+并在 300ms 内沿 `ease-in` 淡出。
+详情面板进平铺时原地淡出右移，退出时从右侧滑回。减少动效时不播放。
+指针 id 由仓库路径、种类与名称以 NUL 连接；同名的 Jujutsu 匿名头再用提交 ID 区分。
 元素按属性值比较查找，不进 CSS 选择器。
 
 ## 复用与来源

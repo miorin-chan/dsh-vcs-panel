@@ -165,14 +165,18 @@
 }
 
 .vcs-picker-button:hover:enabled,
-.vcs-picker-button[aria-expanded='true'] {
+.vcs-picker-button[aria-expanded='true'],
+.vcs-picker-button[aria-pressed='true'] {
   border-color: var(--dsw-alias-border-l2);
   background: var(--dsw-alias-bg-layer-1);
 }
 
-.vcs-picker-button:disabled {
-  opacity: 0.6;
-  cursor: default;
+.vcs-overview-toggle .vcs-icon {
+  flex: none;
+}
+
+.vcs-overview-toggle[aria-pressed='true'] .vcs-icon {
+  color: var(--dsw-alias-label-primary);
 }
 
 /* Fixed so the menu can hang below the clipped header. */
@@ -364,36 +368,6 @@
   color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
 }
 
-.vcs-picker-menu .vcs-repo-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-content: center;
-  gap: 2px 0;
-  min-width: 0;
-  height: auto;
-  min-height: 28px;
-  padding-block: 6px;
-}
-
-.vcs-repo-item .vcs-menu-item-name {
-  grid-area: 1 / 1;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.vcs-repo-item .vcs-icon {
-  grid-area: 1 / 2;
-  align-self: start;
-  margin-inline-start: 8px;
-}
-
-.vcs-repo-item .vcs-picker-item-detail {
-  grid-column: 1 / -1;
-  max-width: none;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
 .vcs-picker-menu [role='menuitemcheckbox'][aria-disabled='true'] {
   cursor: default;
 }
@@ -422,13 +396,6 @@
   border: 0.5px solid var(--dsw-alias-border-l2);
   border-radius: 4px;
   line-height: 15px;
-}
-
-.vcs-menu-item-name small {
-  display: block;
-  overflow: hidden;
-  color: var(--dsw-alias-label-secondary);
-  text-overflow: ellipsis;
 }
 
 .vcs-worktree-choice {
@@ -468,11 +435,6 @@
 
 .vcs-menu-item.vcs-worktree-icon-action:hover:not(:focus) {
   color: var(--dsw-alias-label-primary);
-}
-
-.vcs-worktree-current {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 10px;
 }
 
 .vcs-ref[data-ref-actions] {
@@ -1092,38 +1054,6 @@ select.vcs-repository-kind {
 }
 
 /* Timeline ---------------------------------------------------------------- */
-
-.vcs-repository-groups {
-  position: relative;
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.vcs-repository-group {
-  flex: none;
-  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
-}
-
-.vcs-repository-group[data-open] {
-  display: flex;
-  flex: 1 0 min(12rem, 70%);
-  flex-direction: column;
-}
-
-.vcs-repository-group-header {
-  min-height: 30px;
-  height: auto;
-  padding: 4px 8px;
-  border-radius: 0;
-}
-
-.vcs-repository-group-header[aria-expanded='true'] {
-  background: var(--dsw-alias-bg-layer-2);
-  font-weight: 500;
-}
 
 .vcs-timeline {
   display: flex;
@@ -2802,6 +2732,18 @@ select.vcs-repository-kind {
   padding-left: var(--vcs-overview-width);
 }
 
+.vcs-root[data-tile-transition] {
+  transition: none;
+}
+
+.vcs-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
 .vcs-overview {
   position: absolute;
   top: 0;
@@ -2822,6 +2764,11 @@ select.vcs-repository-kind {
   transform: none;
 }
 
+/* Anchor the drawer below the (possibly wrapped) toolbar, so it never covers its toggle. */
+.vcs-root[data-overview-drawer] .vcs-body {
+  position: relative;
+}
+
 .vcs-root[data-overview-drawer] .vcs-overview {
   box-shadow: 0 8px 28px var(--dsw-alias-shadow, rgba(0, 0, 0, 0.2));
 }
@@ -2837,12 +2784,13 @@ select.vcs-repository-kind {
 
 .vcs-overview-title {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   min-width: 0;
 }
 
 .vcs-overview-title h2 {
+  flex: none;
   margin: 0;
   font-size: 13px;
   font-weight: 600;
@@ -2854,6 +2802,12 @@ select.vcs-repository-kind {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.vcs-icon-button.vcs-overview-manage {
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
 }
 
 .vcs-overview-search {
@@ -2991,7 +2945,7 @@ select.vcs-repository-kind {
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
-.vcs-overview-repo[aria-current='true'] .vcs-overview-repo-name {
+:is(.vcs-overview-repo, .vcs-overview-quiet-row)[aria-current='true'] .vcs-overview-repo-name {
   font-weight: 500;
 }
 
@@ -3020,6 +2974,10 @@ select.vcs-repository-kind {
   cursor: pointer;
 }
 
+.vcs-overview-twist:disabled {
+  cursor: default;
+}
+
 .vcs-overview-repo-name,
 .vcs-overview-pointer-name {
   overflow: hidden;
@@ -3045,9 +3003,15 @@ select.vcs-repository-kind {
 }
 
 .vcs-overview-tag {
+  flex: none;
   padding: 0 5px;
   border: 0.5px solid var(--dsw-alias-border-l2);
   border-radius: 8px;
+}
+
+.vcs-overview-tag[data-current] {
+  color: var(--dsw-alias-label-primary);
+  font-size: 11px;
 }
 
 .vcs-overview-tag[data-off] {
@@ -3072,6 +3036,29 @@ select.vcs-repository-kind {
 
 .vcs-overview-pointer[data-faded] {
   opacity: 0.4;
+}
+
+.vcs-overview-pending {
+  --vcs-chip-color: var(--vcs-skeleton-fill);
+  pointer-events: none;
+}
+
+.vcs-overview-pending .vcs-overview-pointer {
+  min-height: 18px;
+}
+
+.vcs-overview-placeholder-fact {
+  grid-column: 4;
+}
+
+.vcs-overview-repo[data-failed] .vcs-overview-repo-meta {
+  max-width: min(45vw, 15em);
+}
+
+.vcs-overview-error {
+  overflow: hidden;
+  color: var(--dsw-alias-state-warn-primary);
+  text-overflow: ellipsis;
 }
 
 .vcs-overview-metric {
@@ -3099,6 +3086,13 @@ select.vcs-repository-kind {
   grid-template-columns: minmax(0, 1fr) auto;
   column-gap: 8px;
   padding-left: 22px;
+}
+
+.vcs-overview-quiet-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
 }
 
 .vcs-overview-quiet-row .vcs-overview-facts {
@@ -3637,5 +3631,9 @@ select.vcs-repository-kind {
   .vcs-overview,
   .vcs-tile-column {
     transition: none;
+  }
+
+  .vcs-overview .vcs-skeleton {
+    animation: none;
   }
 }

@@ -13,9 +13,8 @@ import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 
 import { failureOf } from './api.js'
 import type {
-  Api, ApiFailure, RepositoryConfigAnswer, RepositoryConfigPath, RepositoryPreviewAnswer,
+  Api, ApiFailure, RepositoryConfigAnswer, RepositoryConfigPath, RepositoryInfo, RepositoryPreviewAnswer, RepositorySource,
 } from './api.js'
-import type { RepositoryRow, RepositorySource } from './TopBar.jsx'
 import { Dialog } from './Dialog.jsx'
 import { errorMessage, formatPlural } from './format.js'
 import { Chevron } from './ui.jsx'
@@ -69,7 +68,7 @@ function sameBackends(a: readonly BackendPreference[], b: readonly BackendPrefer
 /** State and callbacks of one repository's backend choice. */
 interface BackendChoiceProps {
   cwd: string | null | undefined
-  repository: RepositoryRow
+  repository: RepositoryInfo
   backends: readonly BackendPreference[]
   disabled: boolean
   onChange: (path: string, vcs: string) => void
@@ -132,7 +131,7 @@ function ConfigEntries({ title, entries, disabled, onRemove, t }: ConfigEntriesP
 /** The discovered repositories, their sources, and their backend choices. */
 interface RepositorySourcesProps {
   cwd: string | null | undefined
-  repositories: readonly RepositoryRow[]
+  repositories: readonly RepositoryInfo[]
   backends: readonly BackendPreference[]
   disabled: boolean
   onChange: (path: string, vcs: string) => void
@@ -185,7 +184,7 @@ function RepositorySources({ cwd, repositories, backends, disabled, onChange, t 
 export interface RepositoryConfigDialogProps {
   api: Api
   cwd: string | null | undefined
-  repositories: readonly RepositoryRow[]
+  repositories: readonly RepositoryInfo[]
   onCancel: () => void
   onSaved: () => void
   /**

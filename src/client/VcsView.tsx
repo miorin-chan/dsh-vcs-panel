@@ -13,19 +13,18 @@ import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, MouseEvent as 
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import { ApiError, createApi, failureOf } from './api.js'
 import type {
-  Api, ApiFailure, BranchesAnswer, CommitNode, LogAnswer, StatusData, WorktreeInfo,
+  Api, ApiFailure, BranchesAnswer, CommitNode, LogAnswer, RepositoryInfo, StatusData, WorktreeInfo,
 } from './api.js'
 import {
   loadState, nodePatch, saveState, SIDEBAR_MAX, SIDEBAR_MIN, WORKING_COPY, WORKTREE, worktreeNode, worktreePath,
 } from './state.js'
-import type { PanelState, ReadingAnchor, RepositoryScope } from './state.js'
+import type { PanelState, ReadingAnchor } from './state.js'
 import type { DirRow, GroupRow, UntrackedChild } from './detail/tree.js'
 import type { CommitState, DetailPaneControl, DetailStatusState } from './detail/DetailPane.jsx'
 import type { DiffFetchResult } from './detail/ChangeTree.jsx'
 import type {
   CommitActionsHandler, RefActionsHandler, TimelineCommit, TimelineControl, TimelineWorktree,
 } from './history/Timeline.jsx'
-import type { RepositoryRow } from './TopBar.jsx'
 import type { MenuPoint, Notice } from './useRepoActions.js'
 import type { WorktreeChoice } from './worktrees.js'
 import {
@@ -52,7 +51,6 @@ import { TagDialog } from './TagDialog.jsx'
 import { CommitDialog } from './CommitDialog.jsx'
 import { WorktreeDialog } from './WorktreeDialog.jsx'
 import { RepositoryConfigDialog } from './RepositoryConfigDialog.jsx'
-import { RepositoryTimelines } from './RepositoryTimelines.jsx'
 import { useRepoActions } from './useRepoActions.js'
 import { useVcsWatch } from './useVcsWatch.js'
 import { TimelineSkeleton, TreeSkeleton } from './skeleton.jsx'
@@ -71,7 +69,8 @@ import type { OverviewControl } from './overview/OverviewPane.jsx'
 import { TiledView } from './overview/TiledView.jsx'
 import type { TileColumn, TiledControl } from './overview/TiledView.jsx'
 import { StateButtons } from './overview/StateButtons.jsx'
-import { fadeOutInPlace, playGroups, reducedMotion, repositoryRects, slideIn } from './overview/motion.js'
+import { clearMotionGhosts, copyTiles, enterTiles, fadeOutInPlace, leaveTiles, reducedMotion, slideIn } from './overview/motion.js'
+import type { LeavingTile } from './overview/motion.js'
 
 /** Rows per history page. */
 const PAGE_SIZE = 300
@@ -122,7 +121,7 @@ interface HistoryLog {
 /** The discovered repositories and the discovery state around them. */
 interface RepositoryListingState {
   status: string
-  list: RepositoryRow[]
+  list: RepositoryInfo[]
   truncated: boolean
   worktreesTruncated: boolean
   error: ApiFailure | null
@@ -145,14 +144,9 @@ interface Revisions {
   repositories: number
 }
 
-/** The selection one repository remembered while another was shown. */
-interface PerRepoSelection {
-  node: string | null
-  nodeChosen: boolean
-  worktrees: string[]
-  dirs: Record<string, boolean>
-  collapsed: Record<string, boolean>
-  ref: string
+/** The selection and detail reading position remembered during a repository switch. */
+type PerRepoSelection = Pick<PanelState, 'node' | 'nodeChosen' | 'worktrees' | 'dirs' | 'collapsed' | 'ref' | 'anchor' | 'folds'> & {
+  historyLength: number
 }
 
 /** The open repository-management dialog and the focus it restores. */
@@ -269,120 +263,6 @@ function parseJson<T>(text: string): T {
   return JSON.parse(text) as T
 }
 
-interface RepositoryTimelinePreviewProps {
-  api: Api
-  sessionId: string
-  entry: RepositoryRow
-  saved?: PerRepoSelection
-  scrollOffset: number
-  onScroll: (offset: number) => void
-  onSelect: (entry: RepositoryRow, node: string) => void
-  t: Translate
-  locale?: string
-}
-
-/** An expanded sibling can be browsed without changing the operation target. */
-function RepositoryTimelinePreview({
-  api, sessionId, entry, saved, scrollOffset, onScroll, onSelect, t, locale,
-}: RepositoryTimelinePreviewProps) {
-  const [log, setLog] = useState<LogAnswer | null>(null)
-  const [error, setError] = useState<ApiFailure | null>(null)
-  const [skip, setSkip] = useState(0)
-  const [retry, setRetry] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [statuses, setStatuses] = useState<StatusMap>({})
-  const [cursor, setCursor] = useState(0)
-  const control = useRef<TimelineControl | null>(null)
-  const moving = useRef(false)
-  const worktrees = useMemo(() => checkedWorktrees(repositoryWorktrees(entry), saved?.worktrees ?? []), [entry, saved])
-  const checkoutPaths = useMemo(() => worktrees.map(tree => tree.path), [worktrees])
-  const siblingApi = useMemo(() => createApi(sessionId, { worktreeOf: entry.path }), [sessionId, entry.path])
-  const capabilities = entry.capabilities
-  const commitBased = capabilities?.workingCopy === 'commit'
-  const ref = capabilities?.ranges?.some(range => range.value === saved?.ref) ? saved?.ref : capabilities?.defaultRange
-  const showCurrentHead = checkoutPaths.length === 1 && checkoutPaths[0] === entry.path
-
-  useEffect(() => {
-    const controller = new AbortController()
-    for (const path of checkoutPaths) {
-      const reader = path === entry.path ? api : siblingApi
-      reader.status(path, controller.signal, { readOnly: true }).then(data => {
-        if (!controller.signal.aborted) setStatuses(previous => ({ ...previous, [path]: { status: 'ready', data, error: null } }))
-      }, error => {
-        if (!controller.signal.aborted) setStatuses(previous => ({ ...previous, [path]: { status: 'error', data: null, error: failureOf(error) } }))
-      })
-    }
-    return () => { controller.abort() }
-  }, [api, checkoutPaths, entry.path, siblingApi])
-
-  useEffect(() => {
-    const controller = new AbortController()
-    setLoading(true)
-    setError(null)
-    const worktreePaths = !showCurrentHead && (ref !== 'all' || commitBased) ? checkoutPaths : []
-    api.log(entry.path, { ref, limit: PAGE_SIZE, skip, worktrees: worktreePaths }, controller.signal).then(page => {
-      if (controller.signal.aborted) return
-      setLog(previous => ({ ...page, commits: [...(previous?.commits.slice(0, skip) ?? []), ...page.commits] }))
-    }, error => {
-      if (!controller.signal.aborted) setError(failureOf(error))
-    }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
-    return () => { controller.abort() }
-  }, [api, checkoutPaths, commitBased, entry.path, ref, retry, showCurrentHead, skip])
-
-  const { commits, rows, layout } = useMemo(() => {
-    const heads = new Map(log?.worktreeHeads?.map(tree => [tree.path, tree.head]))
-    const checkouts: ViewWorktree[] = worktrees.map(tree => {
-      const status = statuses[tree.path] ?? IDLE_STATUS
-      const head = heads.get(tree.path) ?? status.data?.workingCopy?.commitId ?? status.data?.branch?.oid ?? tree.head ?? null
-      return {
-        ...tree,
-        head,
-        id: worktreeNode(tree.path),
-        label: commitBased ? workingCopyLabel(tree, worktrees.length > 1)
-          : worktrees.length > 1 ? t('timeline.worktreeNamed', { name: tree.name }) : t('timeline.worktree'),
-        refLabel: worktreeRefLabel({ branch: status.data?.branch?.name ?? tree.branch, head }, t),
-        status: status.data,
-        statusState: status.status,
-      }
-    })
-    const source = log?.commits ?? []
-    const commits = viewCommits(commitBased ? attachWorkingCopies(source, checkouts)
-      : showCurrentHead ? source : source.map(commit => ({ ...commit, refs: sharedRefs(commit.refs ?? []) })))
-    // Keep the working copy selectable when its history has no rows to open.
-    const rows = commitBased && (loading || commits.length > 0) ? NO_WORKTREE_ROWS : checkouts
-    return { commits, rows, layout: buildGraph(graphInput(commits, rows)) }
-  }, [commitBased, loading, log, showCurrentHead, statuses, t, worktrees])
-  const selectedRow = Math.min(cursor, commits.length + rows.length - 1)
-  useLayoutEffect(() => {
-    if (!moving.current) return
-    moving.current = false
-    control.current?.restoreFocus()
-  }, [selectedRow])
-
-  function activate(index: number) {
-    const node = nodeAt(commits, index, { worktrees: rows })
-    if (node !== null) onSelect(entry, node)
-  }
-  const nextSkip = log?.nextSkip ?? null
-  return (
-    <Timeline
-      commits={timelineCommits(commits)} layout={layout} worktrees={timelineWorktrees(rows)}
-      selectedRow={selectedRow} onSelectRow={activate} onOpen={() => { activate(selectedRow) }}
-      onMove={delta => {
-        const next = Math.max(0, Math.min(commits.length + rows.length - 1, selectedRow + delta))
-        if (selectedRow < 0 || next === selectedRow) return
-        moving.current = true
-        setCursor(next)
-      }}
-      control={control} t={t} locale={locale} initialScrollTop={scrollOffset} onScrollOffset={onScroll}
-      loading={loading && log === null}
-      loadingMore={loading && log !== null} error={error} truncated={log?.truncated === true}
-      hasMore={nextSkip !== null} onLoadMore={() => { if (nextSkip !== null) setSkip(nextSkip) }}
-      onRetry={() => { setRetry(value => value + 1) }}
-    />
-  )
-}
-
 /** How the Sidebar presents the panel, and the one presentation change it may ask for. */
 export interface PanelPresentation {
   fullscreen: boolean
@@ -409,6 +289,10 @@ interface TileTraversal {
 }
 
 const NO_TRAVERSAL: TileTraversal = Object.freeze({ filter: null, index: -1, focus: null })
+
+type TileTransition =
+  | { into: 'tile'; sources: ReadonlyMap<string, DOMRect> }
+  | { into: 'timeline'; tiles: readonly LeavingTile[] }
 
 /** A pointer's request waiting for its repository to become current and readable. */
 type PointerActionRequest = { pointer: PointerView } & (
@@ -481,6 +365,8 @@ export function VcsView({
   const perRepoRef = useRef(new Map<string, PerRepoSelection>())
   const createdWorktreesRef = useRef(new Map<string, Set<string>>())
   const repositoryScrollRef = useRef(new Map<string, number>())
+  // A restored offset may need more than the first page of history.
+  const historyResumeRef = useRef<{ repo: string; ref: string; length: number } | null>(null)
   // The backend each discovered repository used on the last answer.
   const repositoryVcsRef = useRef(new Map<string, string>())
   const pageControllerRef = useRef<AbortController | null>(null)
@@ -502,7 +388,8 @@ export function VcsView({
   // The overview pushes the panel right; what remains decides the columns,
   // unless too little remains and the overview covers the panel instead.
   const overviewOpen = state.overview && !state.tiled
-  const overviewDrawer = overviewOpen && width > 0 && width - state.overviewWidth < OVERVIEW_DRAWER_REST
+  const overviewNeedsDrawer = width > 0 && width - state.overviewWidth < OVERVIEW_DRAWER_REST
+  const overviewDrawer = overviewOpen && overviewNeedsDrawer
   const contentWidth = overviewOpen && !overviewDrawer ? width - state.overviewWidth : width
   const narrow = contentWidth > 0 && contentWidth < NARROW_WIDTH
   // One column at a time when the panel is too narrow for two, or when the
@@ -511,11 +398,6 @@ export function VcsView({
   const showTimeline = !singleColumn || singleView === 'timeline'
   const showDetail = !singleColumn || singleView === 'detail'
   const repoInfo = repositories.list.find(entry => entry.path === state.repo) ?? null
-  const visibleRepositories = state.repositoryScope === 'all'
-    ? repositories.list
-    : repositories.list.filter(entry => state.checkedRepositories.includes(entry.path))
-  const showRepositoryGroups = repositories.list.length > 1
-  const expandedRepositories = state.expandedRepositories ?? (state.repo === null ? [] : [state.repo])
   const repositoryReady = repositories.status === 'ready' && repoInfo !== null && sessionRef.current === sessionId
   const worktrees = useMemo(() => repositoryWorktrees(repoInfo), [repoInfo])
   const checkedTrees = useMemo(() => checkedWorktrees(worktrees, state.worktrees), [worktrees, state.worktrees])
@@ -638,6 +520,7 @@ export function VcsView({
       hostFocusPendingRef.current = false
       return undefined
     }
+    if (focusRequest === 0 && stateRef.current.overview) return undefined
     pendingReadyFocusRef.current = true
     hostFocusPendingRef.current = true
     if (focusRequest > 0) {
@@ -829,7 +712,7 @@ export function VcsView({
   }
 
   /** Select newly created paths once the refreshed catalog can read them. */
-  const selectDiscoveredWorktrees = useCallback((entry: RepositoryRow | null, previous: readonly string[]) => {
+  const selectDiscoveredWorktrees = useCallback((entry: RepositoryInfo | null, previous: readonly string[]) => {
     const catalog = repositoryWorktrees(entry)
     const pending = entry === null ? undefined : createdWorktreesRef.current.get(entry.path)
     const selected = [...checkedWorktrees(catalog, previous).map(tree => tree.path), ...(pending ?? [])]
@@ -841,13 +724,14 @@ export function VcsView({
   }, [])
 
   /** Remember one repository's selection and restore the next one's. */
-  const switchRepo = useCallback((entry: RepositoryRow | null, node?: string) => {
+  const switchRepo = useCallback((entry: RepositoryInfo | null, node?: string) => {
     const nextRepo = entry?.path ?? null
     const nextCapabilities = entry?.capabilities
     pendingDetailFocusRef.current = false
     navZoneRef.current = 'timeline'
     const current = stateRef.current
     if (current.repo !== null && current.repo !== nextRepo) {
+      const resume = historyResumeRef.current
       repositoryScrollRef.current.set(current.repo, timelineScrollRef.current)
       perRepoRef.current.set(current.repo, {
         node: current.node,
@@ -856,14 +740,20 @@ export function VcsView({
         dirs: current.dirs,
         collapsed: current.collapsed,
         ref: current.ref,
+        anchor: anchorRef.current,
+        folds: current.folds,
+        historyLength: resume?.repo === current.repo && resume.ref === current.ref ? resume.length : loadedHistoryLength.current,
       })
     }
     const saved = nextRepo === null ? undefined : perRepoRef.current.get(nextRepo)
+    const reading = node === undefined || node === saved?.node ? saved : undefined
     const ranges = Array.isArray(nextCapabilities?.ranges) ? nextCapabilities.ranges : null
-    const savedRef = saved?.ref
-    const ref = ranges?.some(range => range.value === savedRef)
-      ? savedRef
+    const ref = saved !== undefined && ranges?.some(range => range.value === saved.ref)
+      ? saved.ref
       : (nextCapabilities?.defaultRange ?? 'all')
+    historyResumeRef.current = node === undefined && nextRepo !== null && saved !== undefined && saved.ref === ref
+      ? { repo: nextRepo, ref, length: saved.historyLength }
+      : null
     setStatuses({})
     setLog(idleLog())
     logKeyRef.current = ''
@@ -877,57 +767,20 @@ export function VcsView({
     abortBranches()
     clearBranches()
     resetActionsUi()
-    anchorRef.current = null
+    anchorRef.current = reading?.anchor ?? null
     timelineScrollRef.current = node === undefined && nextRepo !== null ? repositoryScrollRef.current.get(nextRepo) ?? 0 : 0
     update({
       repo: nextRepo,
       worktrees: selectDiscoveredWorktrees(entry, saved?.worktrees ?? []),
-      expandedRepositories: current.expandedRepositories ?? (current.repo === null ? null : [current.repo]),
       node: node ?? saved?.node ?? null,
       nodeChosen: node !== undefined || (saved?.nodeChosen ?? false),
-      dirs: node === undefined || node === saved?.node ? saved?.dirs ?? {} : {},
-      collapsed: node === undefined || node === saved?.node ? saved?.collapsed ?? {} : {},
-      folds: {},
-      anchor: null,
+      dirs: reading?.dirs ?? {},
+      collapsed: reading?.collapsed ?? {},
+      folds: reading?.folds ?? {},
+      anchor: anchorRef.current,
       ref,
     })
   }, [abortBranches, clearBranches, resetActionsUi, resetDirectories, selectDiscoveredWorktrees, setNotice, update])
-
-  const toggleRepositoryGroup = (path: string) => {
-    update({ expandedRepositories: expandedRepositories.includes(path)
-      ? expandedRepositories.filter(open => open !== path)
-      : [...expandedRepositories, path] })
-  }
-
-  const selectPreviewNode = (entry: RepositoryRow, node: string) => {
-    switchRepo(entry, node)
-    panelOwnsFocusRef.current = true
-    if (singleColumn) {
-      navZoneRef.current = 'tree'
-      pendingDetailFocusRef.current = true
-      pendingRestoreFocusRef.current = true
-      setSingleView('detail')
-    } else {
-      pendingReadyFocusRef.current = true
-    }
-  }
-
-  const applyRepositoryScope = (scope: RepositoryScope, checked: string[]) => {
-    const current = stateRef.current
-    update({ repositoryScope: scope, checkedRepositories: checked })
-    if (scope === 'selected' && (current.repo === null || !checked.includes(current.repo))) {
-      switchRepo(pickRepository(repositories.list.filter(entry => checked.includes(entry.path))))
-    }
-  }
-
-  const toggleCheckedRepository = (path: string) => {
-    const { repositoryScope, checkedRepositories } = stateRef.current
-    const checked = checkedRepositories.includes(path)
-    if (checked && checkedRepositories.length === 1) return
-    applyRepositoryScope(repositoryScope, checked
-      ? checkedRepositories.filter(current => current !== path)
-      : [...checkedRepositories, path])
-  }
 
   /** Change only the timeline within the current repository. */
   const toggleCheckedWorktree = (path: string) => {
@@ -948,6 +801,7 @@ export function VcsView({
 
   // Overview column and tiled layout -------------------------------------------
   const overviewControl = useRef<OverviewControl | null>(null)
+  const overviewFocusRequestRef = useRef<{ from: Element | null } | null>(null)
   const tiledControl = useRef<TiledControl | null>(null)
   const [tileTraversal, setTileTraversal] = useState<TileTraversal>(NO_TRAVERSAL)
   const [overviewPhase, setOverviewPhase] = useState<'closed' | 'opening' | 'open' | 'closing'>(
@@ -956,9 +810,13 @@ export function VcsView({
   const [pointerRequestTick, setPointerRequestTick] = useState(0)
   const pendingPointerActionRef = useRef<{ sessionId: string; request: PointerActionRequest } | null>(null)
   const pendingRevealRef = useRef<string | null>(null)
-  const revealGroupRef = useRef<string | null>(null)
   const fullscreenRequestedRef = useRef(false)
-  const motionRef = useRef<{ on: boolean, before: Map<string, DOMRect> } | null>(null)
+  const motionRef = useRef<TileTransition | null>(null)
+  const tileTransition = motionRef.current
+  // Tile transitions lay out their destination at once; the columns animate
+  // between the two positions instead of also chasing the overview slide.
+  const overviewPresentation = state.tiled ? 'closed' : tileTransition?.into === 'timeline'
+    ? (overviewOpen ? 'open' : 'closed') : overviewPhase
   const presentationRef = useRef(presentation)
   presentationRef.current = presentation
   const widthRef = useRef(width)
@@ -966,11 +824,11 @@ export function VcsView({
 
   const overviewData = useOverview(api, {
     active: (state.overview || state.tiled) && !waitingForSnapshots,
-    reloadKey: JSON.stringify([sessionId, manual.repositories, manual.history, manual.working, overviewWriteRevision]),
+    reloadKey: JSON.stringify([sessionId, manual.repositories, background.repositories, manual.history, manual.working, overviewWriteRevision]),
     repo: state.repo,
     repoKey: JSON.stringify([state.repo, background.history, background.working]),
   })
-  const overviewCwd = overviewData.cwd ?? repositories.cwd ?? null
+  const overviewCwd = repositories.cwd ?? overviewData.cwd ?? null
   const overviewViews = useMemo(
     () => [...overviewData.repositories.values()].map(repository => repositoryView(repository, overviewCwd)),
     [overviewCwd, overviewData.repositories],
@@ -978,7 +836,7 @@ export function VcsView({
   const viewByPath = useMemo(() => new Map(overviewViews.map(view => [view.path, view])), [overviewViews])
   const unlistedViews = useMemo(() => overviewViews.filter(view => !view.registered), [overviewViews])
 
-  const tilePathsKey = JSON.stringify(visibleRepositories.map(entry => entry.path))
+  const tilePathsKey = JSON.stringify(repositories.list.map(entry => entry.path))
   const tilePaths = useMemo(() => parseJson<string[]>(tilePathsKey), [tilePathsKey])
   const tileHistories = useTileHistories(
     api, tilePaths, state.tiled, JSON.stringify([sessionId, manual.history, background.history, overviewWriteRevision]),
@@ -996,13 +854,13 @@ export function VcsView({
     return result
   }, [tileHistories, viewByPath])
   const tileColumns = useMemo<TileColumn[]>(() => tileOrder(
-    tilePaths.flatMap(path => repositories.list.filter(entry => entry.path === path)), viewByPath, state.tileOrder,
+    repositories.list, viewByPath, state.tileOrder,
   ).map(entry => ({
     entry,
     view: viewByPath.get(entry.path) ?? null,
     skeleton: skeletons.get(entry.path) ?? null,
     history: historyOf(tileHistories, entry.path),
-  })), [repositories.list, skeletons, state.tileOrder, tileHistories, tilePaths, viewByPath])
+  })), [repositories.list, skeletons, state.tileOrder, tileHistories, viewByPath])
   const tileCounts = useMemo(
     () => filterCounts(tileColumns.flatMap(column => column.view === null ? [] : [column.view])),
     [tileColumns],
@@ -1071,36 +929,42 @@ export function VcsView({
     }
   }, [overviewPhase])
 
-  /** Switch between the stacked and the tiled layout, moving each repository group between its two places. */
-  const setTiled = useCallback((on: boolean) => {
+  /** Switch layouts, recording the boxes that will be gone after the render. */
+  const setTiled = useCallback((on: boolean, restoreOverview?: boolean) => {
     const current = stateRef.current
     if (current.tiled === on) return
     const root = rootRef.current
-    motionRef.current = {
-      on,
-      before: on ? repositoryRects(root, '.vcs-repository-group[data-repository]') : tiledControl.current?.columnRects() ?? new Map(),
-    }
+    clearMotionGhosts(root)
+    const animate = typeof root?.animate === 'function' && !reducedMotion()
     if (on) {
-      fadeOutInPlace(root, root?.querySelector<HTMLElement>('.vcs-content') ?? null)
+      const sources = (animate && current.overview ? overviewControl.current?.repositoryRects() : undefined) ?? new Map()
+      if (animate) {
+        const sidebar = root?.querySelector<HTMLElement>('.vcs-sidebar')
+        if (current.repo !== null && sidebar != null) sources.set(current.repo, sidebar.getBoundingClientRect())
+        fadeOutInPlace(root, root?.querySelector<HTMLElement>('.vcs-content') ?? null)
+      }
+      motionRef.current = { into: 'tile', sources }
       update({ tiled: true, overviewBeforeTile: current.overview, overview: false })
     } else {
+      const boxes = animate ? tiledControl.current?.columnRects() : undefined
+      motionRef.current = { into: 'timeline', tiles: boxes === undefined ? [] : copyTiles(root, boxes) }
       setTileTraversal(NO_TRAVERSAL)
-      update({ tiled: false, overview: current.overviewBeforeTile, overviewBeforeTile: false })
+      update({ tiled: false, overview: restoreOverview ?? current.overviewBeforeTile, overviewBeforeTile: false })
     }
   }, [update])
   useLayoutEffect(() => {
-    const motion = motionRef.current
-    if (motion === null || motion.on !== state.tiled) return
+    if (tileTransition === null || (tileTransition.into === 'tile') !== state.tiled) return
     motionRef.current = null
     const root = rootRef.current
-    if (motion.on) {
-      playGroups(root, '.vcs-tile-column[data-repository]', motion.before)
-      // The stacked rows that held focus are gone; the columns take it.
+    setOverviewPhase(overviewPresentation)
+    if (tileTransition.into === 'tile') {
+      enterTiles(root, tileTransition.sources)
+      // The timeline or overview that held focus is gone; the columns take it.
       if (panelOwnsFocusRef.current) tiledControl.current?.focus()
     } else {
-      playGroups(root, '.vcs-repository-group[data-repository]', motion.before)
+      leaveTiles(root, tileTransition.tiles, state.repo, overviewControl.current?.repositoryRects() ?? new Map())
       slideIn(root?.querySelector<HTMLElement>('.vcs-content') ?? null)
-      if (panelOwnsFocusRef.current) {
+      if (panelOwnsFocusRef.current && overviewFocusRequestRef.current === null) {
         navZoneRef.current = 'timeline'
         pendingReadyFocusRef.current = true
         if (!restoreNavFocus()) rootRef.current?.focus({ preventScroll: true })
@@ -1110,13 +974,13 @@ export function VcsView({
 
   const toggleOverview = useCallback(() => {
     const current = stateRef.current
+    overviewFocusRequestRef.current = current.tiled || !current.overview
+      ? { from: rootRef.current?.ownerDocument.activeElement ?? null }
+      : null
     if (current.tiled) {
       // The overview is closed while tiled, so its button opens it and leaves the tiled layout.
-      setTiled(false)
-      update({ overview: true })
-      return
-    }
-    update({ overview: !current.overview })
+      setTiled(false, true)
+    } else update({ overview: !current.overview })
   }, [setTiled, update])
 
   /**
@@ -1130,16 +994,9 @@ export function VcsView({
     if (entry === undefined || target === null) return
     const current = stateRef.current
     const node = 'worktree' in target ? worktreeNode(target.worktree) : target.commit
-    const patch: Partial<PanelState> = {}
-    if (current.repositoryScope === 'selected' && !current.checkedRepositories.includes(entry.path)) {
-      patch.checkedRepositories = [...current.checkedRepositories, entry.path]
-    }
-    const expanded = current.expandedRepositories ?? (current.repo === null ? [] : [current.repo])
-    if (!expanded.includes(entry.path)) patch.expandedRepositories = [...expanded, entry.path]
-    if ('commit' in target && current.ref !== 'all') patch.ref = 'all'
     if (current.repo !== entry.path) switchRepo(entry, node)
     else selectNode(node, true)
-    if (Object.keys(patch).length > 0) update(patch)
+    if ('commit' in target) update({ ref: 'all' })
     const occupant = pointer.occupant?.path
     if (occupant !== undefined) {
       setState(previous => {
@@ -1150,7 +1007,6 @@ export function VcsView({
       })
     }
     pendingRevealRef.current = 'commit' in target ? target.commit : null
-    revealGroupRef.current = entry.path
     if (pointer.kind === 'stash' && 'commit' in target) {
       setNotice({ tone: 'info', text: t('overview.stashBase', { sha: target.commit.slice(0, 7) }) })
     }
@@ -1169,33 +1025,29 @@ export function VcsView({
   const selectOverviewRepository = useCallback((path: string, keyboard: boolean) => {
     const entry = repositories.list.find(item => item.path === path)
     if (entry === undefined) return
-    const current = stateRef.current
-    const patch: Partial<PanelState> = {}
-    if (current.repositoryScope === 'selected' && !current.checkedRepositories.includes(path)) {
-      patch.checkedRepositories = [...current.checkedRepositories, path]
-    }
-    const expanded = current.expandedRepositories ?? (current.repo === null ? [] : [current.repo])
-    if (!expanded.includes(path)) patch.expandedRepositories = [...expanded, path]
-    if (current.repo !== path) switchRepo(entry)
-    if (Object.keys(patch).length > 0) update(patch)
-    revealGroupRef.current = path
+    if (stateRef.current.repo !== path) switchRepo(entry)
     if (keyboard) {
+      navZoneRef.current = 'timeline'
+      setSingleView('timeline')
       panelOwnsFocusRef.current = true
       pendingRestoreFocusRef.current = true
       pendingReadyFocusRef.current = true
       setFocusTick(value => value + 1)
     }
-  }, [repositories.list, switchRepo, update])
+    if (overviewDrawer) update({ overview: false })
+  }, [overviewDrawer, repositories.list, switchRepo, update])
 
   /** Both menu and direct actions first bring the pointer's repository into scope. */
   const requestPointerAction = useCallback((request: PointerActionRequest) => {
     const { pointer } = request
-    if (pointer.kind === 'stash' || !repositories.list.some(entry => entry.path === pointer.repo)) return
+    const entry = repositories.list.find(item => item.path === pointer.repo)
+    if (pointer.kind === 'stash' || entry === undefined) return
     pendingPointerActionRef.current = null
-    if (stateRef.current.repo !== pointer.repo) selectOverviewRepository(pointer.repo, false)
+    // Opening actions is not navigation: keep the drawer and its opener visible.
+    if (stateRef.current.repo !== pointer.repo) switchRepo(entry)
     pendingPointerActionRef.current = { sessionId, request }
     setPointerRequestTick(value => value + 1)
-  }, [repositories.list, selectOverviewRepository, sessionId])
+  }, [repositories.list, sessionId, switchRepo])
 
   const openPointerActions = useCallback((pointer: PointerView, point: MenuPoint, element: HTMLElement | null) => {
     requestPointerAction({ kind: 'menu', pointer, point: { clientX: point.clientX, clientY: point.clientY }, element })
@@ -1230,16 +1082,6 @@ export function VcsView({
     else selectOverviewRepository(path, true)
   }, [revealPointer, selectOverviewRepository, setTiled])
 
-  // A repository chosen in the overview brings its timeline group into view.
-  useLayoutEffect(() => {
-    const path = revealGroupRef.current
-    if (path === null || state.repo !== path || state.tiled) return
-    const group = rootRef.current?.querySelector<HTMLElement>(`.vcs-repository-group[data-repository="${CSS.escape(path)}"]`)
-    if (group === null || group === undefined) return
-    revealGroupRef.current = null
-    group.scrollIntoView?.({ block: 'nearest' })
-  })
-
   // A traversal step brings its chip into view once the columns rendered it.
   useEffect(() => {
     if (!state.tiled || tileTraversal.focus === null) return
@@ -1273,29 +1115,24 @@ export function VcsView({
     return () => { observer.disconnect() }
   }, [])
 
-  const lastRepositoryScope = useRef<string | null>(null)
+  const lastDiscoveryScope = useRef<string | null>(null)
   // Rediscover repositories independently of working-tree and history reads.
   useEffect(() => {
     const controller = new AbortController()
-    const foreground = lastRepositoryScope.current !== repositoriesScope
+    const foreground = lastDiscoveryScope.current !== repositoriesScope
     if (foreground) setRepositories(previous => ({ ...previous, status: previous.list.length === 0 ? 'loading' : 'ready', error: null }))
     api.repositories(controller.signal).then(answer => {
       if (controller.signal.aborted) return
-      const list: RepositoryRow[] = Array.isArray(answer?.repositories) ? answer.repositories : []
+      const list: RepositoryInfo[] = Array.isArray(answer?.repositories) ? answer.repositories : []
       setRepositories({
         status: 'ready', list, truncated: answer?.truncated === true, worktreesTruncated: answer?.worktreesTruncated === true,
         error: null, cwd: typeof answer?.cwd === 'string' ? answer.cwd : null,
         configError: typeof answer?.configError === 'string' ? answer.configError : null,
       })
-      const { repo: previousRepo, repositoryScope, checkedRepositories } = stateRef.current
+      const previousRepo = stateRef.current.repo
       const previousVcs = previousRepo === null ? undefined : repositoryVcsRef.current.get(previousRepo)
       repositoryVcsRef.current = new Map(list.map((entry): [string, string] => [entry.path, entry.vcs]))
-      const defaultEntry = pickRepository(list, previousRepo)
-      const included = list.filter(entry => checkedRepositories.includes(entry.path))
-      if (included.length === 0 && defaultEntry !== null) included.push(defaultEntry)
-      const checked = included.map(entry => entry.path)
-      if (!samePaths(checked, checkedRepositories) && list.length > 0) update({ checkedRepositories: checked })
-      const nextEntry = repositoryScope === 'selected' ? pickRepository(included, previousRepo) : defaultEntry
+      const nextEntry = pickRepository(list, previousRepo)
       const nextRepo = nextEntry?.path ?? null
       if (nextRepo !== previousRepo) switchRepo(nextEntry)
       else if (previousVcs !== undefined && previousVcs !== nextEntry?.vcs) {
@@ -1321,7 +1158,7 @@ export function VcsView({
       }
     }).finally(() => {
       if (controller.signal.aborted) return
-      lastRepositoryScope.current = repositoriesScope
+      lastDiscoveryScope.current = repositoriesScope
       setSettledRepositoriesKey(repositoriesKey)
       if (foreground) setRefreshing(action => action === 'repositories' ? null : action)
     })
@@ -1423,7 +1260,9 @@ export function VcsView({
     const controller = new AbortController()
     const signal = controller.signal
     const foreground = lastHistoryScope.current !== historyReadScope
-    const targetLength = foreground ? PAGE_SIZE : Math.max(PAGE_SIZE, loadedHistoryLength.current)
+    const resume = historyResumeRef.current
+    const restoredLength = resume?.repo === repo && resume.ref === state.ref ? resume.length : 0
+    const targetLength = Math.max(PAGE_SIZE, restoredLength, foreground ? 0 : loadedHistoryLength.current)
     setLog(previous => ({ ...previous, ...(foreground ? { status: 'loading', error: null } : {}), loadingMore: false }))
     async function readHistory(repoRoot: string) {
       const commits: CommitNode[] = []
@@ -1449,6 +1288,7 @@ export function VcsView({
         truncated = page?.truncated === true && results.length <= remaining
         hasMore = results.length > remaining || (rows.length >= limit && !truncated)
       } while (hasMore && commits.length < targetLength)
+      if (historyResumeRef.current === resume) historyResumeRef.current = null
       logKeyRef.current = historyKey
       setLog({ status: 'ready', commits, worktreeHeads, error: null, truncated, hasMore, loadingMore: false })
     }
@@ -1494,6 +1334,8 @@ export function VcsView({
     setSingleView('timeline')
     setNotices(new Map())
     setRepositoryManagement(null)
+    overviewFocusRequestRef.current = null
+    setOverviewPhase(restored.overview && !restored.tiled ? 'open' : 'closed')
     clearBranches()
     abortBranches()
     resetActionsUi()
@@ -1506,6 +1348,7 @@ export function VcsView({
     perRepoRef.current.clear()
     createdWorktreesRef.current.clear()
     repositoryScrollRef.current.clear()
+    historyResumeRef.current = null
     repositoryVcsRef.current.clear()
     diffCacheRef.current.clear()
     commitCacheRef.current.clear()
@@ -1542,16 +1385,27 @@ export function VcsView({
       }
     }
     if (!showTimeline) return false
-    if (timelineControl.current?.restoreFocus() !== true) {
-      const header = rootRef.current?.querySelector<HTMLElement>('.vcs-repository-group-header[aria-current="true"]')
-      if (header === null || header === undefined) return false
-      header.focus({ preventScroll: true })
-    }
+    if (timelineControl.current?.restoreFocus() !== true) return false
     panelOwnsFocusRef.current = true
     navZoneRef.current = 'timeline'
     return true
   }, [missingTool, repositories.status, showTimeline, singleColumn, singleView, visible])
   restoreNavFocusRef.current = restoreNavFocus
+
+  // Only an explicit opening takes focus. Discovery is enough to land on the
+  // current row; the overview's pointer stream can still be pending.
+  useLayoutEffect(() => {
+    const request = overviewFocusRequestRef.current
+    if (request === null || !overviewOpen || overviewPresentation !== 'open'
+      || !visible || hasOpenOverlay || repositories.status === 'loading') return
+    overviewFocusRequestRef.current = null
+    const root = rootRef.current
+    const active = root?.ownerDocument.activeElement
+    if (active !== request.from && !canClaimFocusFrom(active, root)) return
+    pendingRestoreFocusRef.current = false
+    pendingReadyFocusRef.current = false
+    overviewControl.current?.focusCurrent()
+  })
 
   // Apply deferred navigation focus and recover synchronously when a render
   // unmounted the currently focused stop while the panel owned focus.
@@ -1580,8 +1434,6 @@ export function VcsView({
     const index = (active as HTMLElement).dataset.timelineIndex
     if (index === undefined) return
     if (!rootRef.current?.contains(active)) return
-    const group = findAncestor(active, rootRef.current, node => hasClass(node, 'vcs-repository-group'))
-    if (group !== null && group.dataset?.active === undefined) return
     if (index === String(selectedRow)) return
     timelineControl.current?.restoreFocus()
   }, [hasOpenOverlay, selectedRow, showTimeline, visible])
@@ -1615,6 +1467,7 @@ export function VcsView({
     const ensureReadyFocus = () => {
       if (hasOpenOverlay) return
       const active = typeof document === 'undefined' ? null : document.activeElement
+      if (findAncestor(active, rootRef.current, node => hasClass(node, 'vcs-overview')) !== null) return
       if (!canClaimFocusFrom(active, rootRef.current)) return
       if (!restoreNavFocus()) pendingReadyFocusRef.current = true
     }
@@ -2112,7 +1965,10 @@ export function VcsView({
     }
     if (overviewOpen && movement(event) === BACK && zoneOf(event.target, rootRef.current) !== 'tree'
       && !(singleColumn && singleView === 'detail') && navZoneRef.current === 'timeline') {
-      if (overviewControl.current?.focus() === true) return handled()
+      if (overviewControl.current?.focus() === true) {
+        pendingReadyFocusRef.current = false
+        return handled()
+      }
     }
     return false
   }
@@ -2184,18 +2040,7 @@ export function VcsView({
   }
   const stopResize = (): void => { dragRef.current = null }
 
-  if (repositories.status === 'error') {
-    const missing = repositories.error?.code === 'vcs-missing'
-    return (
-      <div className="vcs-root" ref={rootRef} tabIndex={-1}>
-        <div className="vcs-center">
-          <p className="vcs-empty-title">{missing ? t('error.vcsMissing') : t('repositories.error')}</p>
-          <p className="vcs-note">{missing ? t('error.vcsMissingHint') : errorMessage(t, repositories.error)}</p>
-          <button type="button" className="vcs-button" onClick={() => { refresh() }}>{t('error.retry')}</button>
-        </div>
-      </div>
-    )
-  }
+  const discoveryToolMissing = repositories.error?.code === 'vcs-missing'
 
   const missingToolMessage = missingTool ? (
     <div className="vcs-center">
@@ -2242,10 +2087,11 @@ export function VcsView({
       className="vcs-root"
       data-narrow={narrow ? 'true' : undefined}
       data-single-column={singleColumn ? 'true' : undefined}
-      data-overview={overviewPhase === 'closed' ? undefined : overviewPhase}
-      data-overview-drawer={overviewPhase !== 'closed' && overviewDrawer ? 'true' : undefined}
+      data-overview={overviewPresentation === 'closed' ? undefined : overviewPresentation}
+      data-overview-drawer={overviewPresentation !== 'closed' && overviewNeedsDrawer ? 'true' : undefined}
       data-tiled={state.tiled ? 'true' : undefined}
-      style={overviewPhase === 'closed' ? undefined : { '--vcs-overview-width': `${state.overviewWidth}px` } as CSSProperties}
+      data-tile-transition={tileTransition !== null || undefined}
+      style={overviewPresentation === 'closed' ? undefined : { '--vcs-overview-width': `${state.overviewWidth}px` } as CSSProperties}
       tabIndex={-1}
       onFocus={event => {
         panelOwnsFocusRef.current = true
@@ -2261,32 +2107,9 @@ export function VcsView({
       onClick={onClick}
       onKeyDown={onKeyDown}
     >
-      {overviewPhase === 'closed' || state.tiled ? null : (
-        <OverviewPane
-          data={overviewData}
-          views={overviewViews}
-          currentRepo={state.repo}
-          selected={selectedPointer}
-          width={state.overviewWidth}
-          onResize={overviewWidth => { update({ overviewWidth }) }}
-          onSelectRepository={selectOverviewRepository}
-          onSelectPointer={revealPointer}
-          onPointerActions={openPointerActions}
-          onAddUnlisted={paths => { setAddingRepositories(paths) }}
-          control={overviewControl}
-          t={t}
-          locale={locale}
-        />
-      )}
       <TopBar
-        repositories={repositories.list}
+        repository={repoInfo}
         cwd={repositories.cwd}
-        onManageRepositories={restoreFocus => { setRepositoryManagement({ sessionId, restoreFocus }) }}
-        repo={state.repo}
-        repositoryScope={state.repositoryScope}
-        checkedRepositories={state.checkedRepositories}
-        onRepositoryScope={scope => { applyRepositoryScope(scope, stateRef.current.checkedRepositories) }}
-        onToggleRepository={toggleCheckedRepository}
         worktrees={worktrees}
         checkedPaths={checkedPaths}
         onToggleWorktree={toggleCheckedWorktree}
@@ -2340,170 +2163,181 @@ export function VcsView({
         t={t}
         locale={locale}
       />
-      {!state.tiled && notice?.domain === 'worktree' ? (
-        <p className="vcs-note vcs-worktree-path" role="status">{notice.text}</p>
-      ) : null}
-      {repositories.truncated ? <p className="vcs-note">{formatPlural(t, 'repositories.truncated', repositories.list.length, locale)}</p> : null}
-      {repositories.worktreesTruncated ? <p className="vcs-note">{t('repositories.worktreesTruncated')}</p> : null}
-      {repositories.configError ? (
-        <p className="vcs-note" role="alert">{errorMessage(t, { code: repositories.configError })}</p>
-      ) : null}
-      {repositories.status === 'loading' ? (
-        // Nothing is known yet, not even the backend: draw both columns as
-        // they will be, so the panel settles in place instead of popping in.
-        <div className="vcs-main">
-          <section
-            className="vcs-sidebar vcs-sidebar-loading"
-            style={singleColumn ? undefined : { width: `${state.sidebarWidth}px` }}
-          >
-            <TimelineSkeleton rowHeight={ROW_HEIGHT} label={t('loading.repositories')} />
-          </section>
-          {singleColumn ? null : <section className="vcs-content"><TreeSkeleton /></section>}
-        </div>
-      ) : state.repo === null ? (
-        <div className="vcs-center">
-          <p className="vcs-empty-title">{t('empty.repository')}</p>
-          <p className="vcs-note">{t('empty.repositoryHint')}</p>
-        </div>
-      ) : state.tiled ? (
-        <div className="vcs-main vcs-main-tiled">
-          <TiledView
-            columns={tileColumns}
-            unlisted={unlistedViews}
+      <div className="vcs-body">
+        {overviewPresentation === 'closed' ? null : (
+          <OverviewPane
+            data={overviewData}
+            repositories={repositories.list}
+            views={overviewViews}
             cwd={overviewCwd}
             currentRepo={state.repo}
-            expanded={state.tileExpanded}
-            filter={tileTraversal.filter}
-            focus={tileTraversal.focus}
-            narrow={narrow}
-            inFlight={actions.inFlight}
-            notices={notices}
-            onFocusPointer={focusTilePointer}
-            onOpenTimeline={(path, pointer) => { openFromTile(path, pointer) }}
-            onExpand={path => { update({ tileExpanded: [...state.tileExpanded.filter(item => item !== path), path] }) }}
-            onCollapse={path => { update({ tileExpanded: state.tileExpanded.filter(item => item !== path) }) }}
+            selected={selectedPointer}
+            width={state.overviewWidth}
+            onResize={overviewWidth => { update({ overviewWidth }) }}
+            onSelectRepository={selectOverviewRepository}
+            onSelectPointer={revealPointer}
             onPointerActions={openPointerActions}
-            onDirectAction={(pointer, action, restore) => { requestPointerAction({ kind: 'direct', pointer, action, restore }) }}
+            onManageRepositories={restoreFocus => { setRepositoryManagement({ sessionId, restoreFocus }) }}
             onAddUnlisted={paths => { setAddingRepositories(paths) }}
-            control={tiledControl}
+            control={overviewControl}
             t={t}
             locale={locale}
           />
-        </div>
-      ) : (
-        <div className="vcs-main">
-          {showTimeline ? (
-            <section className="vcs-sidebar" style={singleColumn ? undefined : { width: `${state.sidebarWidth}px` }}>
-              {showRepositoryGroups ? (
-                <RepositoryTimelines
-                  repositories={visibleRepositories}
-                  current={state.repo}
-                  expanded={expandedRepositories}
-                  onToggle={toggleRepositoryGroup}
-                  renderTimeline={(entry, active) => active ? activeTimeline : (
-                    <RepositoryTimelinePreview
-                      key={JSON.stringify([sessionId, entry.path, entry.vcs, manual.history, manual.working])}
-                      api={api} sessionId={sessionId} entry={entry} saved={perRepoRef.current.get(entry.path)}
-                      scrollOffset={repositoryScrollRef.current.get(entry.path) ?? 0}
-                      onScroll={offset => { repositoryScrollRef.current.set(entry.path, offset) }}
-                      onSelect={selectPreviewNode} t={t} locale={locale}
-                    />
-                  )}
-                  t={t}
-                />
-              ) : activeTimeline}
+        )}
+        {!state.tiled && notice?.domain === 'worktree' ? (
+          <p className="vcs-note vcs-worktree-path" role="status">{notice.text}</p>
+        ) : null}
+        {repositories.truncated ? <p className="vcs-note">{formatPlural(t, 'repositories.truncated', repositories.list.length, locale)}</p> : null}
+        {repositories.worktreesTruncated ? <p className="vcs-note">{t('repositories.worktreesTruncated')}</p> : null}
+        {repositories.configError ? (
+          <p className="vcs-note" role="alert">{errorMessage(t, { code: repositories.configError })}</p>
+        ) : null}
+        {repositories.status === 'error' ? (
+          <div className="vcs-center">
+            <p className="vcs-empty-title">{discoveryToolMissing ? t('error.vcsMissing') : t('repositories.error')}</p>
+            <p className="vcs-note">{discoveryToolMissing ? t('error.vcsMissingHint') : errorMessage(t, repositories.error)}</p>
+            <button type="button" className="vcs-button" onClick={() => { refresh() }}>{t('error.retry')}</button>
+          </div>
+        ) : repositories.status === 'loading' ? (
+          // Nothing is known yet, not even the backend: draw both columns as
+          // they will be, so the panel settles in place instead of popping in.
+          <div className="vcs-main">
+            <section
+              className="vcs-sidebar vcs-sidebar-loading"
+              style={singleColumn ? undefined : { width: `${state.sidebarWidth}px` }}
+            >
+              <TimelineSkeleton rowHeight={ROW_HEIGHT} label={t('loading.repositories')} />
             </section>
-          ) : null}
-          {!singleColumn ? (
-            <div
-              className="vcs-resizer"
-              role="separator"
-              aria-orientation="vertical"
-              aria-label={t('panel.resize')}
-              aria-valuenow={state.sidebarWidth}
-              aria-valuemin={SIDEBAR_MIN}
-              aria-valuemax={SIDEBAR_MAX}
-              tabIndex={0}
-              onPointerDown={startResize}
-              onPointerMove={resize}
-              onPointerUp={stopResize}
-              onPointerCancel={stopResize}
-              onKeyDown={event => {
-                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-                event.preventDefault()
-                update({ sidebarWidth: clampWidth(state.sidebarWidth + (event.key === 'ArrowLeft' ? -16 : 16)) })
-              }}
+            {singleColumn ? null : <section className="vcs-content"><TreeSkeleton /></section>}
+          </div>
+        ) : state.repo === null ? (
+          <div className="vcs-center">
+            <p className="vcs-empty-title">{t('empty.repository')}</p>
+            <p className="vcs-note">{t('empty.repositoryHint')}</p>
+          </div>
+        ) : state.tiled ? (
+          <div className="vcs-main vcs-main-tiled">
+            <TiledView
+              columns={tileColumns}
+              unlisted={unlistedViews}
+              cwd={overviewCwd}
+              currentRepo={state.repo}
+              expanded={state.tileExpanded}
+              filter={tileTraversal.filter}
+              focus={tileTraversal.focus}
+              narrow={narrow}
+              inFlight={actions.inFlight}
+              notices={notices}
+              onFocusPointer={focusTilePointer}
+              onOpenTimeline={(path, pointer) => { openFromTile(path, pointer) }}
+              onExpand={path => { update({ tileExpanded: [...state.tileExpanded.filter(item => item !== path), path] }) }}
+              onCollapse={path => { update({ tileExpanded: state.tileExpanded.filter(item => item !== path) }) }}
+              onPointerActions={openPointerActions}
+              onDirectAction={(pointer, action, restore) => { requestPointerAction({ kind: 'direct', pointer, action, restore }) }}
+              onAddUnlisted={paths => { setAddingRepositories(paths) }}
+              control={tiledControl}
+              t={t}
+              locale={locale}
             />
-          ) : null}
-          {showDetail ? (
-            <section className="vcs-content">
-              {missingTool ? (singleColumn ? missingToolMessage : null)
-                : detailNode === null || state.node === WORKTREE || state.node === WORKING_COPY
-                || (worktreePath(state.node) !== null && selectedTree === null) ? (
-                commitBased && selectedTree !== null && detailStatus.status === 'error'
-                  ? <p className="vcs-note" role="alert">{t('changes.error')} {errorMessage(t, detailStatus.error)}</p>
-                  : <TreeSkeleton label={t('changes.loading')} />
-              ) : (
-                <DetailPane
-                  key={`${state.repo}|${state.node}`}
-                  api={detailApi}
-                  repo={detailRoot as string}
-                  node={detailNode}
-                  worktree={selectedWorktree}
-                  workingCopies={summary?.workingCopies ?? (commitBased && selectedTree !== null ? [selectedTree] : NO_WORKTREE_ROWS)}
-                  snapshotError={commitBased && selectedTree !== null && detailStatus.status === 'error' ? detailStatus.error : null}
-                  showCurrentHead={showCurrentHead}
-                  summary={summary}
-                  status={detailStatus.data}
-                  statusState={detailStatus.status as DetailStatusState}
-                  statusError={detailStatus.error}
-                  dirChildren={dirChildren}
-                  loadingDirs={loadingDirs}
-                  dirs={state.dirs}
-                  collapsed={state.collapsed}
-                  onToggleDir={toggleRow}
-                  folds={state.folds}
-                  onToggleFold={toggleFold}
-                  onSetFolds={folds => { update({ folds }) }}
-                  split={state.split}
-                  wrap={state.wrap}
-                  onToggleSplit={split => { update({ split }) }}
-                  onToggleWrap={wrap => { update({ wrap }) }}
-                  mergeStaging={state.mergeStaging}
-                  onToggleStageLayout={(mergeStaging, anchor, folds) => {
-                    anchorRef.current = anchor
-                    update({ mergeStaging, anchor, folds })
-                  }}
-                  singleColumn={singleColumn}
-                  onBack={leaveDetail}
-                  onLeaveNav={leaveDetail}
-                  onSelectCommit={selectCommit}
-                  isLoaded={sha => commitIndex.has(sha)}
-                  onMissing={onMissing}
-                  onSettled={onDetailSettled}
-                  revision={selectedTree === null ? manual.history : revision}
-                  backgroundDiffRevision={selectedTree === null ? undefined : backgroundDiffRevision}
-                  onInteractionChange={setDetailInteracting}
-                  cache={diffCacheRef.current}
-                  commitCache={commitCacheRef.current}
-                  initialAnchor={anchorRef.current}
-                  onReading={onReading}
-                  control={detailControl}
-                  capabilities={capabilities}
-                  onStage={canStage ? actions.stage : undefined}
-                  onStageHistory={canStage ? actions.stageHistory : undefined}
-                  stageDisabled={actions.repoBusy || refreshing !== null || detailStatus.status !== 'ready'}
-                  onRefActions={capabilities?.branchOps === true || capabilities?.tagOps === true
-                    ? actions.onRefActions
-                    : undefined}
-                  t={t}
-                  locale={locale}
-                />
-              )}
-            </section>
-          ) : null}
-        </div>
-      )}
+          </div>
+        ) : (
+          <div className="vcs-main">
+            {showTimeline ? (
+              <section className="vcs-sidebar" style={singleColumn ? undefined : { width: `${state.sidebarWidth}px` }}>
+                {activeTimeline}
+              </section>
+            ) : null}
+            {!singleColumn ? (
+              <div
+                className="vcs-resizer"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label={t('panel.resize')}
+                aria-valuenow={state.sidebarWidth}
+                aria-valuemin={SIDEBAR_MIN}
+                aria-valuemax={SIDEBAR_MAX}
+                tabIndex={0}
+                onPointerDown={startResize}
+                onPointerMove={resize}
+                onPointerUp={stopResize}
+                onPointerCancel={stopResize}
+                onKeyDown={event => {
+                  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+                  event.preventDefault()
+                  update({ sidebarWidth: clampWidth(state.sidebarWidth + (event.key === 'ArrowLeft' ? -16 : 16)) })
+                }}
+              />
+            ) : null}
+            {showDetail ? (
+              <section className="vcs-content">
+                {missingTool ? (singleColumn ? missingToolMessage : null)
+                  : detailNode === null || state.node === WORKTREE || state.node === WORKING_COPY
+                  || (worktreePath(state.node) !== null && selectedTree === null) ? (
+                  commitBased && selectedTree !== null && detailStatus.status === 'error'
+                    ? <p className="vcs-note" role="alert">{t('changes.error')} {errorMessage(t, detailStatus.error)}</p>
+                    : <TreeSkeleton label={t('changes.loading')} />
+                ) : (
+                  <DetailPane
+                    key={`${state.repo}|${state.node}`}
+                    api={detailApi}
+                    repo={detailRoot as string}
+                    node={detailNode}
+                    worktree={selectedWorktree}
+                    workingCopies={summary?.workingCopies ?? (commitBased && selectedTree !== null ? [selectedTree] : NO_WORKTREE_ROWS)}
+                    snapshotError={commitBased && selectedTree !== null && detailStatus.status === 'error' ? detailStatus.error : null}
+                    showCurrentHead={showCurrentHead}
+                    summary={summary}
+                    status={detailStatus.data}
+                    statusState={detailStatus.status as DetailStatusState}
+                    statusError={detailStatus.error}
+                    dirChildren={dirChildren}
+                    loadingDirs={loadingDirs}
+                    dirs={state.dirs}
+                    collapsed={state.collapsed}
+                    onToggleDir={toggleRow}
+                    folds={state.folds}
+                    onToggleFold={toggleFold}
+                    onSetFolds={folds => { update({ folds }) }}
+                    split={state.split}
+                    wrap={state.wrap}
+                    onToggleSplit={split => { update({ split }) }}
+                    onToggleWrap={wrap => { update({ wrap }) }}
+                    mergeStaging={state.mergeStaging}
+                    onToggleStageLayout={(mergeStaging, anchor, folds) => {
+                      anchorRef.current = anchor
+                      update({ mergeStaging, anchor, folds })
+                    }}
+                    singleColumn={singleColumn}
+                    onBack={leaveDetail}
+                    onLeaveNav={leaveDetail}
+                    onSelectCommit={selectCommit}
+                    isLoaded={sha => commitIndex.has(sha)}
+                    onMissing={onMissing}
+                    onSettled={onDetailSettled}
+                    revision={selectedTree === null ? manual.history : revision}
+                    backgroundDiffRevision={selectedTree === null ? undefined : backgroundDiffRevision}
+                    onInteractionChange={setDetailInteracting}
+                    cache={diffCacheRef.current}
+                    commitCache={commitCacheRef.current}
+                    initialAnchor={anchorRef.current}
+                    onReading={onReading}
+                    control={detailControl}
+                    capabilities={capabilities}
+                    onStage={canStage ? actions.stage : undefined}
+                    onStageHistory={canStage ? actions.stageHistory : undefined}
+                    stageDisabled={actions.repoBusy || refreshing !== null || detailStatus.status !== 'ready'}
+                    onRefActions={capabilities?.branchOps === true || capabilities?.tagOps === true
+                      ? actions.onRefActions
+                      : undefined}
+                    t={t}
+                    locale={locale}
+                  />
+                )}
+              </section>
+            ) : null}
+          </div>
+        )}
+      </div>
       {manageCurrentRepositories ? (
         <RepositoryConfigDialog
           api={api}

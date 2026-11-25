@@ -53,8 +53,8 @@ export function StateButtons({ counts, filter, index, total, order, onStep, onOr
         })}
       </div>
       <div className="vcs-tile-order" role="group" aria-label={t('tile.order')}>
-        <button type="button" aria-pressed={order === 'directory'} onClick={() => { onOrder('directory') }}>{t('tile.orderDirectory')}</button>
         <button type="button" aria-pressed={order === 'attention'} onClick={() => { onOrder('attention') }}>{t('tile.orderAttention')}</button>
+        <button type="button" aria-pressed={order === 'directory'} onClick={() => { onOrder('directory') }}>{t('tile.orderDirectory')}</button>
       </div>
     </>
   )

@@ -269,15 +269,15 @@ test('traversal walks columns left to right and each column top to bottom, wrapp
   assert.equal(stepIndex(0, 2, 1), -1)
   assert.deepEqual(traversal(columns, 'op').map(entry => entry.name), ['busy', 'busy'])
 
-  // Attention order puts loud repositories first, then the quiet ones in place.
+  // Attention order puts known loud repositories before unread ones, then quiet ones.
   const quiet = repositoryView(repository({
     path: '/w/a-quiet', checkouts: [checkout('/w/a-quiet', { primary: true, branch: 'main' })],
     pointers: [pointer('branch', 'main', { isBase: true, upstream: 'origin/main', track: { ahead: 0, behind: 0 }, checkout: '/w/a-quiet' })],
   }) as never, '/w')
   const views = new Map([quiet, first].map(view => [view.path, view]))
-  const entries = [{ path: '/w/a-quiet' }, { path: '/w/repo' }]
-  assert.deepEqual(tileOrder(entries, views, 'directory').map(entry => entry.path), ['/w/a-quiet', '/w/repo'])
-  assert.deepEqual(tileOrder(entries, views, 'attention').map(entry => entry.path), ['/w/repo', '/w/a-quiet'])
+  const entries = [{ path: '/w/a-quiet' }, { path: '/w/unread' }, { path: '/w/repo' }]
+  assert.deepEqual(tileOrder(entries, views, 'directory').map(entry => entry.path), ['/w/a-quiet', '/w/unread', '/w/repo'])
+  assert.deepEqual(tileOrder(entries, views, 'attention').map(entry => entry.path), ['/w/repo', '/w/unread', '/w/a-quiet'])
 })
 
 test('a pointer opens its working tree when unsaved, a stash its base, anything else its commit', () => {
@@ -291,21 +291,22 @@ test('a pointer opens its working tree when unsaved, a stash its base, anything 
 
 test('panel state keeps the overview and tiled layout, clamping and dropping bad values', () => {
   const state = sanitizeState({
-    overview: true, overviewWidth: 9999, tiled: true, overviewBeforeTile: true, tileOrder: 'attention', tileExpanded: ['/a', '/a', 3],
+    overview: true, overviewWidth: 9999, tiled: true, overviewBeforeTile: true, tileOrder: 'directory', tileExpanded: ['/a', '/a', 3],
   })
   assert.equal(state.overview, true)
   assert.equal(state.overviewWidth, OVERVIEW_MAX)
   assert.equal(state.tiled, true)
   assert.equal(state.overviewBeforeTile, true)
-  assert.equal(state.tileOrder, 'attention')
+  assert.equal(state.tileOrder, 'directory')
   assert.deepEqual(state.tileExpanded, ['/a'])
   const rejected = sanitizeState({ overview: 'yes', overviewWidth: 10, tiled: 1, tileOrder: 'random', tileExpanded: 'x' })
   assert.equal(rejected.overview, false)
   assert.equal(rejected.overviewWidth, OVERVIEW_MIN)
   assert.equal(rejected.tiled, false)
-  assert.equal(rejected.tileOrder, 'directory')
+  assert.equal(rejected.tileOrder, 'attention')
   assert.deepEqual(rejected.tileExpanded, [])
   assert.equal(loadState('none', undefined).overviewWidth, 400)
+  assert.equal(sanitizeState({}).tileOrder, 'attention')
 })
 
 test('panel commands reach the Session they name, and wait for a panel that has not mounted', () => {

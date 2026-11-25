@@ -150,6 +150,12 @@ export type WorktreeRequest = WorktreeCreateRequest | ({ action: WorktreeRemoval
   | { expectedBranch: string | null; expectedHead?: string }
 ))
 
+/** Where discovery found a repository. */
+export interface RepositorySource {
+  kind: 'default' | 'repository' | 'directory'
+  path?: string
+}
+
 /** One repository the Session may show. */
 export interface RepositoryInfo {
   /** Absolute repository root. */
@@ -160,6 +166,11 @@ export interface RepositoryInfo {
   vcs: string
   /** What that backend promises. */
   capabilities: RepositoryCapabilities
+  /** Whether this repository contains the session directory. */
+  enclosing?: boolean
+  /** Backends whose markers are present, and the rules that found the root. */
+  availableVcs?: string[]
+  sources?: RepositorySource[]
   /** Checkouts, when the backend can list them. */
   worktrees?: WorktreeInfo[]
 }

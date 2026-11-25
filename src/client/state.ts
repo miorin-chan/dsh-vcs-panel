@@ -59,17 +59,10 @@ export interface ReadingAnchor {
   offset: number
 }
 
-export type RepositoryScope = 'all' | 'selected'
-
 /** What the panel remembers per Session. */
 export interface PanelState {
   /** The selected repository root, or null before one is chosen. */
   repo: string | null
-  /** Which repositories get timeline groups, and the paths checked for selected mode. */
-  repositoryScope: RepositoryScope
-  checkedRepositories: string[]
-  /** Null opens the initial repository, while an empty list keeps every group closed. */
-  expandedRepositories: string[] | null
   /** The selected checkout paths, in display order. */
   worktrees: string[]
   /** The selected timeline node, or null before the status answers. */
@@ -102,7 +95,7 @@ export interface PanelState {
   overview: boolean
   /** The overview column width, in CSS pixels. */
   overviewWidth: number
-  /** Whether the repository groups are tiled as columns. */
+  /** Whether the repositories are tiled as columns. */
   tiled: boolean
   /** Whether the overview was open when tiling started, so leaving restores it. */
   overviewBeforeTile: boolean
@@ -131,9 +124,6 @@ export interface PreferredNodeStatus {
 export function defaultState(): PanelState {
   return {
     repo: null,
-    repositoryScope: 'selected',
-    checkedRepositories: [],
-    expandedRepositories: null,
     worktrees: [],
     node: null,
     nodeChosen: false,
@@ -152,7 +142,7 @@ export function defaultState(): PanelState {
     overviewWidth: OVERVIEW_WIDTH,
     tiled: false,
     overviewBeforeTile: false,
-    tileOrder: 'directory',
+    tileOrder: 'attention',
     tileExpanded: [],
   }
 }
@@ -228,10 +218,7 @@ export function sanitizeState(raw: unknown): PanelState {
   if (!isRecord(raw) || Array.isArray(raw)) return state
   const stored = raw
   state.repo = textOrNull(stored.repo)
-  if (stored.repositoryScope === 'all' || stored.repositoryScope === 'selected') {
-    state.repositoryScope = stored.repositoryScope
-  }
-  for (const field of ['checkedRepositories', 'expandedRepositories', 'worktrees', 'tileExpanded'] as const) {
+  for (const field of ['worktrees', 'tileExpanded'] as const) {
     const paths = stored[field]
     if (Array.isArray(paths)) {
       state[field] = [...new Set(paths.filter((path): path is string => textOrNull(path) !== null))]
@@ -261,7 +248,7 @@ export function sanitizeState(raw: unknown): PanelState {
   }
   state.tiled = stored.tiled === true
   state.overviewBeforeTile = stored.overviewBeforeTile === true
-  if (stored.tileOrder === 'attention') state.tileOrder = 'attention'
+  if (stored.tileOrder === 'directory') state.tileOrder = 'directory'
   return state
 }
 
