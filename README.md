@@ -86,6 +86,8 @@ or sync with the upstream.
   Restarting DSH clears the history.
 - **Turn banner & shortcut.** File-changing turns end with a compact VCS banner showing that turn's branch (or `@`),
   changed-file count, and `+` / `−` line totals in place of Chat's changed-files card.
+  Click the banner to open the graph for the repository changed that turn,
+  or choose among matching repositories in the overview.
   Open the Sidebar tab from anywhere with `⌘⇧G` / `Ctrl+Shift+G`, and press it again to slide back to the conversation.
 - **One-click sync.** The button beside the Git branch shows ahead/behind counts;
   clicking it fetches the upstream, then fast-forwards or pushes.

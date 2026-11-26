@@ -11,6 +11,12 @@
  */
 
 import { createApi, failureOf, type Api } from './api.js'
+import type { TurnRepository } from '../lib/turn-repositories.js'
+
+export interface TurnGraphTarget {
+  sessionId: string
+  graphs: readonly TurnRepository[]
+}
 
 /** Most unsubscribed turn summaries kept in memory before the oldest is dropped. */
 export const MAX_IDLE_TURN_SUMMARIES = 500
@@ -28,6 +34,7 @@ export interface TurnSummary {
   changed: number | null
   added: number | null
   deleted: number | null
+  graphs?: readonly TurnRepository[]
 }
 
 /** Whether a decoded value is an object. */
@@ -77,7 +84,20 @@ export function normalizeTurnSummary(value: unknown): TurnSummary | null {
     && typeof added === 'number' && Number.isSafeInteger(added) && added >= 0
     && typeof deleted === 'number' && Number.isSafeInteger(deleted) && deleted >= 0
   if (hasCounts) {
-    return { head, changed, added, deleted }
+    const graphs: TurnRepository[] = []
+    const seen = new Set<string>()
+    let attributed = 0
+    if (Array.isArray(answer.graphs) && answer.graphs.length <= 50) {
+      for (const graph of answer.graphs) {
+        if (!isRecord(graph) || typeof graph.path !== 'string' || graph.path === '' || seen.has(graph.path)
+          || typeof graph.name !== 'string' || graph.name === ''
+          || typeof graph.files !== 'number' || !Number.isSafeInteger(graph.files) || graph.files < 1) continue
+        seen.add(graph.path)
+        attributed += graph.files
+        graphs.push({ path: graph.path, name: graph.name, files: graph.files })
+      }
+    }
+    return { head, changed, added, deleted, ...(graphs.length > 0 && attributed <= changed && { graphs }) }
   }
   const countsAbsent = (changed === null || changed === undefined)
     && (added === null || added === undefined)

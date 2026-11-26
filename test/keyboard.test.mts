@@ -2317,7 +2317,7 @@ async function withGitPanel(repositories, {
   const json = (answer, status = 200) => Response.json(answer, { status })
   const reads = { overview: [], log: [], status: [], activity: [] }
   const writes = []
-  const waits = { status: new Map(), overview: null }
+  const waits = { status: new Map(), overview: null, repositories: null }
   const discovery = { repositories }
 
   globalThis.fetch = async (url, init) => {
@@ -2332,6 +2332,7 @@ async function withGitPanel(repositories, {
     }
     switch (query.pathname) {
       case '/api/vcs.repositories':
+        await waits.repositories
         return json({ cwd: '/fixture', repositories: discovery.repositories.map(repo => ({
           path: repo.path, name: repo.name, vcs: repo.vcs, capabilities: repo.capabilities ?? GIT_CAPABILITIES,
           enclosing: repo.enclosing,
@@ -2376,7 +2377,8 @@ async function withGitPanel(repositories, {
   }
   try {
     const { VcsView } = await loadClientModule('src/client/VcsView.tsx', harness)
-    harness.mount(harness.react.createElement(VcsView, { sessionId, t, locale: 'en-US' }))
+    const mountPanel = (props = {}) => harness.mount(harness.react.createElement(VcsView, { sessionId, t, locale: 'en-US', ...props }))
+    mountPanel()
     await harness.settle()
     const body = harness.document.body
     const columns = () => body.querySelectorAll('.vcs-tile-column').map(column => column.dataset.repository)
@@ -2392,7 +2394,7 @@ async function withGitPanel(repositories, {
       assert.equal(dialog(), null)
     }
     await run({
-      harness, body, columns, chip, bar, action, dialog, submit, escape, reads, writes, waits, discovery,
+      harness, body, columns, chip, bar, action, dialog, submit, escape, reads, writes, waits, discovery, mountPanel, sessionId,
       current: () => body.querySelector('.vcs-tile-column[data-current]')?.dataset.repository,
       persisted: () => JSON.parse(store.get(storageKey(sessionId))),
     })
@@ -2612,6 +2614,88 @@ test('a vanished tiled pointer hands focus to the next chip or the column header
     assert.equal(chip(tileAlpha, loosePath), undefined)
     assert.equal(harness.document.activeElement, body.querySelector('.vcs-tile-head'))
     assert.match(textOf(bar().querySelector('.vcs-notice')), /^worktree\.removed:/u)
+  })
+})
+
+test('turn graph navigation waits for fresh discovery, opens once, and ignores another session', async () => {
+  const alpha = tileRepo(tileAlpha, [])
+  const beta = tileRepo(tileBeta, [])
+  await withGitPanel([alpha, beta], { panelState: { timelineScope: 'all' } }, async ({
+    harness, body, persisted, reads, waits, mountPanel, sessionId, discovery,
+  }) => {
+    const graph = { path: beta.path, name: beta.name, files: 2 }
+    const navigate = (revision, session = sessionId) => mountPanel({
+      focusRequest: revision, turnGraph: { sessionId: session, revision, graphs: [graph] },
+    })
+    navigate(1, 'another-session')
+    await harness.settle()
+    assert.equal(persisted().repo, alpha.path)
+    const gate = Promise.withResolvers()
+    waits.repositories = gate.promise
+    navigate(2)
+    await harness.settle()
+    assert.equal(persisted().repo, alpha.path, 'the old catalog cannot fulfill the navigation')
+    gate.resolve()
+    await harness.settle()
+    assert.equal(persisted().repo, beta.path)
+    assert.equal(persisted().timelineScope, 'repository')
+    assert.equal(body.querySelector('.vcs-tiled'), null)
+    assert.equal(reads.log.at(-1), beta.path)
+    discovery.repositories = [alpha]
+    navigate(3)
+    await harness.settle()
+    assert.match(textOf(body), /turn\.graphUnavailable/u)
+    assert.equal(persisted().repo, alpha.path)
+    discovery.repositories = [alpha, beta]
+    harness.mouseClick(body.querySelector('[aria-label="top.refresh"]'))
+    await harness.settle()
+    assert.equal(persisted().repo, alpha.path, 'refresh does not replay a consumed recommendation')
+    const secondGate = Promise.withResolvers()
+    waits.repositories = secondGate.promise
+    navigate(4)
+    await harness.settle()
+    if (body.querySelector(`[data-overview-key="repo:${alpha.path}"]`) === null) {
+      harness.mouseClick(body.querySelector('.vcs-repo-button'))
+      await harness.settle()
+    }
+    harness.mouseClick(body.querySelector(`[data-overview-key="repo:${alpha.path}"]`))
+    secondGate.resolve()
+    await harness.settle()
+    assert.equal(persisted().repo, alpha.path, 'a later explicit choice cancels the pending recommendation')
+  })
+})
+
+test('turn graph candidates reuse the overview and can be opened with the keyboard', async () => {
+  const alpha = tileRepo(tileAlpha, [])
+  const beta = tileRepo(tileBeta, [])
+  const other = tileRepo('/fixture/other', [])
+  await withGitPanel([alpha, beta, other], { width: 620 }, async ({ harness, body, persisted, mountPanel, sessionId }) => {
+    const graphs = [{ path: beta.path, name: beta.name, files: 3 }, { path: alpha.path, name: alpha.name, files: 1 }]
+    mountPanel({ focusRequest: 1, turnGraph: { sessionId, revision: 1, graphs } })
+    await harness.settle()
+    const chip = () => body.querySelectorAll('.vcs-state-chip').find(el => textOf(el).startsWith('turn.graphFilter'))
+    const row = path => body.querySelector(`[data-overview-key="repo:${path}"]`)
+    assert.equal(chip().attributes.get('aria-pressed'), 'true')
+    assert.equal(row(other.path), null)
+    assert.deepEqual(body.querySelectorAll('[data-repository]').map(el => el.dataset.repository), [beta.path, alpha.path])
+    assert.equal(persisted().repo, alpha.path, 'presenting candidates does not choose a repository for the user')
+    harness.keyClick(chip())
+    assert.equal(chip().attributes.get('aria-pressed'), 'false')
+    harness.keyClick(chip())
+    const search = body.querySelector('[aria-label="turn.graphSearch"]')
+    search.props.onChange({ target: { value: 'no match' } })
+    assert.equal(row(beta.path), null)
+    mountPanel({ focusRequest: 2, turnGraph: { sessionId, revision: 2, graphs } })
+    await harness.settle()
+    const choice = row(beta.path)
+    assert.equal(harness.document.activeElement, choice, 'a new revision resets the search and focuses the top suggestion')
+    assert.ok(harness.keyDown(choice, 'Enter').prevented)
+    await harness.settle()
+    assert.equal(persisted().repo, beta.path)
+    assert.ok(body.querySelector('.vcs-timeline'))
+    mountPanel({ focusRequest: 3 })
+    await harness.settle()
+    assert.equal(chip(), undefined, 'an ordinary open drops the previous turn filter')
   })
 })
 

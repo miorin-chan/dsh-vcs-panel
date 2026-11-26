@@ -244,6 +244,13 @@ test('normalizeTurnHead and normalizeTurnSummary validate per-turn payloads', ()
   assert.equal(normalizeTurnSummary({ head: null, changed: -1, added: 0, deleted: 0 }), null)
   assert.equal(normalizeTurnSummary({ head: null, changed: 1, added: 2 }), null)
   assert.equal(normalizeTurnSummary(null), null)
+
+  const graph = { path: '/fixture/alpha', name: 'alpha', files: 1 }
+  const summary = { head: null, changed: 2, added: 0, deleted: 0 }
+  assert.deepEqual(normalizeTurnSummary({ ...summary, graphs: [null, graph, graph, { ...graph, path: '/bad', files: -1 }] }), {
+    ...summary, graphs: [graph],
+  })
+  assert.deepEqual(normalizeTurnSummary({ ...summary, graphs: [{ ...graph, files: 3 }] }), summary)
 })
 
 /** Drain pending microtasks of an async store read. */

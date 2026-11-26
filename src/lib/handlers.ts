@@ -46,6 +46,8 @@ import { stageHistoryError } from './index-transaction.js'
 import { EMPTY_STAGE_HISTORY } from './stage-history.js'
 import type { TurnTracker } from './turns.js'
 import { workspaceChangesService } from './turns.js'
+import { recommendTurnRepositories } from './turn-repositories.js'
+import { createReadFlight } from './read-flight.js'
 import { createWatchHub, watchClientId } from './watch.js'
 import type { WatchHub, WriteFinish } from './watch.js'
 import { HISTORY, REFS, REPOSITORIES, WORKING } from './watch-repository.js'
@@ -1274,10 +1276,14 @@ export function createHandlers(ctx: HandlersContext, {
     return runWrite(repo, request, () => runReplay.call(backend, repo.root, { action, id }, request.signal), { stageHistory: true })
   }
 
+  // Several historical banners can mount together. Share their in-flight
+  // catalog read without caching obsolete repository configuration.
+  const turnCatalog = createReadFlight<Awaited<ReturnType<typeof findRepositories>>>()
+
   /** Handle `GET /api/vcs.turn`. */
   async function turn(request: Request): Promise<Response> {
     const query = new URL(request.url).searchParams
-    const { sessionId } = await requireSession(query)
+    const { sessionId, cwd } = await requireSession(query)
     const turnNumber = readNonNegativeInteger(query.get('turn'))
     if (turnNumber === undefined || turnNumber < 1) {
       throw badRequest('turn must be a positive integer.')
@@ -1307,12 +1313,25 @@ export function createHandlers(ctx: HandlersContext, {
       throw notFound('That turn summary is no longer available.')
     }
 
+    let graphs: Awaited<ReturnType<typeof recommendTurnRepositories>> = []
+    if (recordedChanges && recordedChanges.total > 0 && Array.isArray(recordedChanges.files) && recordedChanges.files.length > 0) {
+      try {
+        const listing = await turnCatalog.read(cwd, signal => findRepositories(cwd, signal), request.signal)
+        graphs = await recommendTurnRepositories(ctx, listing.cwd, recordedChanges.files, listing.repositories, request.signal)
+      } catch (error) {
+        if (request.signal.aborted || isAbortError(error)) throw error
+        warn(`turn graph attribution: ${failureCode(error) ?? 'internal'}`)
+      }
+    }
+    const head = graphs.length === 0 || (graphs.length === 1 && graphs[0].path === recordedHead?.root)
+      ? recordedHead?.head ?? null : null
     return json({
       turn: turnNumber,
-      head: recordedHead?.head ?? null,
+      head,
       changed: recordedChanges?.total ?? null,
       added: recordedChanges?.added ?? null,
       deleted: recordedChanges?.deleted ?? null,
+      ...(graphs.length === 0 ? {} : { graphs }),
     })
   }
 

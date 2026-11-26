@@ -269,7 +269,10 @@ export interface PanelPresentation {
   toggleFullscreen: (element: HTMLElement | null) => boolean
 }
 
-/** Standard Sidebar tab props plus the active UI locale, visibility, and a one-shot focus request. */
+type TurnGraphNavigation = import('./turn-summary.js').TurnGraphTarget & { revision: number }
+type TurnGraphs = TurnGraphNavigation['graphs']
+
+/** Standard Sidebar tab props plus locale, visibility, and one-shot navigation requests. */
 export interface VcsViewProps {
   sessionId: string
   t: Translate
@@ -277,6 +280,7 @@ export interface VcsViewProps {
   visible?: boolean
   focusRequest?: number
   presentation?: PanelPresentation
+  turnGraph?: TurnGraphNavigation
 }
 
 /** Where the tiled layout's state traversal stands. */
@@ -303,7 +307,7 @@ type PointerActionRequest = { pointer: PointerView } & (
  * @param props - standard Sidebar tab props plus the active UI locale, visibility, and a one-shot request to land keyboard focus in the panel.
  */
 export function VcsView({
-  sessionId, t, locale, visible = true, focusRequest = 0, presentation,
+  sessionId, t, locale, visible = true, focusRequest = 0, presentation, turnGraph,
 }: VcsViewProps) {
   const [state, setState] = useState<PanelState>(() => loadState(sessionId))
   const stateRef = useRef<PanelState>(state)
@@ -321,6 +325,10 @@ export function VcsView({
   const api = useMemo(() => createApi(sessionId, { clientId }), [clientId, sessionId])
   const [repositories, setRepositories] = useState<RepositoryListingState>({ status: 'loading', list: [], truncated: false, worktreesTruncated: false, error: null })
   const [repositoryManagement, setRepositoryManagement] = useState<RepositoryManagement | null>(null)
+  const [turnGraphs, setTurnGraphs] = useState<TurnGraphs>([])
+  const [turnFilter, setTurnFilter] = useState(false)
+  const [turnGraphUnavailable, setTurnGraphUnavailable] = useState(false)
+  const consumedGraph = useRef<TurnGraphNavigation | null>(null)
   const manageCurrentRepositories = repositoryManagement?.sessionId === sessionId
   const [statuses, setStatuses] = useState<StatusMap>({})
   const [settledStatusKey, setSettledStatusKey] = useState<string | null>(null)
@@ -416,7 +424,8 @@ export function VcsView({
     ? JSON.stringify([state.repo, ...statusPaths]) : statusPathsKey
   const statusScope = JSON.stringify([sessionId, state.repo, manual.working, statusReadPathsKey])
   const statusKey = JSON.stringify([statusScope, background.working])
-  const repositoriesScope = JSON.stringify([sessionId, manual.repositories])
+  const graphRevision = turnGraph?.sessionId === sessionId ? turnGraph.revision : 0
+  const repositoriesScope = JSON.stringify([sessionId, manual.repositories, graphRevision])
   const repositoriesKey = JSON.stringify([repositoriesScope, background.repositories])
   const statusPath = checkedPaths[0] ?? state.repo
   const status = statuses[statusPath] ?? IDLE_STATUS
@@ -1078,15 +1087,23 @@ export function VcsView({
     finishOverviewChoice(keyboard, true)
   }, [finishOverviewChoice, repositories.list, selectNode, switchRepo, update])
 
+  const cancelTurnNavigation = useCallback(() => {
+    if (turnGraph?.sessionId === sessionId) consumedGraph.current = turnGraph
+    setTurnFilter(false)
+    setTurnGraphUnavailable(false)
+  }, [sessionId, turnGraph])
+
   const revealPointer = useCallback((pointer: PointerView, keyboard: boolean) => {
+    cancelTurnNavigation()
     const target = pointerTarget(pointer)
     const node = 'worktree' in target ? worktreeNode(target.worktree) : 'stash' in target ? target.stash : target.commit
     revealInRepository(pointer.repo, node, keyboard, pointer.occupant?.path)
-  }, [revealInRepository])
+  }, [cancelTurnNavigation, revealInRepository])
 
   const revealActivity = useCallback((entry: ActivityEntry, keyboard: boolean) => {
+    cancelTurnNavigation()
     revealInRepository(entry.repo, activityNode(entry), keyboard)
-  }, [revealInRepository])
+  }, [cancelTurnNavigation, revealInRepository])
 
   const selectOverviewRepository = useCallback((path: string, keyboard: boolean) => {
     const entry = repositories.list.find(item => item.path === path)
@@ -1094,8 +1111,9 @@ export function VcsView({
     const fromAll = stateRef.current.timelineScope === 'all'
     if (stateRef.current.repo !== path) switchRepo(entry)
     if (fromAll) update({ timelineScope: 'repository' })
-    finishOverviewChoice(keyboard, fromAll)
-  }, [finishOverviewChoice, repositories.list, switchRepo, update])
+    finishOverviewChoice(keyboard, fromAll || turnFilter)
+    cancelTurnNavigation()
+  }, [cancelTurnNavigation, finishOverviewChoice, repositories.list, switchRepo, turnFilter, update])
 
   const selectAllRepositories = useCallback((keyboard: boolean) => {
     if (repositories.list.length < 2) return
@@ -1103,7 +1121,8 @@ export function VcsView({
     pendingRevealRef.current = null
     if (switching) update({ timelineScope: 'all' })
     finishOverviewChoice(keyboard, switching)
-  }, [finishOverviewChoice, repositories.list.length, update])
+    cancelTurnNavigation()
+  }, [cancelTurnNavigation, finishOverviewChoice, repositories.list.length, update])
 
   /** Both menu and direct actions first bring the pointer's repository into scope. */
   const requestPointerAction = useCallback((request: PointerActionRequest) => {
@@ -1418,6 +1437,10 @@ export function VcsView({
     setSingleView('timeline')
     setNotices(new Map())
     setRepositoryManagement(null)
+    setTurnGraphs([])
+    setTurnFilter(false)
+    setTurnGraphUnavailable(false)
+    consumedGraph.current = null
     overviewFocusRequestRef.current = null
     setOverviewPhase(restored.overview && !restored.tiled ? 'open' : 'closed')
     clearBranches()
@@ -1439,6 +1462,44 @@ export function VcsView({
     pageControllerRef.current?.abort()
     pageControllerRef.current = null
   }, [abortBranches, clearBranches, resetActionsUi, resetDirectories, sessionId])
+
+  const availableTurnGraphs = useMemo(
+    () => turnGraphs.filter(graph => repositories.list.some(entry => entry.path === graph.path)),
+    [turnGraphs, repositories.list],
+  )
+  useEffect(() => {
+    if (graphRevision !== 0) return
+    setTurnGraphs(previous => previous.length === 0 ? previous : [])
+    setTurnFilter(false)
+    setTurnGraphUnavailable(false)
+  }, [graphRevision])
+
+  // A new tab navigation waits for fresh discovery, then consumes that revision
+  // once. A background refresh must not undo any later manual repository choice.
+  useEffect(() => {
+    if (!visible || turnGraph === undefined || graphRevision === 0 || sessionRef.current !== sessionId
+      || (consumedGraph.current?.sessionId === sessionId && consumedGraph.current.revision === graphRevision)
+      || settledRepositoriesKey !== repositoriesKey || repositories.status !== 'ready') return
+    consumedGraph.current = turnGraph
+    const graphs = turnGraph.graphs.filter(graph => repositories.list.some(entry => entry.path === graph.path))
+    setTurnGraphUnavailable(graphs.length < turnGraph.graphs.length)
+    const choose = turnGraph.graphs.length > 1 && graphs.length > 0
+    setTurnGraphs(choose ? turnGraph.graphs : [])
+    setTurnFilter(choose)
+    if (choose) {
+      pendingReadyFocusRef.current = true
+      if (stateRef.current.tiled) setTiled(false, true)
+      else update({ overview: true })
+    } else if (graphs.length === 1) {
+      const entry = repositories.list.find(item => item.path === graphs[0].path)
+      if (stateRef.current.tiled) setTiled(false, false)
+      if (entry !== undefined && stateRef.current.repo !== entry.path) switchRepo(entry)
+      update({ timelineScope: 'repository', ...(overviewNeedsDrawer && { overview: false }) })
+      finishOverviewChoice(false, true)
+      pendingReadyFocusRef.current = true
+    }
+  }, [finishOverviewChoice, graphRevision, overviewNeedsDrawer, repositories, repositoriesKey, sessionId,
+    settledRepositoriesKey, setTiled, switchRepo, turnGraph, update, visible])
 
   const selectedRow = rowOf(rowIndex, state.node)
   const summaryIndex = state.node === null ? undefined : commitIndex.get(state.node)
@@ -1532,21 +1593,23 @@ export function VcsView({
     if (hostFocusPendingRef.current) return
     if (repositories.status === 'loading') return
     if (repositories.status === 'ready' && state.repo === null && repositories.list.length > 0) return
-    if (repositories.status !== 'ready' || state.repo === null || missingTool) {
+    const chooseTurnGraph = turnFilter && availableTurnGraphs.length > 0 && !state.tiled && overviewOpen
+    if (repositories.status !== 'ready' || (!chooseTurnGraph && (state.repo === null || missingTool))) {
       pendingReadyFocusRef.current = false
       return
     }
-    if (overviewDrawer ? overviewPresentation !== 'open' : showTimeline && !timelineSettled) return
+    if ((overviewDrawer || chooseTurnGraph) ? overviewPresentation !== 'open' : showTimeline && !timelineSettled) return
     pendingReadyFocusRef.current = false
     if (hasOpenOverlay) return
     const active = typeof document === 'undefined' ? null : document.activeElement
     if (!canClaimFocusFrom(active, rootRef.current)) return
-    if (overviewDrawer) {
+    if (overviewDrawer || chooseTurnGraph) {
       if (overviewControl.current?.focus() === true) panelOwnsFocusRef.current = true
     } else restoreNavFocus()
   }, [
-    focusRequest, focusTick, hasOpenOverlay, missingTool, overviewDrawer, overviewPresentation, repositories.list.length,
-    repositories.status, restoreNavFocus, showTimeline, state.repo, timelineSettled, visible,
+    availableTurnGraphs.length, focusRequest, focusTick, hasOpenOverlay, missingTool, overviewDrawer, overviewOpen,
+    overviewPresentation, repositories.list.length, repositories.status, restoreNavFocus, showTimeline, state.repo,
+    state.tiled, timelineSettled, graphRevision, turnFilter, visible,
   ])
 
   // Switching back to this window or browser tab finds keyboard navigation ready.
@@ -2342,6 +2405,10 @@ export function VcsView({
             views={overviewViews}
             cwd={overviewCwd}
             currentRepo={allScope ? null : state.repo}
+            turnGraphs={availableTurnGraphs}
+            turnRevision={consumedGraph.current?.revision}
+            turnFilter={turnFilter && availableTurnGraphs.length > 0}
+            onTurnFilter={setTurnFilter}
             allRepositories={repositories.list.length >= 2 ? { active: allScope, count: repositories.list.length } : null}
             onSelectAll={selectAllRepositories}
             selected={selectedPointer}
@@ -2362,6 +2429,13 @@ export function VcsView({
         )}
         {!state.tiled && notice?.domain === 'worktree' ? (
           <p className="vcs-note vcs-worktree-path" role="status">{notice.text}</p>
+        ) : null}
+        {graphRevision > 0 && consumedGraph.current?.revision !== graphRevision
+          && settledRepositoriesKey !== repositoriesKey && repositories.status === 'ready' ? (
+          <p className="vcs-note" role="status">{t('loading.repositories')}</p>
+        ) : null}
+        {(turnGraphUnavailable || (turnFilter && availableTurnGraphs.length < turnGraphs.length)) && repositories.status === 'ready' ? (
+          <p className="vcs-note" role="status">{t('turn.graphUnavailable')}</p>
         ) : null}
         {repositories.truncated ? <p className="vcs-note">{formatPlural(t, 'repositories.truncated', repositories.list.length, locale)}</p> : null}
         {repositories.worktreesTruncated ? <p className="vcs-note">{t('repositories.worktreesTruncated')}</p> : null}

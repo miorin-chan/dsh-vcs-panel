@@ -1,11 +1,10 @@
 /**
  * Per-turn file-change evidence for the turn-tail entry.
  *
- * DSH's changed-files card is fed by the `workspace/changes` recorder, which
- * this bundle asks to carry no file list so the card has nothing to show. The
- * recorder still announces every turn that changed files, and that
- * announcement is this entry's primary evidence: it covers shell commands and
- * subagent work, which the Session log alone cannot attribute to a mutation.
+ * DSH's `workspace/changes` recorder still supplies files to the Host while
+ * this plugin hides the native changed-files card. Its announcement is the
+ * primary evidence, including changes from shell commands and subagents that
+ * the recorder's working-tree snapshot actually captured.
  * Successful file-tool calls are the fallback for a turn whose record the
  * recorder could not finish (for example when git failed).
  *

@@ -43,6 +43,10 @@ export interface OverviewPaneProps {
   views: readonly RepositoryView[]
   cwd: string | null
   currentRepo: string | null
+  turnGraphs?: readonly import('../../lib/turn-repositories.js').TurnRepository[]
+  turnFilter?: boolean
+  turnRevision?: number
+  onTurnFilter?: (active: boolean) => void
   allRepositories: { active: boolean; count: number } | null
   onSelectAll: (keyboard: boolean) => void
   /** The pointer the timeline's selection names. */
@@ -205,6 +209,7 @@ function PendingPointers() {
 export function OverviewPane({
   data, repositories, views, cwd, currentRepo, selected, width, onResize, onSelectRepository, onSelectPointer, onPointerActions,
   allRepositories, onSelectAll, onManageRepositories, onAddUnlisted, writes, notices, onSync, control, t, locale,
+  turnGraphs = [], turnFilter = false, turnRevision, onTurnFilter,
 }: OverviewPaneProps) {
   const titleRef = useRef<HTMLDivElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
@@ -217,6 +222,9 @@ export function OverviewPane({
   const [quietOpen, setQuietOpen] = useState(false)
   const [unlistedOpen, setUnlistedOpen] = useState(false)
   const [cursor, setCursor] = useState<string | null>(null)
+  useLayoutEffect(() => {
+    if (turnFilter) { setQuery(''); setCursor(null); setFilter(null) }
+  }, [turnFilter, turnRevision])
   const capabilities = useMemo(
     () => new Map<string, RepositoryCapabilities>(repositories.map(entry => [entry.path, entry.capabilities])),
     [repositories],
@@ -264,7 +272,18 @@ export function OverviewPane({
     repositoryStop(view.path, true),
     ...shownPointers(view).map(pointer => ({ key: pointer.id, pointer })),
   ]
-  const rows = [
+  const turnCounts = new Map(turnGraphs.map(graph => [graph.path, graph.files]))
+  const turnRows = turnFilter ? turnGraphs.flatMap(graph => {
+    const entry = repositories.find(item => item.path === graph.path)
+    if (entry === undefined || (query !== '' && !relativeTo(entry.path, cwd).toLocaleLowerCase().includes(query.toLocaleLowerCase())
+      && !entry.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()))) return []
+    const view = registered.find(item => item.path === graph.path)
+    const error = failed.find(item => item.entry.path === graph.path)?.error
+    const summary: RepositorySummary = view !== undefined ? { status: 'ready', view }
+      : error !== undefined ? { status: 'failed', error } : { status: 'pending' }
+    return [{ entry, summary }]
+  }) : []
+  const rows = turnFilter ? turnRows.map(({ entry }) => repositoryStop(entry.path)) : [
     ...(allRepositories === null ? [] : [ALL_ROW]),
     ...loud.flatMap(stopsWithPointers),
     ...failed.map(({ entry }) => repositoryStop(entry.path)),
@@ -273,7 +292,8 @@ export function OverviewPane({
     ...(unlistedOpen && !narrowed ? unlisted.flatMap(stopsWithPointers) : []),
   ]
   const hasRow = (key: string | null) => rows.some(row => row.key === key)
-  const defaultKey = hasRow(currentKey) ? currentKey : hasRow(selected) ? selected : rows[0]?.key ?? null
+  const defaultKey = turnFilter ? rows[0]?.key ?? null
+    : hasRow(currentKey) ? currentKey : hasRow(selected) ? selected : rows[0]?.key ?? null
   const activeKey = hasRow(cursor) ? cursor : defaultKey
 
   const focusRow = (key: string | null) => {
@@ -293,7 +313,7 @@ export function OverviewPane({
   useImperativeHandle(control, () => ({
     focus: () => focusRow(activeKey),
     focusCurrent: () => {
-      if (currentKey !== null && !hasRow(currentKey) && narrowed) {
+      if (!turnFilter && currentKey !== null && !hasRow(currentKey) && narrowed) {
         // A quick close and reopen can reuse a pane that still has a filter.
         focusAfterFilterRef.current = true
         setFilter(null)
@@ -413,6 +433,15 @@ export function OverviewPane({
     ? <span className="vcs-overview-tag" data-current="">{t('overview.current')}</span>
     : null
 
+  const turnTag = (path: string) => {
+    const count = turnCounts.get(path)
+    return count === undefined ? null : (
+      <span className="vcs-overview-tag" title={t('turn.graphFilter')}>
+        {formatPlural(t, 'turn.filesChanged', count, locale)}
+      </span>
+    )
+  }
+
   const chooseRepository = (path: string) => {
     focusRow(repoKey(path))
     onSelectRepository(path, false)
@@ -487,7 +516,7 @@ export function OverviewPane({
     const relativePath = view?.relativePath ?? relativeTo(path, cwd)
     const slash = relativePath.lastIndexOf('/')
     const directory = view?.directory ?? relativePath.slice(0, slash + 1)
-    const open = view !== null && !collapsed.has(path)
+    const open = !turnFilter && view !== null && !collapsed.has(path)
     const fetch = view === null ? null : fetchNote(view, t, locale)
     const error = summary.status === 'failed' ? errorMessage(t, summary.error) : null
     const key = repoKey(path)
@@ -496,17 +525,18 @@ export function OverviewPane({
         key={key}
         className="vcs-overview-repo"
         role="treeitem"
-        aria-expanded={summary.status === 'failed' ? undefined : open}
+        aria-expanded={turnFilter || summary.status === 'failed' ? undefined : open}
         aria-level={1}
         aria-current={path === currentRepo || undefined}
         tabIndex={activeKey === key ? 0 : -1}
         data-overview-key={key}
         data-repository={path}
+        data-turn-choice={turnFilter || undefined}
         data-pending={summary.status === 'pending' || undefined}
         data-failed={summary.status === 'failed' || undefined}
         onClick={onRowClick(path)}
       >
-        <button
+        {turnFilter ? null : <button
           type="button"
           className="vcs-overview-twist"
           tabIndex={-1}
@@ -518,14 +548,15 @@ export function OverviewPane({
           }}
         >
           <Chevron open={open} />
-        </button>
+        </button>}
         <span className="vcs-overview-repo-name" title={relativePath}>
           {directory === '' ? null : <span className="vcs-overview-dir">{directory}</span>}
           {relativePath === '.' ? name : relativePath.slice(slash + 1)}
         </span>
         <span className="vcs-overview-repo-meta">
           {currentTag(path === currentRepo)}
-          {view !== null && fetch !== null ? (
+          {turnTag(path)}
+          {!turnFilter && view !== null && fetch !== null ? (
             <>
               {view.remotes.length > 1 ? <span className="vcs-overview-tag">{formatPlural(t, 'overview.remotes', view.remotes.length, locale)}</span> : null}
               {view.checkouts.length > 1 ? <span className="vcs-overview-tag" title={formatPlural(t, 'overview.checkouts', view.checkouts.length, locale)}>⌂{view.checkouts.length}</span> : null}
@@ -533,19 +564,18 @@ export function OverviewPane({
               <span data-stale={fetch.stale || undefined}>{fetch.text}</span>
               {syncControl(view)}
             </>
-          ) : error === null ? (
-            <span className="vcs-skeleton" aria-hidden="true"><Bar width="50px" /></span>
-          ) : <span className="vcs-overview-error" title={error}>{error}</span>}
+          ) : error !== null ? <span className="vcs-overview-error" title={error}>{error}</span>
+            : turnFilter ? null : <span className="vcs-skeleton" aria-hidden="true"><Bar width="50px" /></span>}
         </span>
-        {view !== null && view.drift.length > 0 ? (
+        {!turnFilter && view !== null && view.drift.length > 0 ? (
           <span className="vcs-overview-drift">
             {view.drift.map(line => (
               <span key={line.name}>{t('overview.drift', { name: view.baselines[0]?.name ?? '', base: line.name, ahead: String(line.ahead), behind: String(line.behind) })}</span>
             ))}
           </span>
         ) : null}
-        {view !== null && !view.supported ? <span className="vcs-overview-drift">{t('overview.unsupported')}</span> : null}
-        {view === null ? null : syncNote(path)}
+        {!turnFilter && view !== null && !view.supported ? <span className="vcs-overview-drift">{t('overview.unsupported')}</span> : null}
+        {turnFilter || view === null ? null : syncNote(path)}
       </div>
     )
   }
@@ -609,6 +639,7 @@ export function OverviewPane({
         <span className="vcs-overview-quiet-name">
           <span className="vcs-overview-repo-name">{view.relativePath === '.' ? view.name : view.relativePath.split('/').at(-1)}</span>
           {currentTag(view.path === currentRepo)}
+          {turnTag(view.path)}
         </span>
         <span className="vcs-overview-facts">{view.remotes.length === 0 ? t('overview.noRemote') : `${main?.branch ?? main?.head?.slice(0, 7) ?? ''} ≡ ${view.remotes[0]}`}</span>
         {syncControl(view)}
@@ -650,8 +681,8 @@ export function OverviewPane({
             ref={searchRef}
             type="search"
             value={query}
-            placeholder={t('overview.search')}
-            aria-label={t('overview.searchLabel')}
+            placeholder={t(turnFilter ? 'turn.graphSearch' : 'overview.search')}
+            aria-label={t(turnFilter ? 'turn.graphSearch' : 'overview.searchLabel')}
             autoComplete="off"
             onChange={event => { setQuery(event.target.value.trim()) }}
             onKeyDown={event => {
@@ -670,15 +701,24 @@ export function OverviewPane({
           <kbd aria-hidden="true">/</kbd>
         </label>
         <div className="vcs-overview-chips" role="group" aria-label={t('overview.filters')}>
+          {turnGraphs.length === 0 ? null : (
+            <button type="button" className="vcs-state-chip" data-state="turn" aria-pressed={turnFilter}
+              onClick={() => { setQuery(''); onTurnFilter?.(!turnFilter) }}>
+              {t('turn.graphFilter')} <b>{turnGraphs.length}</b>
+            </button>
+          )}
           {FILTERS.map(id => (
             <button
               key={id}
               type="button"
               className="vcs-state-chip"
               data-state={id}
-              aria-pressed={filter === id}
+              aria-pressed={!turnFilter && filter === id}
               data-zero={counts[id] === 0 || undefined}
-              onClick={() => { setFilter(previous => previous === id ? null : id) }}
+              onClick={() => {
+                if (turnFilter) onTurnFilter?.(false)
+                setFilter(previous => !turnFilter && previous === id ? null : id)
+              }}
             >
               <span className="vcs-state-dot" aria-hidden="true" />
               {t(FILTER_KEYS[id])}
@@ -699,7 +739,10 @@ export function OverviewPane({
         }}
       >
         {/* Keep repository keys at the same level as they move between sections. */}
-        {[
+        {turnFilter ? (
+          turnRows.length === 0 ? <p className="vcs-note">{t('repositoryConfig.noMatches')}</p>
+            : turnRows.map(({ entry, summary }) => repositoryRow(entry, summary))
+        ) : [
           allRow,
           data.error === null ? null : <p key="read-error" className="vcs-note" role="alert">{errorMessage(t, data.error)}</p>,
           loud.length + failed.length > 0 ? heading('overview.attention', loud.length + failed.length) : null,

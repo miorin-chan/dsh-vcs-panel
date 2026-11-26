@@ -97,7 +97,8 @@ test('apply registers the dictionaries, stylesheet, Sidebar page, Turn fold, and
     const params = new URL(url, 'http://127.0.0.1').searchParams
     const turnNumber = Number(params.get('turn'))
     const payloads = {
-      1: { turn: 1, head: { kind: 'branch', name: 'feat/turn-1' }, changed: 2, added: 1234, deleted: 0 },
+      1: { turn: 1, head: { kind: 'branch', name: 'feat/turn-1' }, changed: 2, added: 1234, deleted: 0,
+        graphs: [{ path: '/workspace/alpha', name: 'alpha', files: 2 }] },
       2: { turn: 2, head: { kind: 'workingCopy', changeId: 'qpvuntsm9999' }, changed: 1, added: 5, deleted: 2 },
       3: { turn: 3, head: { kind: 'branch', name: 'main' }, changed: null, added: null, deleted: null },
       4: { turn: 4, head: { kind: 'branch', name: 'main' }, changed: 0, added: 0, deleted: 0 },
@@ -134,10 +135,10 @@ test('apply registers the dictionaries, stylesheet, Sidebar page, Turn fold, and
         },
       },
       sidebarRight: {
-        mounted: { getSnapshot: () => 's1' },
+        mounted: { getSnapshot: () => 'session-1' },
         isExpanded: () => false,
         active: () => undefined,
-        openTab(kind) { sidebarOpened.push(kind) },
+        openTab(kind, options) { sidebarOpened.push(options === undefined ? kind : [kind, options]) },
       },
       sidebarRightTabs: {
         register(definition) {
@@ -270,6 +271,7 @@ test('apply registers the dictionaries, stylesheet, Sidebar page, Turn fold, and
       t: (key, vars) => {
         if (vars === undefined) return `vcs:${key}`
         if ('count' in vars) return `vcs:${key}:${vars.count}`
+        if ('name' in vars) return `vcs:${key}:${vars.name}`
         return `vcs:${key}:${vars.added}:${vars.deleted}`
       },
     }
@@ -303,8 +305,18 @@ test('apply registers the dictionaries, stylesheet, Sidebar page, Turn fold, and
     ])
 
     const withCounts = renderBanner(props).props.children
-    assert.equal(withCounts.props.title, 'vcs:turn.openHint')
-    assert.equal(withCounts.props['aria-label'], 'feat/turn-1 · vcs:turn.filesChanged.other:2 · vcs:turn.openSummary:1,234:0')
+    assert.equal(withCounts.props.title, 'vcs:turn.openGraph:alpha')
+    assert.equal(withCounts.props['aria-label'], 'feat/turn-1 · vcs:turn.filesChanged.other:2 · vcs:turn.openGraph:alpha (+1,234 −0)')
+    withCounts.props.onClick()
+    const graph = { path: '/workspace/alpha', name: 'alpha', files: 2 }
+    assert.deepEqual(sidebarOpened[1], ['vcs', { params: { sessionId: 'session-1', graphs: [graph] } }])
+    renderBanner({ ...props, sessionId: 'background' }).props.children.props.onClick()
+    assert.equal(sidebarOpened.length, 2, 'a retained transcript cannot navigate the visible session')
+    const navigated = body.component({
+      sessionId: 'session-1',
+      useTabInfo: () => ({ tab: { visible: true, navigation: { revision: 6, params: { sessionId: 'session-1', graphs: [graph] } } } }),
+    })
+    assert.deepEqual(navigated.props.children.props.turnGraph, { sessionId: 'session-1', revision: 6, graphs: [graph] })
     const [, right] = withCounts.props.children
     const [stat, popout] = right.props.children
     assert.equal(stat.props.className, 'vcs-turn-stat')
@@ -314,6 +326,15 @@ test('apply registers the dictionaries, stylesheet, Sidebar page, Turn fold, and
     assert.equal(deletedSpan.props.className, 'vcs-del')
     assert.deepEqual(deletedSpan.props.children, ['−', '0'])
     assert.equal(popout.type().props.className, 'vcs-turn-popout')
+
+    const turnTailComponent = tail.component(props).type(props).type
+    const partial = turnTailComponent({ ...props, summary: {
+      head: null, changed: 4, added: 3, deleted: 1,
+      graphs: [graph, { path: '/workspace/beta', name: 'beta', files: 1 }],
+    }, onOpen() {} })
+    const [chooseButton, coverage] = partial.props.children.props.children
+    assert.match(chooseButton.props['aria-label'], /vcs:all.count.other:2.*vcs:turn.chooseGraph/u)
+    assert.equal(coverage.props.children, 'vcs:turn.graphPartial')
 
     const jjBanner = renderBanner({ ...props, turn: makeTurn(2, 24) }).props.children
     assert.equal(jjBanner.props['aria-label'], '@ qpvuntsm · vcs:turn.filesChanged.other:1 · vcs:turn.openSummary:5:2')

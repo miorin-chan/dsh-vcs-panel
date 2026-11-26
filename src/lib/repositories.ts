@@ -171,7 +171,7 @@ function backendPreferences(
  * @param signal - cancellation.
  * @returns every present backend, in precedence order.
  */
-async function markersAt(ctx: Context, directory: string, signal: AbortSignal): Promise<string[]> {
+export async function markersAt(ctx: Context, directory: string, signal: AbortSignal): Promise<string[]> {
   const available: string[] = []
   for (const marker of VCS_MARKERS) {
     try {

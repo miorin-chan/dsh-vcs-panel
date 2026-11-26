@@ -28,12 +28,19 @@ import type { SessionListSnapshot } from './shortcuts.js'
 import { createTurnChangesDefinition, turnChangedFiles, turnChanges } from './turn.js'
 import type { TrackedTurn } from './turn.js'
 import { createTurnSummaryStore } from './turn-summary.js'
+import type { TurnGraphTarget } from './turn-summary.js'
 import { GitBranchIcon, TurnTailChanges } from './TurnTail.jsx'
 import { VcsView } from './VcsView.jsx'
 import type { PanelPresentation } from './VcsView.jsx'
 import { sendPanelCommand } from './commands.js'
 import type { PanelCommand } from './commands.js'
 import { ViewErrorBoundary } from './ViewErrorBoundary.jsx'
+
+declare module '@deepseek-ai/dsh-client-ui-sidebar-right/client' {
+  interface SidebarRightTabParamsMap {
+    vcs: TurnGraphTarget
+  }
+}
 
 /** Locale namespace owned by this plugin. */
 const NS = 'vcs'
@@ -318,6 +325,9 @@ export function apply(ctx: Context): void {
       },
     }), [floating, fullscreen])
     const navRevision = tab.navigation?.revision ?? 0
+    const graphTarget = tab.navigation?.params
+    const turnGraph = useMemo(() => graphTarget?.sessionId === props.sessionId && Array.isArray(graphTarget.graphs) && navRevision > 0
+      ? { ...graphTarget, revision: navRevision } : undefined, [graphTarget, navRevision, props.sessionId])
     const [focusRequest, setFocusRequest] = useState(tab.visible && navRevision > 0 ? 1 : 0)
     const wasVisibleRef = useRef(tab.visible)
     const lastRevisionRef = useRef(tab.visible ? navRevision : 0)
@@ -333,7 +343,7 @@ export function apply(ctx: Context): void {
 
     return (
       <ViewErrorBoundary key={props.sessionId} t={t}>
-        <VcsView {...props} locale={locale} visible={tab.visible} focusRequest={focusRequest} presentation={presentation} />
+        <VcsView {...props} locale={locale} visible={tab.visible} focusRequest={focusRequest} presentation={presentation} turnGraph={turnGraph} />
       </ViewErrorBoundary>
     )
   }
@@ -411,7 +421,15 @@ export function apply(ctx: Context): void {
           summary={summary}
           locale={locale}
           t={props.t}
-          onOpen={() => { ctx.sidebarRight.openTab(TAB_KIND) }}
+          onOpen={() => {
+            // A transcript can be retained in a different pane. Do not send its
+            // navigation to the session that happens to be on screen.
+            if (ctx.sidebarRight.mounted.getSnapshot() !== props.sessionId) return
+            const graphs = summary?.graphs
+            ctx.sidebarRight.openTab(TAB_KIND, graphs === undefined ? undefined : {
+              params: { sessionId: props.sessionId, graphs },
+            })
+          }}
         />
       )
     }

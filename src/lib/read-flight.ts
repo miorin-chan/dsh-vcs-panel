@@ -1,6 +1,6 @@
 import { abortError } from './errors.js'
 
-/** One in-flight status read for one root, shared by its waiters. */
+/** One in-flight read for one root, shared by its waiters. */
 interface Flight<T> {
   /** Aborts the read when every waiter has gone away. */
   controller: AbortController
@@ -12,8 +12,8 @@ interface Flight<T> {
   result: Promise<T>
 }
 
-/** Coalesced status reads keyed by repository root. */
-export interface StatusReader<T> {
+/** Coalesced reads keyed by a working-directory or repository root. */
+export interface ReadFlight<T> {
   /**
    * Read one root's status, sharing an in-flight read.
    * @param root - repository root.
@@ -26,8 +26,8 @@ export interface StatusReader<T> {
   invalidate(root: string): void
 }
 
-/** One Git status read may run per root. Requests and writes have separate lifetimes. */
-export function createStatusReader<T>(): StatusReader<T> {
+/** One inner read per root, with independently cancellable callers. */
+export function createReadFlight<T>(): ReadFlight<T> {
   const byRoot = new Map<string, Flight<T>>()
 
   function wait(flight: Flight<T>, signal: AbortSignal): Promise<T> {

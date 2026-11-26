@@ -1,14 +1,14 @@
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { isAbsolute, resolve } from 'node:path'
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 
 import { canonicalDirectory } from './contain.js'
 import { VcsError } from './errors.js'
-import { sameRepoPath } from './paths.js'
+import { isPathWithin, sameRepoPath } from './paths.js'
 import { resolveSessionRepository } from './repositories.js'
-import type { StatusReader } from './status-flight.js'
-import { createStatusReader } from './status-flight.js'
+import type { ReadFlight } from './read-flight.js'
+import { createReadFlight } from './read-flight.js'
 import type { WorkspaceChangeSummary } from './turns.js'
 import { workspaceChangesService } from './turns.js'
 import type { VcsStatus } from './vcs/index.js'
@@ -133,7 +133,7 @@ export interface WatchHub {
   /** Tell one session's streams that its discovery configuration changed. */
   repositoryConfigChanged(sessionId: string | null, origin: string | undefined): void
   /** The coalesced Git status reader routes read through. */
-  gitStatus: StatusReader<VcsStatus>
+  gitStatus: ReadFlight<VcsStatus>
 }
 
 /** The shared state a hub is created with. */
@@ -147,12 +147,6 @@ export interface WatchHubOptions {
 /** The watched-client id a request may carry; it names one browser tab. */
 export function watchClientId(value: unknown): string | undefined {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/u.test(value) ? value : undefined
-}
-
-/** Whether `path` is strictly below `root`. */
-function within(root: string, path: string): boolean {
-  const name = relative(root, path)
-  return name !== '' && name !== '..' && !name.startsWith(`..${sep}`) && !isAbsolute(name)
 }
 
 /** The absolute path one tool call named, from its raw arguments. */
@@ -186,7 +180,7 @@ export function createWatchHub(
   { signal, files = createFileWatches() }: WatchHubOptions = {},
 ): WatchHub {
   const streams = new Set<WatchStream>()
-  const gitStatus = createStatusReader<VcsStatus>()
+  const gitStatus = createReadFlight<VcsStatus>()
   const writes = new Set<WriteInFlight>()
   const sessions = new Map<string, SessionState>()
   const lifetime = new AbortController()
@@ -253,12 +247,12 @@ export function createWatchHub(
 
   function relevant(turn: TurnObservation, stream: WatchStream, root: string): boolean {
     const summary = turn.summary
-    const coversCwd = sameRepoPath(root, stream.cwd) || within(root, stream.cwd)
+    const coversCwd = sameRepoPath(root, stream.cwd) || isPathWithin(root, stream.cwd)
     if (summary != null) {
-      return (summary.files ?? []).some(file => typeof file.path === 'string' && within(root, resolve(summary.cwd ?? stream.cwd, file.path)))
+      return (summary.files ?? []).some(file => typeof file.path === 'string' && isPathWithin(root, resolve(summary.cwd ?? stream.cwd, file.path)))
         || summary.total > (summary.files?.length ?? 0) && coversCwd
     }
-    return [...turn.paths].some(path => within(root, path))
+    return [...turn.paths].some(path => isPathWithin(root, path))
       || coversCwd && (turn.unknown || turn.workspaceChanged && turn.paths.size === 0)
   }
 

@@ -3330,6 +3330,7 @@ test('vcs.turn records each turn\'s active branch across switches, validates inp
       changed: 1,
       added: 4,
       deleted: 1,
+      graphs: [{ path: realpathSync(repoDir), name: 'turn-branches', files: 1 }],
     })
 
     const t2 = await call(turnHandlers.turn, route('/api/vcs.turn', { sessionId: 's-turns', turn: 2, seq: 22 }))
@@ -3396,6 +3397,46 @@ test('vcs.turn records each turn\'s active branch across switches, validates inp
     detach()
     rmSync(repoDir, { recursive: true, force: true })
   }
+})
+
+test('vcs.turn ranks recorded files by openable graphs and groups verified worktrees', async t => {
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'vcs-turn-graphs-')))
+  t.after(() => { rmSync(scratch, { recursive: true, force: true }) })
+  const cwd = join(scratch, 'workspace')
+  const alpha = join(cwd, 'alpha')
+  const nested = join(alpha, 'nested')
+  const unlisted = join(alpha, 'unlisted')
+  const beta = join(cwd, 'beta')
+  const betaTree = join(scratch, 'beta-tree')
+  const foreign = join(scratch, 'foreign')
+  for (const path of [cwd, alpha, nested, unlisted, beta, foreign]) initRepo(path)
+  git(beta, ['commit', '--allow-empty', '-qm', 'base'])
+  git(beta, ['worktree', 'add', '-qb', 'sibling', betaTree])
+  mkdirSync(join(cwd, '.dsh'))
+  writeFileSync(join(cwd, '.dsh', 'vcs-panel.json'), JSON.stringify({ repositories: ['alpha/nested'] }))
+  writeFileSync(join(cwd, 'unrelated-dirty.txt'), 'already dirty')
+  const entries = ['beta/a', join(betaTree, 'deleted/folder/file'), 'alpha/nested/a', 'alpha/nested/b',
+    'alpha/nested/a', 'alpha/own', 'alpha/unlisted/other', join(foreign, 'file'), '../foreign/file']
+  const summary = { turn: 2, cwd, files: entries.map(path => ({ path })), total: 12, added: 6, deleted: 5 }
+  const host = {
+    fs: fakeFs, subprocess: fakeSubprocess,
+    sessions: { get: id => ({ id, header: { cwd: id === 'right' ? cwd : foreign } }) },
+    get: key => key === 'workspaceChanges' ? { summary: id => id === 'right' ? summary : undefined } : undefined,
+  }
+  const handlers = createHandlers(host, { turnTracker: { read: async () => ({ root: cwd, head: { kind: 'branch', name: 'main' } }) } })
+  const request = (sessionId, turn = 2) => call(handlers.turn, route('/api/vcs.turn', { sessionId, turn, seq: 7 }))
+  const answer = await request('right')
+  assert.equal(answer.status, 200)
+  assert.deepEqual(answer.body.graphs, [
+    { path: nested, name: 'nested', files: 2 },
+    { path: beta, name: 'beta', files: 2 },
+    { path: alpha, name: 'alpha', files: 1 },
+  ])
+  assert.equal(answer.body.head, null, 'the enclosing branch does not describe the suggested graphs')
+  assert.equal(answer.body.changed, 12, 'truncation and files without an openable graph do not change the summary')
+  assert.doesNotMatch(JSON.stringify(answer.body), /unrelated-dirty|beta-tree|foreign|unlisted/)
+  assert.equal((await request('wrong')).body.graphs, undefined)
+  assert.equal((await request('right', 1)).status, 400)
 })
 
 test('vcs.turn records Jujutsu working-copy change ids without snapshotting', { skip: !HAS_JJ }, async () => {

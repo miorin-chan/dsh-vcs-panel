@@ -8,7 +8,13 @@
  * asked to resolve it.
  */
 
-import { resolve as resolvePath } from 'node:path'
+import { isAbsolute, relative, resolve as resolvePath, sep } from 'node:path'
+
+/** Whether an absolute path is strictly below a directory, at a component boundary. */
+export function isPathWithin(root: string, path: string): boolean {
+  const local = relative(root, path)
+  return local !== '' && local !== '..' && !local.startsWith(`..${sep}`) && !isAbsolute(local)
+}
 
 /** The empty tree every SHA-1 repository shares; a root commit diffs against it. */
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'

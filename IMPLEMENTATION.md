@@ -30,7 +30,7 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `GET /api/vcs.commit` | `sessionId`、`repo`、`worktree?`、`sha` | `commit`（`CommitDetail`，不含 patch；`refs` 含 `current`、分离 `head` 及 `remote`/`branch` 标注）、`truncated` |
 | `GET /api/vcs.stash` | `sessionId`、`repo`、`sha` | `{ stash: StashDetail, truncated }`（仅 `capabilities.stashOps` 为真时可用） |
 | `GET /api/vcs.stash-check` | `sessionId`、`repo`、`sha`、`mode`（`apply` 或 `branch`）、`index`（`0` 或 `1`） | `StashCheck`（同上） |
-| `GET /api/vcs.turn` | `sessionId`、`turn`、`seq?` | `turn`、`head`（`TurnHead \| null`）、`changed`、`added`、`deleted` |
+| `GET /api/vcs.turn` | `sessionId`、`turn`、`seq?` | `turn`、`head`（`TurnHead \| null`）、`changed`、`added`、`deleted`、`graphs?`（`{ path, name, files }[]`） |
 | `POST /api/vcs.sync` | JSON 请求体 `{ sessionId, repo }` | `upstream`、`pulled`、`pushed`（仅 `capabilities.sync` 为真时可用） |
 | `POST /api/vcs.switch` | JSON 请求体 `{ sessionId, repo, branch }` | `branch`（仅 `capabilities.branchSwitch` 为真时可用） |
 | `POST /api/vcs.worktree` | JSON `{ sessionId, repo, action: 'create', path, mode?, name?, revision? }` 或 `{ sessionId, repo, action: 'remove' \| 'forget', worktree, expectedName?, expectedBranch?, expectedHead? }` | `{ path }`（分别由 `capabilities.worktreeCreate`、`worktreeRemove`、`worktreeForget` 控制） |
@@ -302,9 +302,15 @@ Git 工作树预览保留 Git 的读取能力。
   `agent/turn-stopping`、`tools/pre-execute` 与 `session/disposed`，
   在有工具执行或 `workspace/changes` 的轮次结束时串行读取外围仓库的 `head`（下一轮工具执行前等待上一轮完成，
   防止跨轮切分支串台）。
-  `vcs.turn` 通过 `ctx.get('workspaceChanges')` 可选读取宿主的每轮 `{ total, added, deleted }`
-  （校验 `turn` 与 `seq` 归属一致，剔除宿主路径与文件明细），并与该轮 `head` 合并返回；
-  两者均不存在（如 Host 重启后的历史轮次）时返回 `404 not-found`。
+  `vcs.turn` 通过 `ctx.get('workspaceChanges')` 读取会话和轮次对应的记录，校验 `turn` 与 `seq` 的归属并返回统计。
+  改动文件在 Host 侧匹配面板发现的最深仓库，已验证的工作树映射到共享提交图，未登记的嵌套仓库不归给父仓库。
+  路由只回传已知仓库身份与命中文件数，不返回变更文件路径。
+  最多处理 500 条记录，按命中文件数排序，同数沿用发现顺序。
+  同目录同时加载多条横幅时共用进行中的仓库发现请求。
+  头指针与推荐不相符时不显示该指针。
+  宿主只快照包围会话的 Git 工作树，其他文件是否可归属取决于宿主实际捕获的改动。
+  缺失或截断的记录不从当前工作区状态推算。
+  摘要与头指针均缺失（如 Host 重启）时仍返回 `404 not-found`。
 
 ### Git 贮藏
 
@@ -679,7 +685,9 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
   从 `turn-summary.js` 读取一次 `/api/vcs.turn`：已解析结果在客户端按 LRU 缓存，
   切回 Chat 直接同步渲染；`404`/`400`/`409` 记为 `missing` 不再重复请求（回退展示“打开版本管理”）；
   净改动文件数为 0 的轮次隐藏横幅；连接重置（`connection/reset`）时仅重拉未就绪条目。
-  点击横幅调用 `ctx.sidebarRight.openTab('vcs')`。
+  点击横幅通过 `ctx.sidebarRight.openTab('vcs', { params })` 把该会话的候选发给页签。
+  面板只消费一次当前导航 revision，先重新发现仓库，再进入单仓库时间线或打开多仓库全景筛选。
+  候选筛选不写入会话存储，显式仓库导航可取消正在等待发现的推荐。
 - **入口与键盘焦点**：轮末横幅与全局快捷键打开同一个右侧栏页签。
   快捷键 `vcs.view.toggle` 在可选的 `['shortcuts', 'sessions']` 作用域注册（默认键位冲突时回退为空绑定），
   用 `mainSessionId` 与 `sidebar.mounted` 确认控制器作用在屏幕上的会话；

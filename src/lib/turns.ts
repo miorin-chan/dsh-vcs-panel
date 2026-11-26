@@ -90,6 +90,7 @@ interface AgentLifecycleEvents {
 /** One recorded turn head: the backend's own read, passed through unread. */
 export interface TurnRecord {
   head: VcsHead | null
+  root: string | null
 }
 
 /** Per-turn state before the first `turn/start`. */
@@ -229,14 +230,12 @@ export function createTurnTracker(
   }
 
   /** Read the enclosing repository's head for one working directory. */
-  async function readEnclosingHead(cwd: string, readSignal: AbortSignal): Promise<VcsHead | null> {
+  async function readEnclosingHead(cwd: string, readSignal: AbortSignal): Promise<TurnRecord> {
     const enclosing = await findEnclosingRepository(ctx, cwd, readSignal)
-    if (enclosing === null) return null
-    const vcs = enclosing.vcs
-    if (vcs === undefined) return null
-    const backend = backends.get(vcs)
-    if (backend === undefined || typeof backend.head !== 'function') return null
-    return await backend.head(enclosing.path, readSignal)
+    const backend = enclosing?.vcs === undefined ? undefined : backends.get(enclosing.vcs)
+    return enclosing === null || typeof backend?.head !== 'function'
+      ? { head: null, root: null }
+      : { head: await backend.head(enclosing.path, readSignal), root: enclosing.path }
   }
 
   /** Create or look up the recorder for one live Session with a `cwd`. */
@@ -256,9 +255,9 @@ export function createTurnTracker(
     let chain: Promise<void> = Promise.resolve()
     let state = freshTurn(0)
 
-    const storeHead = (turn: number, head: VcsHead | null) => {
+    const storeHead = (turn: number, record: TurnRecord) => {
       records.delete(turn)
-      records.set(turn, { head })
+      records.set(turn, record)
       while (records.size > MAX_TURNS_PER_SESSION) {
         const oldest = records.keys().next().value
         if (oldest === undefined) break

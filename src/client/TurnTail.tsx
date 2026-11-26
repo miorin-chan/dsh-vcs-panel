@@ -131,38 +131,46 @@ export function TurnTailChanges({ turn, summary = null, locale, t, onOpen }: Tur
   const counts = countsOf(summary)
   if (counts !== null && counts.changed <= 0) return null
 
-  const hint = t('turn.openHint')
+  const graphs = summary?.graphs ?? []
+  const graph = graphs.length === 1 ? graphs[0] : undefined
+  const repoCount = graphs.length > 1 ? formatPlural(t, 'all.count', graphs.length, locale) : ''
+  const hint = graph === undefined
+    ? t(graphs.length === 0 ? 'turn.openHint' : 'turn.chooseGraph')
+    : t('turn.openGraph', { name: graph.name })
+  const graphLabel = graph !== undefined ? hint : repoCount === '' ? '' : `${repoCount} · ${hint}`
+  const partial = counts !== null && graphs.length > 0 && graphs.reduce((n, item) => n + item.files, 0) < counts.changed
+  const coverage = partial ? t('turn.graphPartial') : ''
   const head = summary === null ? { node: null, text: '' } : renderHead(summary.head, t)
   const leftText = counts === null ? hint : formatPlural(t, 'turn.filesChanged', counts.changed, locale)
   const added = counts === null ? null : formatCount(counts.added, locale)
   const deleted = counts === null ? null : formatCount(counts.deleted, locale)
-  const openLabel = counts === null ? hint : t('turn.openSummary', { added, deleted })
-  const label = counts === null
-    ? [head.text, hint].filter(part => part !== '').join(' · ')
-    : [head.text, leftText, openLabel].filter(part => part !== '').join(' · ')
-  return (
-    <div className="vcs-turn-tail">
-      <button type="button" className="vcs-turn-banner" title={hint} aria-label={label} onClick={onOpen}>
-        <span className="vcs-turn-left" aria-hidden="true">
-          <GitBranchIcon className="vcs-turn-glyph" />
-          {head.node === null ? null : (
-            <>
-              {head.node}
-              <span className="vcs-turn-sep">·</span>
-            </>
-          )}
-          <span className="vcs-turn-files">{leftText}</span>
-        </span>
-        <span className="vcs-turn-right" aria-hidden="true">
-          {counts === null ? null : (
-            <span className="vcs-turn-stat">
-              <span className="vcs-add">+{added}</span>
-              <span className="vcs-del">−{deleted}</span>
-            </span>
-          )}
-          <PopoutIcon />
-        </span>
-      </button>
-    </div>
+  const openLabel = counts === null ? hint
+    : graphs.length === 0 ? t('turn.openSummary', { added, deleted }) : `${hint} (+${added} −${deleted})`
+  const label = [repoCount, head.text, counts === null ? '' : leftText, openLabel, coverage].filter(Boolean).join(' · ')
+  const button = (
+    <button type="button" className="vcs-turn-banner" title={[hint, coverage].filter(Boolean).join(' · ')} aria-label={label} onClick={onOpen}>
+      <span className="vcs-turn-left" aria-hidden="true">
+        <GitBranchIcon className="vcs-turn-glyph" />
+        {graphLabel === '' && head.node === null ? null : (
+          <>
+            {graphLabel === '' ? null : <span className="vcs-turn-head">{graphLabel}</span>}
+            {graphLabel !== '' && head.node !== null ? <span className="vcs-turn-sep">·</span> : null}
+            {head.node}
+            <span className="vcs-turn-sep">·</span>
+          </>
+        )}
+        <span className="vcs-turn-files">{leftText}</span>
+      </span>
+      <span className="vcs-turn-right" aria-hidden="true">
+        {counts === null ? null : (
+          <span className="vcs-turn-stat">
+            <span className="vcs-add">+{added}</span>
+            <span className="vcs-del">−{deleted}</span>
+          </span>
+        )}
+        <PopoutIcon />
+      </span>
+    </button>
   )
+  return <div className="vcs-turn-tail">{partial ? <>{button}<small className="vcs-turn-coverage">{coverage}</small></> : button}</div>
 }
