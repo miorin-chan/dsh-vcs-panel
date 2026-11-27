@@ -9,6 +9,13 @@ DeepSeek Harness 右侧栏里的版本管理插件。
 删除或推送标签，在提交上创建标签或分支、检出提交、拣选、还原、丢弃、合并、变基或重置，贮藏改动并应用、
 取回或丢弃贮藏，或与上游同步。
 
+## 实拍截图
+
+![Git 提交图与所选提交的内联差异](docs/assets/screenshots/main-light.png)
+
+- 右侧栏引导入口 · [浅色](docs/assets/screenshots/entry-light.png) · [深色](docs/assets/screenshots/entry-dark.png)
+- 提交图与差异 · [浅色](docs/assets/screenshots/main-light.png) · [深色](docs/assets/screenshots/main-dark.png)
+
 ## 功能概览
 
 - **住在右侧栏。** 版本管理与文件、终端等页签并列，右侧栏引导页也提供入口；轮末横幅与快捷键打开同一个页签。

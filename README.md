@@ -11,6 +11,17 @@ merge or pull it into the current branch, delete or push a tag, tag a commit, br
 cherry-pick, revert, drop, merge, rebase, or reset to it, stash changes and apply, recover, or drop a stash,
 or sync with the upstream.
 
+## Screenshots
+
+The DeepSeek Harness interface is shown in Chinese.
+
+![Git commit graph and the selected commit’s inline diff](docs/assets/screenshots/main-light.png)
+
+- Sidebar guide entry · [Light](docs/assets/screenshots/entry-light.png) ·
+  [Dark](docs/assets/screenshots/entry-dark.png)
+- Commit graph and diff · [Light](docs/assets/screenshots/main-light.png) ·
+  [Dark](docs/assets/screenshots/main-dark.png)
+
 ## Features
 
 - **In the Sidebar.** The panel lives in a `VCS` tab beside files and terminals, with a card on the Sidebar guide.
