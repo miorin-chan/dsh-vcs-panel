@@ -83,6 +83,8 @@ import type { TileColumn, TiledControl } from './overview/TiledView.jsx'
 import { StateButtons } from './overview/StateButtons.jsx'
 import { clearMotionGhosts, copyTiles, enterTiles, fadeOutInPlace, leaveTiles, reducedMotion, slideIn } from './overview/motion.js'
 import type { LeavingTile } from './overview/motion.js'
+import { buildTabTitleSnapshot } from './tab-title.js'
+import type { TabTitleSnapshot } from './tab-title.js'
 
 /** Rows per history page. */
 const PAGE_SIZE = 300
@@ -281,6 +283,7 @@ export interface VcsViewProps {
   focusRequest?: number
   presentation?: PanelPresentation
   turnGraph?: TurnGraphNavigation
+  onTitleChange?: (snapshot: TabTitleSnapshot) => void
 }
 
 /** Where the tiled layout's state traversal stands. */
@@ -307,7 +310,7 @@ type PointerActionRequest = { pointer: PointerView } & (
  * @param props - standard Sidebar tab props plus the active UI locale, visibility, and a one-shot request to land keyboard focus in the panel.
  */
 export function VcsView({
-  sessionId, t, locale, visible = true, focusRequest = 0, presentation, turnGraph,
+  sessionId, t, locale, visible = true, focusRequest = 0, presentation, turnGraph, onTitleChange,
 }: VcsViewProps) {
   const [state, setState] = useState<PanelState>(() => loadState(sessionId))
   const stateRef = useRef<PanelState>(state)
@@ -512,6 +515,21 @@ export function VcsView({
     () => indexCommits(commits),
     [commits],
   )
+
+  const titleSnapshot = useMemo(() => buildTabTitleSnapshot({
+    repositoriesStatus: repositories.status,
+    repositoryCount: repositories.list.length,
+    tiled: state.tiled,
+    allScope,
+    repoInfo,
+    checkedTrees,
+    worktrees,
+    status: checkedPaths.length > 1 ? null : status.data,
+  }), [allScope, checkedPaths.length, checkedTrees, repoInfo, repositories.list.length, repositories.status, state.tiled, status.data, worktrees])
+
+  useEffect(() => {
+    if (onTitleChange !== undefined && titleSnapshot !== null) onTitleChange(titleSnapshot)
+  }, [onTitleChange, titleSnapshot])
 
   /** The state as it should be stored, including the live reading positions. */
   const persisted = useCallback(() => ({

@@ -3966,3 +3966,26 @@ select.vcs-repository-kind {
     animation: none;
   }
 }
+
+/* Tab chip title (rendered inside DSH dockkit's ._tabTitle flex row) ---- */
+
+.vcs-tab-title {
+  display: inline-flex;
+  flex: 1 0 auto;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.vcs-tab-icon {
+  flex: none;
+}
+
+.vcs-tab-label {
+  white-space: nowrap;
+}
+
+.vcs-tab-title [data-script='alphabetic']:lang(zh) {
+  font-size-adjust: ex-height 0.56;
+  font-weight: 500;
+}

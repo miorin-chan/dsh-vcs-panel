@@ -10,7 +10,7 @@
  * remote-branch, tag, or commit actions.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 // Side-effect type import: the browser half declares the `connection/reset`
@@ -34,6 +34,9 @@ import { VcsView } from './VcsView.jsx'
 import type { PanelPresentation } from './VcsView.jsx'
 import { sendPanelCommand } from './commands.js'
 import type { PanelCommand } from './commands.js'
+import { scriptRuns } from './script-runs.js'
+import { createTabTitleStore, fallbackTabTitleSnapshot, formatTabTitle } from './tab-title.js'
+import type { TabTitleSnapshot } from './tab-title.js'
 import { ViewErrorBoundary } from './ViewErrorBoundary.jsx'
 
 declare module '@deepseek-ai/dsh-client-ui-sidebar-right/client' {
@@ -121,6 +124,13 @@ interface SidebarVcsViewProps {
   sessionId: string
   t: Translate
   useTabInfo: UseSidebarRightTabInfo
+}
+
+/** Props of the right-Sidebar tab title: optional Session identity, translator, and tab info hook. */
+interface SidebarVcsTitleProps {
+  sessionId?: string
+  t?: Translate
+  useTabInfo?: UseSidebarRightTabInfo
 }
 
 /**
@@ -282,6 +292,8 @@ export function apply(ctx: Context): void {
   }, 'dsh-vcs-panel: turn summaries')
 
   const t: Translate = ctx.locale.bind(NS)
+  const tabTitles = createTabTitleStore()
+  ctx.effect(() => () => { tabTitles.dispose() }, 'dsh-vcs-panel: tab titles')
 
   /**
    * Track the active UI locale so dates and counts follow the language switch.
@@ -341,20 +353,60 @@ export function apply(ctx: Context): void {
       if (becameVisible || navigated) setFocusRequest(value => value + 1)
     }, [navRevision, tab.visible])
 
+    const onTitleChange = useCallback((snapshot: TabTitleSnapshot) => {
+      tabTitles.set(props.sessionId, snapshot)
+    }, [props.sessionId])
+
     return (
       <ViewErrorBoundary key={props.sessionId} t={t}>
-        <VcsView {...props} locale={locale} visible={tab.visible} focusRequest={focusRequest} presentation={presentation} turnGraph={turnGraph} />
+        <VcsView
+          {...props}
+          locale={locale}
+          visible={tab.visible}
+          focusRequest={focusRequest}
+          presentation={presentation}
+          turnGraph={turnGraph}
+          onTitleChange={onTitleChange}
+        />
       </ViewErrorBoundary>
     )
   }
 
   /**
-   * The Sidebar chip's text. Registering it keeps the label in the current
-   * language instead of the text captured when the tab opened.
-   * @returns the localized view label.
+   * The Sidebar chip's text and branch icon. Subscribes to the per-Session live
+   * snapshot store and falls back to `sessionStorage` before the body mounts.
+   * @param props - standard `sidebar.right.pane.tab.title` props.
+   * @returns the branch icon and live context label with full hover tooltip.
    */
-  function VcsTabTitle(): string {
-    return t('view.label')
+  function VcsTabTitle(props?: SidebarVcsTitleProps) {
+    const locale = useActiveLocale()
+    const sessionId = props?.sessionId
+    const hasSession = typeof sessionId === 'string' && sessionId !== ''
+    const [, setRevision] = useState(0)
+
+    useEffect(() => {
+      if (!hasSession) return undefined
+      return tabTitles.subscribe(sessionId, () => {
+        setRevision(value => value + 1)
+      })
+    }, [hasSession, sessionId])
+
+    const live = hasSession ? tabTitles.get(sessionId) : null
+    const snapshot = live ?? (hasSession ? fallbackTabTitleSnapshot(sessionId) : null)
+    const view = formatTabTitle(snapshot, props?.t ?? t, locale)
+
+    return (
+      <span className="vcs-tab-title" title={view.tooltip}>
+        <GitBranchIcon size={16} className="vcs-tab-icon" />
+        <span className="vcs-tab-label">
+          {view.userNamed
+            ? scriptRuns(view.label).map((run, index) => (
+              <span key={index} data-script={run.script}>{run.text}</span>
+            ))
+            : view.label}
+        </span>
+      </span>
+    )
   }
 
   /**

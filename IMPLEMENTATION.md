@@ -678,6 +678,12 @@ Client 顶层注入 `['slots', 'locale', 'uiConversation', 'sidebarRight', 'side
   正文与标题分别注册到 `sidebar.right.pane.tab` / `sidebar.right.pane.tab.title`，key 均为 `dsh-vcs-panel`。
   引导卡片用 `view.label` 作标题、`sidebar.guide` 作说明、轮末横幅的 `GitBranchIcon` 作图标，
   并显示快捷键；`order: 15` 让卡片紧跟在文件卡片（10）之后、终端（20）之前。
+  `tab-title.ts` 维护按会话隔离的内存快照表（`createTabTitleStore`，空闲条目按 LRU 上限回收并在插件卸载时清空）：
+  `VcsView` 挂载期间通过 `onTitleChange` 发布 `buildTabTitleSnapshot` 产出的当前视角、仓库、头指针、
+  改动与领先/落后计数，切走页签卸载正文时不清空该条目以维持安静的最后已知标题；`VcsTabTitle` 订阅当前会话更新，
+  在正文尚未挂载时由 `fallbackTabTitleSnapshot` 从 `sessionStorage` 恢复视角，渲染 16px `GitBranchIcon`、
+  本地化视角标签或由 `script-runs.ts`（复制自工作区 `tools/script-runs/script-runs.mts`）按文字脚本分段的名称，
+  以及完整悬停提示。
   正文内包 `ViewErrorBoundary`：捕获渲染错误后展示重试页，将时间、
   错误与截断至 12,000 字符的调用栈写入 `sessionStorage` 的 `vcs:last-error`，重试时保留原会话状态重新挂载。
 - **Turn 改动判定与每轮摘要缓存**：`createTurnChangesDefinition` 注册 `vcs-changes` 事件定义，

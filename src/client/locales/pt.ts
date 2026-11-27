@@ -522,6 +522,7 @@ const dictionary: LocaleDict = Object.freeze({
   "shortcut.overview": "Alternar o panorama do VCS",
   "shortcut.tile": "Alternar os repositórios do VCS em colunas",
   "tile.toggle": "Repositórios em colunas",
+  "tile.title": "Colunas",
   "tile.on": "Dispor os grupos de repositórios em colunas (T)",
   "tile.states": "Percorrer ponteiros por estado",
   "tile.next": "Próximo ponteiro “{state}” (Shift: anterior)",

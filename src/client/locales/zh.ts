@@ -507,6 +507,7 @@ const dictionary: LocaleDict = Object.freeze({
   "shortcut.overview": "切换版本管理全景",
   "shortcut.tile": "切换版本管理平铺",
   "tile.toggle": "平铺仓库",
+  "tile.title": "平铺仓库",
   "tile.on": "把仓库组平铺成列（T）",
   "tile.states": "按状态遍历指针",
   "tile.next": "下一个{state}的指针（Shift：上一个）",

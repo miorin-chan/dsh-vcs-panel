@@ -187,6 +187,9 @@ test('apply registers the dictionaries, stylesheet, Sidebar page, Turn fold, and
     assert.match(styles[0].textContent, /\.vcs-turn-banner/)
     assert.match(styles[0].textContent, /\.vcs-turn-stat/)
     assert.match(styles[0].textContent, /\.vcs-turn-popout/)
+    assert.match(styles[0].textContent, /\.vcs-tab-title/)
+    assert.match(styles[0].textContent, /\.vcs-tab-icon/)
+    assert.match(styles[0].textContent, /\[data-script='alphabetic'\]:lang\(zh\)/)
     assert.doesNotMatch(styles[0].textContent, /data-surface/u)
 
     // The fold that publishes "this Turn changed files" has no view target.
@@ -225,7 +228,17 @@ test('apply registers the dictionaries, stylesheet, Sidebar page, Turn fold, and
     const title = registrations[1]
     assert.equal(title.options.key, 'dsh-vcs-panel')
     assert.equal(title.options.locale, 'vcs')
-    assert.equal(title.component(), 'vcs:view.label')
+    assert.equal(typeof title.component, 'function')
+    const fallbackTitle = title.component()
+    assert.equal(fallbackTitle.type, 'span')
+    assert.equal(fallbackTitle.props.className, 'vcs-tab-title')
+    assert.equal(fallbackTitle.props.title, 'vcs:view.label')
+    const [fallbackIcon, fallbackLabel] = fallbackTitle.props.children
+    assert.equal(fallbackIcon.type, guide.icon)
+    assert.equal(fallbackIcon.props.size, 16)
+    assert.equal(fallbackIcon.props.className, 'vcs-tab-icon')
+    assert.equal(fallbackLabel.props.className, 'vcs-tab-label')
+    assert.equal(fallbackLabel.props.children, 'vcs:view.label')
     // The body follows the active language and passes the one-shot focus
     // request through to the panel.
     const bodyTree = body.component({
@@ -234,6 +247,44 @@ test('apply registers the dictionaries, stylesheet, Sidebar page, Turn fold, and
     })
     assert.equal(bodyTree.props.children.props.locale, 'zh')
     assert.equal(bodyTree.props.children.props.focusRequest, 0)
+    assert.equal(typeof bodyTree.props.children.props.onTitleChange, 'function')
+
+    // Publishing a snapshot updates subsequent tab-title renders; disposing the
+    // tab-titles effect clears the cached snapshots on unload.
+    bodyTree.props.children.props.onTitleChange({
+      mode: 'repository',
+      repositoryCount: 1,
+      repoName: 'dsh-vcs-panel',
+      head: { kind: 'branch', name: 'main' },
+      checkoutCount: 1,
+      commitBased: false,
+      changedCount: 2,
+      ahead: 1,
+      behind: 0,
+    })
+    const liveTitle = title.component({ sessionId: 'session-1' })
+    assert.equal(liveTitle.props.title, 'dsh-vcs-panel · main · vcs:timeline.changes.other · ↑1')
+    const [, liveLabel] = liveTitle.props.children
+    assert.equal(liveLabel.props.children.length, 1)
+    assert.equal(liveLabel.props.children[0].props['data-script'], 'alphabetic')
+    assert.equal(liveLabel.props.children[0].props.children, 'main')
+    const slotTranslatedTitle = title.component({
+      sessionId: 'session-1',
+      t: (key, vars) => (vars && 'count' in vars ? `vcs:${key}:${vars.count}` : `vcs:${key}`),
+    })
+    assert.equal(slotTranslatedTitle.props.title, 'dsh-vcs-panel · main · vcs:timeline.changes.other:2 · ↑1')
+
+    const previousStorage = globalThis.sessionStorage
+    globalThis.sessionStorage = {
+      getItem: key => (key === 'vcs:session-saved' ? JSON.stringify({ repo: '/ws/saved-repo' }) : null),
+    }
+    try {
+      const recoveredTitle = title.component({ sessionId: 'session-saved' })
+      assert.equal(recoveredTitle.props.title, 'saved-repo')
+      assert.equal(recoveredTitle.props.children[1].props.children[0].props.children, 'saved-repo')
+    } finally {
+      globalThis.sessionStorage = previousStorage
+    }
     const tail = registrations[2]
     assert.equal(tail.options.id, 'dsh-vcs-panel')
     assert.equal(tail.options.order, -10)
@@ -368,13 +419,17 @@ test('apply registers the dictionaries, stylesheet, Sidebar page, Turn fold, and
     const styleDisposer = effects.find(effect => effect.label.includes('styles'))?.disposer
     const turnDisposer = effects.find(effect => effect.label.includes('turn changes'))?.disposer
     const summariesDisposer = effects.find(effect => effect.label.includes('turn summaries'))?.disposer
+    const tabTitlesDisposer = effects.find(effect => effect.label.includes('tab titles'))?.disposer
     assert.equal(typeof localeDisposer, 'function')
     assert.equal(typeof styleDisposer, 'function')
     assert.equal(typeof turnDisposer, 'function')
     assert.equal(typeof summariesDisposer, 'function')
+    assert.equal(typeof tabTitlesDisposer, 'function')
     styleDisposer()
     summariesDisposer()
+    tabTitlesDisposer()
     assert.equal(style.removed, true)
+    assert.equal(title.component({ sessionId: 'session-1' }).props.children[1].props.children, 'vcs:view.label')
   } finally {
     globalThis.document = previousDocument
     globalThis.fetch = previousFetch
@@ -742,4 +797,122 @@ test('SidebarVcsView passes visible and bumps focusRequest on visibility transit
     assert.equal(navigated.visible, true)
     assert.equal(navigated.focusRequest, 1)
   }
+})
+
+test('VcsTabTitle subscribes to live snapshots and switches between single-repo, multi-repo, all, and tiled views', () => {
+  const titleHooks = []
+  const titleEffects = []
+  const viewHooks = []
+  const pendingEffects = []
+  let activeHooks = viewHooks
+  let activeEffects = pendingEffects
+  let hookIndex = 0
+  const sameDeps = (a, b) => a !== undefined && b !== undefined && a.length === b.length
+    && a.every((v, i) => Object.is(v, b[i]))
+  let renders = 0
+  const reactOverrides = {
+    useState(initial) {
+      const idx = hookIndex++
+      if (idx >= activeHooks.length) activeHooks.push({ value: typeof initial === 'function' ? initial() : initial })
+      const slot = activeHooks[idx]
+      return [slot.value, action => {
+        slot.value = typeof action === 'function' ? action(slot.value) : action
+        if (activeHooks === titleHooks) renders += 1
+      }]
+    },
+    useEffect(create, deps) {
+      const idx = hookIndex++
+      const prev = activeHooks[idx]
+      if (prev === undefined || !sameDeps(prev.deps, deps)) {
+        const entry = { create, deps, dispose: prev?.dispose }
+        activeHooks[idx] = entry
+        activeEffects.push(entry)
+      }
+    },
+  }
+  const { plugin } = loadBundle({ reactOverrides })
+  const registrations = []
+  const previousDocument = globalThis.document
+  globalThis.document = {
+    head: { appendChild() {} },
+    createElement() { return { dataset: {}, textContent: '', remove() {} } },
+  }
+  try {
+    plugin.apply({
+      inject() { return () => undefined },
+      effect(fn) { return fn() },
+      locale: localeStub('zh'),
+      uiConversation: { events: { register() { return () => undefined } } },
+      sidebarRight: { mounted: { getSnapshot: () => 's1' }, isExpanded: () => false, active: () => undefined, openTab() {} },
+      sidebarRightTabs: { register() { return () => undefined } },
+      slots: {
+        inject(_key, callback) { return callback() },
+        register(options, component) { registrations.push({ options, component }); return () => undefined },
+      },
+    })
+  } finally {
+    globalThis.document = previousDocument
+  }
+
+  const VcsTabTitle = registrations.find(entry => entry.options.name === 'sidebar.right.pane.tab.title').component
+  const SidebarVcsView = registrations.find(entry => entry.options.name === 'sidebar.right.pane.tab').component
+
+  const renderTitle = () => {
+    activeHooks = titleHooks
+    activeEffects = titleEffects
+    hookIndex = 0
+    const node = VcsTabTitle({ sessionId: 's1' })
+    while (titleEffects.length > 0) {
+      const entry = titleEffects.shift()
+      entry.dispose?.()
+      entry.dispose = entry.create()
+    }
+    return node
+  }
+
+  activeHooks = viewHooks
+  activeEffects = pendingEffects
+  hookIndex = 0
+  const bodyProps = SidebarVcsView({
+    sessionId: 's1',
+    useTabInfo: () => ({ tab: { visible: true, navigation: { revision: 0 } } }),
+  }).props.children.props
+
+  const initial = renderTitle()
+  assert.equal(initial.props.children[1].props.children, 'vcs:view.label')
+
+  // Multi-repo repository mode displays repository name and notifies title subscriber.
+  const beforeRenders = renders
+  bodyProps.onTitleChange({
+    mode: 'repository',
+    repositoryCount: 3,
+    repoName: 'dsh-vcs-panel',
+    head: { kind: 'branch', name: 'main' },
+    checkoutCount: 1,
+    commitBased: false,
+    changedCount: 0,
+    ahead: 0,
+    behind: 0,
+  })
+  assert.equal(renders, beforeRenders + 1)
+  const multiRepo = renderTitle()
+  assert.equal(multiRepo.props.title, 'dsh-vcs-panel · main')
+  assert.equal(multiRepo.props.children[1].props.children[0].props['data-script'], 'alphabetic')
+  assert.equal(multiRepo.props.children[1].props.children[0].props.children, 'dsh-vcs-panel')
+
+  // All-repositories mode shows plain localized label without scriptRuns spans.
+  bodyProps.onTitleChange({ mode: 'all', repositoryCount: 3 })
+  const allView = renderTitle()
+  assert.equal(allView.props.children[1].props.children, 'vcs:all.title')
+
+  // Tiled mode shows plain localized label without scriptRuns spans.
+  bodyProps.onTitleChange({ mode: 'tiled', repositoryCount: 3 })
+  const tiledView = renderTitle()
+  assert.equal(tiledView.props.children[1].props.children, 'vcs:tile.title')
+
+  // Unmount title subscription cleanly.
+  for (const entry of titleHooks) entry.dispose?.()
+  const afterDisposeRenders = renders
+  bodyProps.onTitleChange({ mode: 'empty' })
+  assert.equal(renders, afterDisposeRenders)
 })

@@ -507,6 +507,7 @@ const dictionary: LocaleDict = Object.freeze({
   "shortcut.overview": "VCS の全体像を切り替え",
   "shortcut.tile": "VCS のタイル表示を切り替え",
   "tile.toggle": "リポジトリをタイル表示",
+  "tile.title": "タイル表示",
   "tile.on": "リポジトリグループを列に並べる（T）",
   "tile.states": "状態ごとにポインタを巡回",
   "tile.next": "次の{state}のポインタ（Shift：前へ）",

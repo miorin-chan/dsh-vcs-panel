@@ -522,6 +522,7 @@ const dictionary: LocaleDict = Object.freeze({
   "shortcut.overview": "VCS-Übersicht ein-/ausblenden",
   "shortcut.tile": "VCS-Repositorys nebeneinander ein-/ausschalten",
   "tile.toggle": "Repositorys nebeneinander",
+  "tile.title": "Spalten",
   "tile.on": "Repository-Gruppen als Spalten anordnen (T)",
   "tile.states": "Zeiger nach Status durchgehen",
   "tile.next": "Nächster Zeiger „{state}“ (Umschalt: vorheriger)",

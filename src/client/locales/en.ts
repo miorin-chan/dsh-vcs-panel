@@ -522,6 +522,7 @@ const dictionary: LocaleDict = Object.freeze({
   "shortcut.overview": "Toggle VCS overview",
   "shortcut.tile": "Toggle tiled VCS repositories",
   "tile.toggle": "Tile repositories",
+  "tile.title": "Tiled",
   "tile.on": "Tile the repository groups as columns (T)",
   "tile.states": "Step through pointers by state",
   "tile.next": "Next {state} pointer (Shift: previous)",

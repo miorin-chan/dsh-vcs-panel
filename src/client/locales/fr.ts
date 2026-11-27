@@ -522,6 +522,7 @@ const dictionary: LocaleDict = Object.freeze({
   "shortcut.overview": "Afficher ou masquer la vue d’ensemble VCS",
   "shortcut.tile": "Activer ou désactiver les dépôts VCS en colonnes",
   "tile.toggle": "Dépôts en colonnes",
+  "tile.title": "Colonnes",
   "tile.on": "Disposer les groupes de dépôts en colonnes (T)",
   "tile.states": "Parcourir les pointeurs par état",
   "tile.next": "Pointeur « {state} » suivant (Maj : précédent)",

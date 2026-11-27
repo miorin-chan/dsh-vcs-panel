@@ -25,6 +25,8 @@ The DeepSeek Harness interface is shown in Chinese.
 ## Features
 
 - **In the Sidebar.** The panel lives in a `VCS` tab beside files and terminals, with a card on the Sidebar guide.
+  The tab title pairs a branch icon with the active branch, working copy, repository,
+  or layout view (with full details on hover).
   The Turn banner and the shortcut open the same tab.
   A header toggle shows the timeline beside the changes, or one column at a time
   so a wide Sidebar gives the diff its full width.

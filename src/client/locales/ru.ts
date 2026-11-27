@@ -552,6 +552,7 @@ const dictionary: LocaleDict = Object.freeze({
   "shortcut.overview": "Показать или скрыть обзор VCS",
   "shortcut.tile": "Включить или выключить колонки репозиториев VCS",
   "tile.toggle": "Репозитории колонками",
+  "tile.title": "Колонки",
   "tile.on": "Разложить группы репозиториев по колонкам (T)",
   "tile.states": "Перебор указателей по состоянию",
   "tile.next": "Следующий указатель «{state}» (Shift: предыдущий)",

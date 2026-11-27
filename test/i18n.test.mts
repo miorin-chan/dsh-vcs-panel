@@ -269,8 +269,10 @@ test('all eight locales select the right plural form for 0, 1, 2, 5, and 21', ()
 
 test('view labels stay short enough for the Sidebar chip', () => {
   for (const locale of LOCALES) {
-    const label = DICTIONARIES[locale]['view.label']
-    assert.ok(displayWidth(label) <= 12, `${locale} view.label is ${displayWidth(label)} columns: ${label}`)
+    for (const key of ['view.label', 'tile.title']) {
+      const label = DICTIONARIES[locale][key]
+      assert.ok(displayWidth(label) <= 12, `${locale} ${key} is ${displayWidth(label)} columns: ${label}`)
+    }
   }
 })
 
