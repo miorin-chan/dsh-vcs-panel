@@ -352,10 +352,8 @@ export function AheadBehind({ ahead, behind }: { ahead: number; behind: number }
   )
 }
 
-/** One branch's upstream distance and the sync state of its control. */
-export interface SyncButtonProps {
-  /** The upstream the branch tracks, or null when it has none. */
-  upstream: string | null
+/** A sync control for either a branch or the overview's entire repository list. */
+export type SyncButtonProps = ({ all?: false; upstream: string | null } | { all: true }) & {
   ahead: number
   behind: number
   /** The sync and the refresh it starts are running. */
@@ -378,11 +376,12 @@ export interface SyncButtonProps {
  * it is unavailable remains readable.
  * @param props - branch facts and sync state.
  */
-export function SyncButton({ upstream, ahead, behind, syncing, blocked, onSync, className, tabIndex, t, locale }: SyncButtonProps) {
-  const available = upstream !== null
-  const label = available
-    ? t('top.syncLabel', { upstream, ahead: formatCount(ahead, locale), behind: formatCount(behind, locale) })
-    : t('top.syncNoUpstream')
+export function SyncButton(props: SyncButtonProps) {
+  const { ahead, behind, syncing, blocked, onSync, className, tabIndex, t, locale } = props
+  const available = props.all || props.upstream !== null
+  const counts = { ahead: formatCount(ahead, locale), behind: formatCount(behind, locale) }
+  const label = props.all ? t('all.sync', counts) : props.upstream === null ? t('top.syncNoUpstream')
+    : t('top.syncLabel', { upstream: props.upstream, ...counts })
   const inert = syncing || !available || blocked !== undefined
   const title = syncing ? t('top.syncing') : blocked ?? (available ? `${label}\n${t('top.syncHint')}` : label)
   return (

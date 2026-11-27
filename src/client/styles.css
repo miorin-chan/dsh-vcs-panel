@@ -3255,7 +3255,7 @@ select.vcs-repository-kind {
   font-weight: 600;
 }
 
-.vcs-overview-all .vcs-icon {
+.vcs-overview-all > .vcs-icon {
   width: 16px;
   height: 16px;
   color: var(--dsw-alias-label-tertiary);
@@ -3424,6 +3424,14 @@ select.vcs-repository-kind {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.vcs-overview-batch-note:empty {
+  position: absolute;
+}
+
+.vcs-overview-batch-note {
+  white-space: normal;
 }
 
 .vcs-overview-sync-note[data-tone='error'] {

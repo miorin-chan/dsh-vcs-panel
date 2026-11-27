@@ -108,6 +108,9 @@ The DeepSeek Harness interface is shown in Chinese.
   without an upstream is left untouched with a note on what to do next.
   Every Git repository row in the overview carries the same button for its checked-out branch,
   so you can sync any repository in place and read the result under its row.
+  On **All repositories**, the button shows the total commits to push and pull,
+  then syncs every eligible repository regardless of search or filters.
+  The result summarizes the repository outcomes and how many commits were moved.
 - **Branch switching.** The branch name opens the repository's local branches; picking one checks it out.
   Only local branches are listed—no implicit remote-tracking branches;
   remote branches are checked out explicitly from their history badges.

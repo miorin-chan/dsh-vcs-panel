@@ -65,6 +65,25 @@ export function repositorySync(
   }
 }
 
+/** Batch scope ignores overview search, filters, and collapsed groups. */
+export function repositorySyncTargets(
+  repositories: readonly RepositoryView[],
+  capabilities: ReadonlyMap<string, RepositoryCapabilities>,
+): { paths: string[]; ahead: number; behind: number } {
+  const paths: string[] = []
+  let ahead = 0
+  let behind = 0
+  for (const repository of repositories) {
+    if (!repository.registered) continue
+    const sync = repositorySync(repository, capabilities.get(repository.path), undefined)
+    if (sync === null || sync.upstream === null) continue
+    paths.push(repository.path)
+    ahead += sync.ahead
+    behind += sync.behind
+  }
+  return { paths, ahead, behind }
+}
+
 /** The step currently holding one repository's client write lock. */
 function writeReason(write: RepoWrite): string {
   switch (write.domain) {

@@ -2890,8 +2890,12 @@ test('the overview switches to pending and failed repositories and follows the f
     assert.match(textOf(q('.vcs-overview-scope')), /"count":"3"/u)
     assert.deepEqual(list().querySelectorAll('[data-pending]').map(item => item.dataset.repository), repositories.map(repo => repo.path))
     assert.deepEqual(sections(), ['overview.loading.other'])
-    const status = list().querySelectorAll('[role="status"]')
-    assert.equal(status.length, 1, 'the section heading is the only live region')
+    const activeStatus = () => list().querySelectorAll('[role="status"]').filter(element => textOf(element) !== '')
+    const status = activeStatus()
+    assert.equal(status.length, 1, 'only the section heading announces while loading')
+    const allSync = () => q('[data-all-repositories]').querySelector('.vcs-sync')
+    assert.equal(allSync().attributes.get('aria-disabled'), 'true')
+    assert.equal(allSync().attributes.get('title'), 'loading.repositories')
     assert.match(textOf(status[0]), /"count":"3"/u)
     assert.equal(textOf(row(failedPath).querySelector('.vcs-overview-dir')), 'plugins/')
     assert.equal(row(failedPath).querySelector('.vcs-overview-twist').props.disabled, true)
@@ -2921,7 +2925,7 @@ test('the overview switches to pending and failed repositories and follows the f
     send({ type: 'error', path: '/fixture/not-discovered', registered: false, error: { code: 'timeout' } })
     finish()
     await harness.settle()
-    assert.equal(list().querySelectorAll('[role="status"]').length, 0)
+    assert.equal(activeStatus().length, 0)
     assert.deepEqual(list().querySelectorAll('[data-repository]').map(item => item.dataset.repository), [tileAlpha, failedPath, tileBeta])
     assert.ok(row(failedPath).attributes.has('data-failed'))
     assert.equal(textOf(row(failedPath).querySelector('.vcs-overview-error')), 'error.notARepo')
@@ -3478,6 +3482,62 @@ test('overview rows sync their own repository in place and keep turning until th
     })
   } finally {
     for (const answer of answers.values()) answer.resolve({ upstream: 'origin/main', pulled: 0, pushed: 0 })
+  }
+})
+
+test('All repositories syncs hidden rows, keeps keyboard focus, and summarizes mixed results', async () => {
+  const alpha = tileRepo(tileAlpha, [], undefined, { ahead: 0, behind: 2 })
+  const beta = tileRepo(tileBeta, [], undefined, { ahead: 3, behind: 0 })
+  const detached = tileRepo('/fixture/detached', [], [tileTree('/fixture/detached', { branch: null })])
+  const first = Promise.withResolvers()
+  try {
+    await withGitPanel([alpha, beta, detached], {
+      panelState: { tiled: false, overview: true },
+      async write(path, { repo }, json) {
+        assert.equal(path, '/api/vcs.sync')
+        if (repo === tileAlpha) {
+          await first.promise
+          return json({ error: { code: 'internal' } }, 500)
+        }
+        return json({ upstream: 'origin/main', pulled: 0, pushed: 1 })
+      },
+    }, async ({ harness, body, writes, reads, persisted }) => {
+      const q = selector => body.querySelector(selector)
+      const all = () => q('[data-all-repositories]')
+      const button = () => all().querySelector('.vcs-sync')
+      const summary = () => all().querySelector('[role="status"]')
+      q('[aria-label="overview.searchLabel"]').props.onChange({ target: { value: 'no matching rows' } })
+      await harness.settle()
+      assert.equal(q(`[data-repository="${tileBeta}"]`), null)
+      all().focus()
+      await harness.settle()
+      assert.equal(button().props.tabIndex, 0)
+      assert.equal(button().attributes.get('aria-label'), 'all.sync:{"ahead":"3","behind":"2"}')
+      assert.equal(textOf(button().querySelector('.vcs-ahead')), '3')
+      assert.equal(textOf(button().querySelector('.vcs-behind')), '2')
+      button().focus()
+      const overviewReads = reads.overview.length
+      harness.keyClick(button())
+      await harness.settle()
+      assert.equal(textOf(summary()), 'top.syncing')
+      assert.equal(button().attributes.get('aria-busy'), 'true')
+      assert.equal(harness.document.activeElement, button())
+      harness.mouseClick(button())
+      assert.deepEqual(writes.map(([, payload]) => payload.repo), [tileAlpha])
+      first.resolve()
+      await harness.settle()
+      assert.deepEqual(writes.map(([, payload]) => payload.repo), [tileAlpha, tileBeta])
+      assert.equal(persisted().timelineScope, 'repository')
+      assert.equal(persisted().repo, tileAlpha)
+      assert.equal(harness.document.activeElement, button())
+      assert.equal(button().attributes.get('aria-busy'), undefined)
+      assert.match(textOf(summary()), /all.syncResult:\{"succeeded":"1","failed":"1","skipped":"1"\}/u)
+      assert.match(textOf(summary()), /all.syncCommits:\{"pushed":"1","pulled":"0"\}/u)
+      assert.match(summary().attributes.get('title'), /\/fixture\//u)
+      assert.equal(reads.overview.length, overviewReads + 1)
+    })
+  } finally {
+    first.resolve()
   }
 })
 

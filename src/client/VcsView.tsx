@@ -613,8 +613,8 @@ export function VcsView({
   }, [resetDirectories, update])
 
   /** Refresh the domains affected by the explicit action. */
-  const refresh = useCallback((requester = 'refresh', targetRepo = stateRef.current.repo): void => {
-    setNotice(null, targetRepo)
+  const refresh = useCallback((requester = 'refresh', targetRepo = stateRef.current.repo, keepNotice = false): void => {
+    if (!keepNotice) setNotice(null, targetRepo)
     if (targetRepo !== stateRef.current.repo) {
       // The existing foreground refresh already rereads both tile models. A
       // write in another repository needs those reads without resetting this timeline.
@@ -2419,6 +2419,9 @@ export function VcsView({
             writes={actions.inFlight}
             notices={notices}
             onSync={path => { void actions.syncRepository(path) }}
+            batchSyncing={actions.batchSyncing}
+            batchSyncResult={actions.batchSyncResult}
+            onBatchSync={(paths, total) => { void actions.syncRepositories(paths, total) }}
             control={overviewControl}
             t={t}
             locale={locale}

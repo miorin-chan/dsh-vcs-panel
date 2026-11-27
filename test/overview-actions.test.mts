@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { repositorySync, tileDirectActions } from '../lib/client/overview/directActions.js'
+import { repositorySync, repositorySyncTargets, tileDirectActions } from '../lib/client/overview/directActions.js'
+import { runBatchSync } from '../lib/client/overview/batchSync.js'
 import { repositoryView } from '../lib/client/overview/model.js'
 import { GIT_CAPABILITIES, JUJUTSU_CAPABILITIES } from '../lib/vcs/capabilities.js'
 import type { RepositoryCapabilities, WorktreeInfo } from '../src/client/api.ts'
@@ -268,4 +269,32 @@ test('another write on the repository blocks its row sync, while a running sync 
   assert.equal(repositorySync(row, GIT_CAPABILITIES, { domain: 'stage', action: 'stage' })?.blockedReason, 'stage.updatingIndex')
   const running = repositorySync(row, GIT_CAPABILITIES, { domain: 'sync', action: 'sync' })
   assert.ok(running !== null && !('blockedReason' in running))
+})
+
+test('batch targets include quiet repositories and tracking branches, but not ineligible entries', () => {
+  const rootView = syncRow({ main: { track: { ahead: 1, behind: 2 } } })
+  const siblingView = syncRow({ path: sibling })
+  const caps = new Map([[root, GIT_CAPABILITIES], [sibling, GIT_CAPABILITIES]])
+  assert.deepEqual(repositorySyncTargets([rootView, siblingView], caps), { paths: [root, sibling], ahead: 4, behind: 2 })
+  assert.deepEqual(repositorySyncTargets([
+    { ...rootView, registered: false },
+    syncRow({ main: { upstream: null, track: null } }),
+    syncRow({ primary: { branch: null } }),
+    syncRow({ supported: false }),
+    siblingView,
+  ], caps), { paths: [sibling], ahead: 3, behind: 0 })
+  assert.deepEqual(repositorySyncTargets([rootView, siblingView], new Map([[root, JUJUTSU_CAPABILITIES]])),
+    { paths: [], ahead: 0, behind: 0 })
+})
+
+test('batch sync continues after a failed or busy repository and reports the whole scope', async () => {
+  const visited: string[] = []
+  const result = await runBatchSync(['failed', 'busy', 'push', 'push', 'pull'], 6, async repo => {
+    visited.push(repo)
+    if (repo === 'failed') return { started: true, ok: false, error: { code: 'internal' } }
+    if (repo === 'busy') return { started: false }
+    return { started: true, ok: true, value: { upstream: 'origin/main', pushed: repo === 'push' ? 3 : 0, pulled: repo === 'pull' ? 2 : 0 } }
+  })
+  assert.deepEqual(visited, ['failed', 'busy', 'push', 'pull'])
+  assert.deepEqual(result, { succeeded: 2, failed: ['failed'], skipped: 3, pushed: 3, pulled: 2 })
 })

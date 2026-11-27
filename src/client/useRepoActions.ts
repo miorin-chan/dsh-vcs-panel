@@ -15,7 +15,7 @@ import type { MutableRefObject, RefObject } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 
 import {
-  failureOf, type Api, type CommitNode, type RepositoryCapabilities, type StageRequest, type StatusData,
+  failureOf, type Api, type CommitNode, type RepositoryCapabilities, type StageRequest, type StatusData, type SyncAnswer,
   type WorktreeCreateRequest, type WorktreeInfo, type WorktreeRemovalAction, type WorktreeRequest,
 } from './api.js'
 import { worktreeActionReason } from './worktrees.js'
@@ -34,6 +34,7 @@ import type { WorktreeSummary } from './history/timeline-model.js'
 import { stashActions, stashNode, stashSaveReason } from './stash.js'
 import type { StashMenuAction, StashTarget } from './stash.js'
 import type { StashDetail, StashRequest } from '../lib/stash-types.js'
+import { runBatchSync, type BatchSyncResult } from './overview/batchSync.js'
 
 /** One write domain under the per-repository lock. */
 export type RepoWriteDomain = 'sync' | 'switch' | 'branch' | 'tag' | 'commit' | 'stage' | 'worktree' | 'stash'
@@ -268,7 +269,7 @@ export interface UseRepoActionsParams {
   /** The active BCP 47 locale. */
   locale?: string
   /** Ask the panel to re-read after a write. */
-  refresh: (requester: string, repo: string) => void
+  refresh: (requester: string, repo: string | null, keepNotice?: boolean) => void
   onWorktreeChange: (repo: string, createdPath?: string) => void
   /** Reset the reading position after the checked-out commit moved. */
   resetReadingForNewHead: () => void
@@ -302,7 +303,10 @@ export interface RepoActions {
   resetActionsUi: () => void
   sync: () => Promise<void>
   /** Sync any discovered repository's checked-out branch, current or not. */
-  syncRepository: (repo: string) => Promise<void>
+  syncRepository: (repo: string) => Promise<RepoWriteResult<SyncAnswer>>
+  batchSyncing: boolean
+  batchSyncResult: BatchSyncResult | null
+  syncRepositories: (repos: readonly string[], total: number) => Promise<void>
   stage: (target: StageRequest) => Promise<boolean>
   stageHistory: (action: string, id: string) => Promise<boolean>
   switchBranch: (branch: string) => Promise<void>
@@ -347,6 +351,8 @@ export function useRepoActions({
 }: UseRepoActionsParams): RepoActions {
   const [inFlight, setInFlight] = useState<ReadonlyMap<string, RepoWrite>>(new Map())
   const inFlightRef = useRef<Map<string, RepoWrite>>(new Map())
+  const batchRunning = useRef(false)
+  const [batch, setBatch] = useState<{ sessionId: string; result: BatchSyncResult | null } | null>(null)
   const [menu, setMenu] = useState<RefMenuTarget | null>(null)
   const [dialog, setDialog] = useState<RepoDialogRequest | null>(null)
   const [dialogError, setDialogError] = useState<ReturnType<typeof failureOf> | null>(null)
@@ -489,19 +495,37 @@ export function useRepoActions({
    * Sync one repository's checked-out branch with its upstream, then refresh.
    * The overview rows name their repository; the Host checks that it can sync.
    */
-  const syncRepository = useCallback(async (repo: string): Promise<void> => {
-    if (inFlightRef.current.has(repo)) return
+  const syncRepository = useCallback(async (repo: string, batch = false): Promise<RepoWriteResult<SyncAnswer>> => {
+    if (sessionRef.current !== sessionId || inFlightRef.current.has(repo)) return { started: false }
     setNotice(null, repo)
-    await runRepoWrite(repo, 'sync', 'sync', () => api.sync(repo), run => {
+    return runRepoWrite(repo, 'sync', 'sync', () => api.sync(repo), run => {
       const outcome: Notice = run.ok
         ? { tone: 'info', text: syncMessage(t, run.value, locale), domain: 'sync' }
         : { tone: 'error', text: errorMessage(t, run.error), domain: 'sync' }
       if (sessionRef.current === sessionId) {
-        refresh('sync', repo)
+        if (!batch) refresh('sync', repo)
         setNotice(outcome, repo)
       }
     })
   }, [api, locale, refresh, runRepoWrite, sessionId, sessionRef, setNotice, t])
+
+  /** Run the overview's batch independently of the overview's mount or selection. */
+  const syncRepositories = useCallback(async (repos: readonly string[], total: number): Promise<void> => {
+    if (sessionRef.current !== sessionId || batchRunning.current || repos.length === 0) return
+    batchRunning.current = true
+    setBatch({ sessionId, result: null })
+    let result: BatchSyncResult | null = null
+    try {
+      // A repository already writing when the user clicks stays skipped even if its turn comes later.
+      const targets = repos.filter(repo => !inFlightRef.current.has(repo))
+      result = await runBatchSync(targets, total, repo => syncRepository(repo, true))
+      // One reread settles the whole batch, without clearing the per-repository outcomes.
+      if (sessionRef.current === sessionId && result.skipped < total) refresh('sync', stateRef.current.repo, true)
+    } finally {
+      batchRunning.current = false
+      setBatch(result === null ? null : { sessionId, result })
+    }
+  }, [refresh, sessionId, sessionRef, stateRef, syncRepository])
 
   /** Sync the chosen repository's branch from the header. */
   const sync = useCallback(async (): Promise<void> => {
@@ -1002,6 +1026,9 @@ export function useRepoActions({
     resetActionsUi,
     sync,
     syncRepository,
+    batchSyncing: batch !== null && batch.result === null,
+    batchSyncResult: batch?.sessionId === sessionId ? batch.result : null,
+    syncRepositories,
     stage,
     stageHistory,
     switchBranch,

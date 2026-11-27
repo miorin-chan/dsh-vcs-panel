@@ -11,14 +11,15 @@ import type { KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as Reac
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 
 import type { ApiFailure, RepositoryCapabilities, RepositoryInfo } from '../api.js'
-import { errorMessage, formatCommitTime, formatPlural } from '../format.js'
+import { errorMessage, formatCommitTime, formatCount, formatPlural } from '../format.js'
 import { Bar, Skeleton } from '../skeleton.jsx'
 import { AllRepositoriesIcon, Chevron, IconButton, SettingsIcon, SyncButton } from '../ui.jsx'
 import { findAncestor, hasClass } from '../keys.js'
 import type { Notice, RepoWrite } from '../useRepoActions.js'
 import type { OverviewData } from './useOverview.js'
 import type { FilterId, OverviewRepository, PointerView, RepositoryView } from './model.js'
-import { repositorySync } from './directActions.js'
+import { repositorySync, repositorySyncTargets } from './directActions.js'
+import type { BatchSyncResult } from './batchSync.js'
 import {
   byAttention, checkoutLabel, elementWithData, FILTERS, filterCounts, gauge, headline, matchesFilter, matchesSearch, relativeTo,
 } from './model.js'
@@ -65,6 +66,9 @@ export interface OverviewPaneProps {
   notices: ReadonlyMap<string | null, Notice>
   /** Sync the branch checked out at one repository's entry. */
   onSync: (path: string) => void
+  batchSyncing: boolean
+  batchSyncResult: BatchSyncResult | null
+  onBatchSync: (paths: readonly string[], total: number) => void
   control: Ref<OverviewControl | null>
   t: Translate
   locale?: string
@@ -207,7 +211,8 @@ function PendingPointers() {
 
 export function OverviewPane({
   data, repositories, views, cwd, currentRepo, selected, width, onResize, onSelectRepository, onSelectPointer, onPointerActions,
-  allRepositories, onSelectAll, onManageRepositories, writes, notices, onSync, control, t, locale,
+  allRepositories, onSelectAll, onManageRepositories, writes, notices, onSync, batchSyncing, batchSyncResult, onBatchSync,
+  control, t, locale,
   turnGraphs = [], turnFilter = false, turnRevision, onTurnFilter,
 }: OverviewPaneProps) {
   const titleRef = useRef<HTMLDivElement | null>(null)
@@ -490,19 +495,60 @@ export function OverviewPane({
     )
   }
 
+  const batchTargets = useMemo(() => repositorySyncTargets(registered, capabilities), [registered, capabilities])
+  const batchBlocked = pending.some(entry => entry.capabilities.sync)
+    ? t('loading.repositories')
+    : batchTargets.paths.length === 0 ? t('all.syncUnavailable') : undefined
+  const batchNote = batchSyncing ? t('top.syncing') : batchSyncResult === null ? null : t('all.syncResult', {
+    succeeded: formatCount(batchSyncResult.succeeded, locale),
+    failed: formatCount(batchSyncResult.failed.length, locale),
+    skipped: formatCount(batchSyncResult.skipped, locale),
+  })
+  const batchCommits = batchSyncing || batchSyncResult === null || batchSyncResult.succeeded === 0 ? null : t('all.syncCommits', {
+    pushed: formatCount(batchSyncResult.pushed, locale),
+    pulled: formatCount(batchSyncResult.pulled, locale),
+  })
   const allRow = allRepositories === null ? null : (
     <div
       key={ALL_ROW.key} className="vcs-overview-repo vcs-overview-all"
       role="treeitem" aria-level={1} aria-current={allRepositories.active || undefined}
       data-overview-key={ALL_ROW.key} data-all-repositories="" tabIndex={activeKey === ALL_ROW.key ? 0 : -1}
       title={t('all.hint')}
-      onClick={() => { focusRow(ALL_ROW.key); onSelectAll(false) }}
+      onClick={event => {
+        if (onSyncControl(event.target, event.currentTarget)) return
+        focusRow(ALL_ROW.key)
+        onSelectAll(false)
+      }}
     >
       <AllRepositoriesIcon />
       <span className="vcs-overview-repo-name">{t('all.title')}</span>
       <span className="vcs-overview-repo-meta">
         {formatPlural(t, 'all.count', allRepositories.count, locale)}
         {currentTag(allRepositories.active)}
+        <SyncButton
+          all
+          className="vcs-overview-sync"
+          tabIndex={activeKey === ALL_ROW.key ? 0 : -1}
+          ahead={batchTargets.ahead}
+          behind={batchTargets.behind}
+          syncing={batchSyncing}
+          blocked={batchBlocked}
+          onSync={() => {
+            setCursor(ALL_ROW.key)
+            onBatchSync(batchTargets.paths, allRepositories.count)
+          }}
+          t={t}
+          locale={locale}
+        />
+      </span>
+      <span
+        className="vcs-overview-sync-note vcs-overview-batch-note"
+        role="status"
+        data-tone={!batchSyncing && batchSyncResult?.failed.length ? 'error' : undefined}
+        title={batchNote === null ? undefined : [batchNote, batchCommits, ...(batchSyncResult?.failed ?? [])].filter(Boolean).join('\n')}
+      >
+        {batchNote}
+        {batchCommits === null ? null : <><br />{batchCommits}</>}
       </span>
     </div>
   )
