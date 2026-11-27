@@ -196,6 +196,7 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
   const headingRef = useRef<HTMLHeadingElement | null>(null)
   const pathRef = useRef<HTMLInputElement | null>(null)
   const scanButtonRef = useRef<HTMLButtonElement | null>(null)
+  const scanAddAllRef = useRef<HTMLButtonElement | null>(null)
   const scanAddButtons = useRef(new Map<string, HTMLButtonElement>())
   const scanRequest = useRef<AbortController | null>(null)
   const previewRef = useRef<AbortController | null>(null)
@@ -262,6 +263,16 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
   const scanMatches = scan.status === 'ready'
     ? scan.result.roots.filter(root => !draft?.repositories.some(entry => entry.path === root.path))
     : []
+  const firstScanPath = scanMatches[0]?.path
+  const canAddAllScanned = editing && scanMatches.length > 1 && scanMatches.length <= scanCapacity
+
+  useEffect(() => {
+    const button = scanButtonRef.current
+    if (button === null || button.ownerDocument.activeElement !== button || !editing || scanCapacity < 1 || firstScanPath === undefined) return
+    // Results sit above the footer in tab order. Enter them only if the user is still on Scan.
+    const firstAction = canAddAllScanned ? scanAddAllRef.current : scanAddButtons.current.get(firstScanPath)
+    firstAction?.focus()
+  }, [scan, editing, scanCapacity, firstScanPath, canAddAllScanned])
 
   const findUnlisted = async () => {
     if (!editing || scanRequest.current !== null) return
@@ -464,50 +475,6 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
             ) : null}
           </section>
         ) : null}
-        {editable ? (
-          <section className="vcs-repository-section">
-            <div className="vcs-dialog-actions vcs-repository-add-actions vcs-repository-scan-actions">
-              <button ref={scanButtonRef} type="button" className="vcs-button"
-                aria-disabled={!editing || scan.status === 'scanning'} onClick={findUnlisted}>
-                {t('repositoryConfig.scanUnlisted')}
-              </button>
-              {scanMatches.length > 1 ? (
-                <button type="button" className="vcs-button" disabled={!editing || scanMatches.length > scanCapacity}
-                  onClick={() => { addScanned(scanMatches.map(root => root.path)) }}>{t('repositoryConfig.addScannedAll')}</button>
-              ) : null}
-            </div>
-            <div role="status" className="vcs-repository-feedback">
-              {scan.status === 'scanning' ? t('repositoryConfig.scanningUnlisted') : null}
-              {scan.status === 'ready' ? (
-                <>
-                  {scan.result.roots.length === 0 ? t('repositoryConfig.noUnlisted')
-                    : scanMatches.length === 0 ? t('repositoryConfig.unlistedInDraft')
-                      : `${t('repositoryConfig.unlistedFound')} (${scanMatches.length})`}
-                  {scanAddedPath !== null ? <> {t('repositoryConfig.addedDraft', { path: scanAddedPath })}</> : null}
-                  {scanMatches.length > scanCapacity ? <> {t('repositoryConfig.scanCapacity', { available: scanCapacity })}</> : null}
-                  {scan.result.truncated ? <> {t('repositoryConfig.scanTruncated')}</> : null}
-                </>
-              ) : null}
-            </div>
-            {scan.status === 'error' ? <p className="vcs-dialog-error" role="alert">{errorMessage(t, scan.error)}</p> : null}
-            {scanMatches.length > 0 ? (
-              <ul aria-label={t('repositoryConfig.unlistedFound')}>
-                {scanMatches.map(root => (
-                  <li key={root.path}>
-                    <code>{root.path}</code>
-                    <button type="button" className="vcs-button" disabled={!editing || scanCapacity < 1}
-                      ref={button => {
-                        if (button === null) scanAddButtons.current.delete(root.path)
-                        else scanAddButtons.current.set(root.path, button)
-                      }}
-                      aria-label={t('repositoryConfig.addScannedPath', { path: root.path })}
-                      onClick={() => { addScanned([root.path]) }}>{t('repositoryConfig.add')}</button>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </section>
-        ) : null}
         {draft === null || configError ? null : (
           <>
             {draft.scanDirectories.length === 0 && draft.repositories.length === 0 ? (
@@ -522,11 +489,59 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
         <RepositorySources cwd={cwd} repositories={repositories} backends={draft?.backends ?? []}
           disabled={!editing} onChange={setBackend} t={t} />
       </div>
+      {editable ? (
+        <section id="vcs-repository-scan-results" className="vcs-repository-section vcs-repository-scan-results"
+          data-idle={scan.status === 'idle' || undefined}>
+          {scanMatches.length > 1 ? (
+            <div className="vcs-dialog-actions vcs-repository-add-actions vcs-repository-scan-actions">
+              <button ref={scanAddAllRef} type="button" className="vcs-button" disabled={!canAddAllScanned}
+                onClick={() => { addScanned(scanMatches.map(root => root.path)) }}>{t('repositoryConfig.addScannedAll')}</button>
+            </div>
+          ) : null}
+          <div role="status" className="vcs-repository-feedback">
+            {scan.status === 'scanning' ? t('repositoryConfig.scanningUnlisted') : null}
+            {scan.status === 'ready' ? (
+              <>
+                {scan.result.roots.length === 0 ? t('repositoryConfig.noUnlisted')
+                  : scanMatches.length === 0 ? t('repositoryConfig.unlistedInDraft')
+                    : `${t('repositoryConfig.unlistedFound')} (${scanMatches.length})`}
+                {scanAddedPath !== null ? <> {t('repositoryConfig.addedDraft', { path: scanAddedPath })}</> : null}
+                {scanMatches.length > scanCapacity ? <> {t('repositoryConfig.scanCapacity', { available: scanCapacity })}</> : null}
+                {scan.result.truncated ? <> {t('repositoryConfig.scanTruncated')}</> : null}
+              </>
+            ) : null}
+          </div>
+          {scan.status === 'error' ? <p className="vcs-dialog-error" role="alert">{errorMessage(t, scan.error)}</p> : null}
+          {scanMatches.length > 0 ? (
+            <ul aria-label={t('repositoryConfig.unlistedFound')}>
+              {scanMatches.map(root => (
+                <li key={root.path}>
+                  <code>{root.path}</code>
+                  <button type="button" className="vcs-button" disabled={!editing || scanCapacity < 1}
+                    ref={button => {
+                      if (button === null) scanAddButtons.current.delete(root.path)
+                      else scanAddButtons.current.set(root.path, button)
+                    }}
+                    aria-label={t('repositoryConfig.addScannedPath', { path: root.path })}
+                    onClick={() => { addScanned([root.path]) }}>{t('repositoryConfig.add')}</button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
+      ) : null}
       {saving ? <p className="vcs-dialog-busy" role="status">{t('repositoryConfig.saving')}</p> : null}
       {loadError ?? configError ?? saveError ? (
         <p className="vcs-dialog-error" role="alert">{errorMessage(t, loadError ?? configError ?? saveError)}</p>
       ) : null}
       <div className="vcs-dialog-actions vcs-repository-footer">
+        {editable ? (
+          <button ref={scanButtonRef} type="button" className="vcs-button vcs-repository-scan"
+            aria-controls="vcs-repository-scan-results"
+            aria-disabled={!editing || scan.status === 'scanning'} onClick={findUnlisted}>
+            {t('repositoryConfig.scanUnlisted')}
+          </button>
+        ) : null}
         {conflict || configError || loadError ? (
           <button type="button" className="vcs-button" onClick={reload}>
             {conflict ? t('repositoryConfig.discardReload') : t('error.retry')}

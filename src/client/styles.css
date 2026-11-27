@@ -881,6 +881,19 @@ select.vcs-repository-kind {
   margin: 0;
 }
 
+.vcs-repository-section.vcs-repository-scan-results {
+  max-height: min(12rem, 25vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 8px 0 0;
+  padding: 2px;
+}
+
+.vcs-repository-section.vcs-repository-scan-results[data-idle] {
+  margin: 0;
+  padding: 0;
+}
+
 .vcs-repository-scan-actions.vcs-dialog-actions {
   justify-content: flex-start;
   flex-wrap: wrap;
@@ -998,9 +1011,14 @@ select.vcs-repository-kind {
 
 .vcs-dialog-actions.vcs-repository-footer {
   flex-shrink: 0;
+  flex-wrap: wrap;
   margin-top: 8px;
   padding-top: 10px;
   border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.vcs-button.vcs-repository-scan {
+  margin-inline-end: auto;
 }
 
 .vcs-button.vcs-repository-save:not(:disabled) {
