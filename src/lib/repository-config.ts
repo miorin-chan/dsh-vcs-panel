@@ -4,11 +4,11 @@ import { join } from 'node:path'
 import type { FileSystem, FsInfo, FsTarget, FsVersion, FsWriteIntent } from '@deepseek-ai/dsh-fs'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 
+import { REPOSITORY_CONFIG_PATH_MAX } from './repository-config-limits.js'
 import { VcsError } from './errors.js'
 import { sameRepoPath, validateRelPath, validateRepoPath } from './paths.js'
 
 const MAX_BYTES = 64 * 1024
-const MAX_PATHS = 50
 /** Backends a repository preference may name. */
 const BACKENDS = new Set(['git', 'jujutsu'])
 
@@ -87,7 +87,7 @@ function policySessionId(sessionId: string | null): SessionId | undefined {
  */
 function readBackends(value: unknown): BackendPreference[] {
   if (value === undefined) return []
-  if (!Array.isArray(value) || value.length > MAX_PATHS) {
+  if (!Array.isArray(value) || value.length > REPOSITORY_CONFIG_PATH_MAX) {
     throw new VcsError(CONFIG_INVALID, 'Backend preferences must be a list of path and backend pairs.')
   }
   const entries: readonly unknown[] = value
@@ -113,7 +113,7 @@ function readPathList(value: Record<string, unknown>, key: 'scanDirectories' | '
     throw new VcsError(CONFIG_INVALID, 'Repository configuration paths must be relative to this session directory.')
   }
   const items: readonly unknown[] = raw === undefined ? [] : raw
-  if (items.length > MAX_PATHS || !isRelativePaths(items)) {
+  if (items.length > REPOSITORY_CONFIG_PATH_MAX || !isRelativePaths(items)) {
     throw new VcsError(CONFIG_INVALID, 'Repository configuration paths must be relative to this session directory.')
   }
   return [...new Set(items)]

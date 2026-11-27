@@ -20,7 +20,6 @@ export interface OverviewData {
   cwd: string | null
   repositories: ReadonlyMap<string, OverviewRepository>
   failures: ReadonlyMap<string, ApiFailure>
-  unlistedTruncated: boolean
   error: ApiFailure | null
 }
 
@@ -29,7 +28,6 @@ const EMPTY: OverviewData = Object.freeze({
   cwd: null,
   repositories: new Map(),
   failures: new Map(),
-  unlistedTruncated: false,
   error: null,
 })
 
@@ -94,7 +92,7 @@ export function useOverview(api: Api, { active, reloadKey, repo, repoKey }: UseO
         // Done: drop the rows this read no longer reported.
         const repositories = new Map([...previous.repositories].filter(([path]) => seen.has(path)))
         const failures = new Map([...previous.failures].filter(([path]) => seen.has(path)))
-        return { ...previous, repositories, failures, unlistedTruncated: line.unlistedTruncated === true, status: 'ready' }
+        return { ...previous, repositories, failures, status: 'ready' }
       })
     }
     api.overview(apply, { signal: controller.signal }).then(() => {

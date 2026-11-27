@@ -349,7 +349,7 @@ test('the overview stream decodes lines as they arrive, across chunk boundaries'
   const lines = [
     { type: 'scope', cwd: '/w', repositories: 1 },
     { type: 'repository', repository: { path: '/w/repo', pointers: [] } },
-    { type: 'done', unlistedTruncated: false },
+    { type: 'done' },
   ].map(line => JSON.stringify(line)).join('\n') + '\n'
   const encoder = new TextEncoder()
   const urls: string[] = []

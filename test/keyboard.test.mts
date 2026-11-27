@@ -5473,6 +5473,8 @@ test('the overview gear opens repository management with an empty drawer and ref
   }
   let listed = []
   const pendingSave = Promise.withResolvers()
+  const pendingScan = Promise.withResolvers()
+  const scans = []
   const response = (data, status = 200) => ({ ok: status === 200, status, async json() { return data } })
   globalThis.fetch = async (url, options) => {
     const parsed = new URL(url, 'http://127.0.0.1')
@@ -5502,6 +5504,17 @@ test('the overview gear opens repository management with an empty drawer and ref
       case '/api/vcs.repositories': return response({ repositories: listed, cwd: '/workspace' })
       case '/api/vcs.overview': return overviewResponse(listed.map(repo => tileRepo(repo.path, [])), '/workspace')
       case '/api/vcs.repository-config': return response(config)
+      case '/api/vcs.repository-scan': {
+        scans.push(options.signal)
+        if (scans.length === 1) return pendingScan.promise
+        if (scans.length === 2) return response({ roots: [], truncated: false })
+        if (scans.length === 3) return response({ error: { code: 'timeout' } }, 500)
+        if (scans.length === 4) return response({
+          roots: Array.from({ length: 50 }, (_, index) => ({ path: `unlisted/repo-${index}`, vcs: 'git' })),
+          truncated: true,
+        })
+        return response({ roots: [{ path: 'deep/path/repo', vcs: 'git' }], truncated: true })
+      }
       case '/api/vcs.repository-preview': {
         const path = parsed.searchParams.get('path')
         const kind = parsed.searchParams.get('kind')
@@ -5551,14 +5564,45 @@ test('the overview gear opens repository management with an empty drawer and ref
     assert.equal(q('.vcs-overview-title').querySelector('.vcs-overview-manage'), gear())
     assert.equal(gear().attributes.get('aria-label'), 'repositoryConfig.manage')
     assert.equal(gear().attributes.get('title'), 'repositoryConfig.manage')
+    assert.equal(scans.length, 0, 'opening the overview does not scan')
     await open()
+    assert.equal(scans.length, 0, 'opening the settings does not scan')
+    harness.keyClick(button('repositoryConfig.scanUnlisted'))
+    await harness.settle()
+    assert.match(textOf(dialog()), /repositoryConfig.scanningUnlisted/u)
+    assert.equal(button('repositoryConfig.scanUnlisted').attributes.get('aria-disabled'), 'true')
     harness.keyDown(document.activeElement, 'Escape')
+    assert.equal(scans[0].aborted, true, 'closing the settings aborts its pending scan')
+    pendingScan.resolve(response({ roots: [], truncated: false }))
     assert.equal(dialog(), null)
     assert.equal(document.activeElement, gear())
     assert.ok(q('.vcs-overview'), 'dismissing management leaves the drawer open')
     await open()
     assert.match(textOf(dialog()), /repositoryConfig.scope.*\/workspace/u)
     assert.match(textOf(dialog()), /repositoryConfig.directoryHint/u)
+    harness.keyClick(button('repositoryConfig.scanUnlisted'))
+    await harness.settle()
+    assert.match(textOf(dialog()), /repositoryConfig.noUnlisted/u)
+    harness.keyClick(button('repositoryConfig.scanUnlisted'))
+    await harness.settle()
+    assert.match(textOf(dialog().querySelector('[role="alert"]')), /error.timeout/u)
+    harness.keyClick(button('repositoryConfig.scanUnlisted'))
+    await harness.settle()
+    assert.match(textOf(dialog()), /repositoryConfig.scanCapacity.*49/u)
+    assert.equal(button('repositoryConfig.addScannedAll').props.disabled, true, 'bulk add cannot exceed the draft limit')
+    const scanButtons = dialog().querySelectorAll('[type="button"]').filter(control =>
+      control.attributes.get('aria-label')?.includes('repositoryConfig.addScannedPath'))
+    assert.equal(scanButtons.length, 50)
+    scanButtons[0].focus()
+    harness.keyClick(scanButtons[0])
+    await harness.settle()
+    assert.equal(document.activeElement, scanButtons[1], 'focus moves to the next result')
+    const removeScanned = dialog().querySelectorAll('[type="button"]').find(control =>
+      control.attributes.get('aria-label')?.includes('unlisted/repo-0') && textOf(control) === 'repositoryConfig.remove')
+    assert.ok(removeScanned)
+    harness.keyClick(removeScanned)
+    await harness.settle()
+    assert.equal(posts.length, 0)
     assert.match(textOf(dialog()), /missing\/repo.*repositoryConfig.unavailable/u)
     assert.ok(textOf(dialog()).indexOf('repositoryConfig.path') < textOf(dialog()).indexOf('missing/repo'))
     harness.keyClick(button('repositoryConfig.remove'))
@@ -5605,7 +5649,19 @@ test('the overview gear opens repository management with an empty drawer and ref
     await harness.settle()
     harness.keyClick(button('repositoryConfig.preview'))
     await harness.settle()
-    harness.keyClick(button('repositoryConfig.add'))
+    harness.keyClick(button('repositoryConfig.scanUnlisted'))
+    await harness.settle()
+    assert.match(textOf(dialog()), /repositoryConfig.unlistedFound.*\(1\)/u)
+    assert.match(textOf(dialog()), /repositoryConfig.scanTruncated/u)
+    const scanned = dialog().querySelectorAll('[type="button"]').find(control =>
+      control.attributes.get('aria-label')?.includes('repositoryConfig.addScannedPath'))
+    assert.ok(scanned)
+    harness.keyClick(scanned)
+    await harness.settle()
+    assert.match(textOf(dialog()), /repositoryConfig.unlistedInDraft/u)
+    assert.match(textOf(dialog()), /repositoryConfig.addedDraft/u)
+    assert.match(textOf(dialog()), /repositoryConfig.previewResult/u, 'adding a scanned path preserves the independent preview')
+    assert.equal(posts.length, 1, 'scanning and adding only edit the draft')
     submit()
     await harness.settle()
     assert.deepEqual(posts[1], {

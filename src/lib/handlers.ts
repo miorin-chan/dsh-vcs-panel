@@ -15,7 +15,7 @@
  * routes with a fake host context, and so `apply` stays thin.
  */
 
-import { basename, dirname, isAbsolute } from 'node:path'
+import { basename, dirname, isAbsolute, relative, sep } from 'node:path'
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
@@ -82,6 +82,7 @@ export interface VcsRouteHandlers {
   repositories: RouteHandler
   repositoryConfig: RouteHandler
   repositoryPreview: RouteHandler
+  repositoryScan: RouteHandler
   saveRepositoryConfig: RouteHandler
   overview: RouteHandler
   activity: RouteHandler
@@ -515,6 +516,44 @@ export function createHandlers(ctx: HandlersContext, {
     return json(await previewRepositoryConfig(ctx, cwd, query.get('kind'), query.get('path'), request.signal))
   }
 
+  /** Handle `GET /api/vcs.repository-scan` with discovery only, without reading repository summaries. */
+  async function repositoryScan(request: Request): Promise<Response> {
+    const query = new URL(request.url).searchParams
+    const { signal } = request
+    signal.throwIfAborted()
+    if (query.getAll('sessionId').length > 1) throw badRequest('Request one session.')
+    const { cwd: sessionCwd } = await requireSession(query)
+    const cwd = await canonicalDirectory(ctx, sessionCwd, signal)
+    if (cwd === null) throw new VcsError('no-cwd', 'The session working directory is not available.')
+    const git = backends.get('git')
+    if (typeof git?.unlisted !== 'function') return json({ roots: [], truncated: false })
+
+    const { repositories } = await findRepositories(cwd, signal)
+    const commons: string[] = []
+    const roots: string[] = []
+    for (const repo of repositories) {
+      signal.throwIfAborted()
+      roots.push(repo.path)
+      const backend = repo.vcs === undefined ? undefined : backends.get(repo.vcs)
+      if (backend === undefined) continue
+      const common = await backend.commonDir(repo.path, signal).catch(error => {
+        if (signal.aborted || isAbortError(error)) throw error
+        return null
+      })
+      if (common !== null) commons.push(common)
+    }
+    signal.throwIfAborted()
+    const found = await git.unlisted(cwd, { commons, roots }, signal)
+    signal.throwIfAborted()
+    return json({
+      roots: found.roots.flatMap(root => {
+        const path = validateRelPath(relative(cwd, root.path).split(sep).join('/'))
+        return path === undefined ? [] : [{ path, vcs: root.vcs }]
+      }),
+      truncated: found.truncated,
+    })
+  }
+
   async function saveRepositoryConfig(request: Request): Promise<Response> {
     const { body, query, origin } = await readWrite(request, 'Repository configuration')
     const { sessionId, cwd } = await requireSession(query)
@@ -532,8 +571,7 @@ export function createHandlers(ctx: HandlersContext, {
    * Handle `GET /api/vcs.overview`: one NDJSON line per repository, in the order
    * the reads finish, so the first answers draw before the slowest one. With
    * `repo`, only that discovered repository is read; without it, every
-   * discovered repository is read and then the walk lists the repositories
-   * under the session directory that discovery leaves out.
+   * discovered repository is read.
    */
   async function overview(request: Request): Promise<Response> {
     const query = new URL(request.url).searchParams
@@ -551,13 +589,13 @@ export function createHandlers(ctx: HandlersContext, {
       const { repositories: grouped } = await findRepositories(sessionCwd, request.signal)
       targets = grouped.flatMap(entry => entry.vcs === undefined ? [] : [{ path: entry.path, vcs: entry.vcs }])
     }
-    const walk = requested.length === 0
     const reading = new AbortController()
     const signal = AbortSignal.any([request.signal, reading.signal])
     const statusLimiter = createLimiter(4)
     const encoder = new TextEncoder()
 
-    const readOne = async (path: string, vcs: string, registered: boolean): Promise<Record<string, unknown>> => {
+    const readOne = async (path: string, vcs: string): Promise<Record<string, unknown>> => {
+      const registered = true
       const backend = backends.get(vcs)
       if (typeof backend?.overview !== 'function') return { type: 'repository', repository: unsupportedOverview(path, vcs, registered) }
       try {
@@ -580,25 +618,8 @@ export function createHandlers(ctx: HandlersContext, {
         const run = async () => {
           send({ type: 'scope', cwd, repositories: targets.length })
           const limiter = createLimiter(4)
-          await Promise.all(targets.map(target => limiter.run(async () => { send(await readOne(target.path, target.vcs, true)) })))
-          let unlistedTruncated = false
-          const git = backends.get('git')
-          if (walk && typeof git?.unlisted === 'function') {
-            const commons: string[] = []
-            for (const target of targets) {
-              const backend = backends.get(target.vcs)
-              if (backend === undefined) continue
-              const common = await backend.commonDir(target.path, signal).catch(error => {
-                if (signal.aborted) throw error
-                return null
-              })
-              if (common !== null) commons.push(common)
-            }
-            const found = await git.unlisted(cwd, { commons, roots: targets.map(target => target.path) }, signal)
-            unlistedTruncated = found.truncated
-            await Promise.all(found.roots.map(root => limiter.run(async () => { send(await readOne(root.path, root.vcs, false)) })))
-          }
-          send({ type: 'done', unlistedTruncated })
+          await Promise.all(targets.map(target => limiter.run(async () => { send(await readOne(target.path, target.vcs)) })))
+          send({ type: 'done' })
         }
         run().then(() => {
           if (!signal.aborted) controller.close()
@@ -1370,6 +1391,7 @@ export function createHandlers(ctx: HandlersContext, {
     repositories: wrap(repositories),
     repositoryConfig: wrap(repositoryConfig),
     repositoryPreview: wrap(repositoryPreview),
+    repositoryScan: wrap(repositoryScan),
     saveRepositoryConfig: wrap(saveRepositoryConfig),
     overview: wrap(overview),
     activity: wrap(activity),

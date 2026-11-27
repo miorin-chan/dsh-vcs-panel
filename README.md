@@ -39,7 +39,9 @@ The DeepSeek Harness interface is shown in Chinese.
   The gear in the overview header opens **Manage repositories**, where you preview and add a folder of repositories
   or register a specific nested repository, and pick Git or Jujutsu for a repository that carries both markers.
   Discovery rules are saved relative to the session directory in `.dsh/vcs-panel.json`.
-  Repositories under the session folder that discovery leaves out are listed and can be added in one step.
+  Use **Scan for unlisted repositories** in **Manage repositories** to look
+  for additional repositories under the session folder.
+  Add the results you want to the draft, then save to update discovery.
 - **Tiled repositories.** The tile half of the repository button (`T`) lays every repository out
   as a column of pointers, ordered by attention or by folder; `1`–`7` step through one state,
   and `Enter` opens the focused pointer in the timeline.

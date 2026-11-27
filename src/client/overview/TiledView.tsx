@@ -51,7 +51,6 @@ export interface TiledControl {
 
 export interface TiledViewProps {
   columns: readonly TileColumn[]
-  unlisted: readonly RepositoryView[]
   cwd: string | null
   currentRepo: string | null
   expanded: readonly string[]
@@ -66,7 +65,6 @@ export interface TiledViewProps {
   onCollapse: (path: string) => void
   onPointerActions: (pointer: PointerView, point: { clientX: number, clientY: number }, element: HTMLElement | null) => void
   onDirectAction: (pointer: PointerView, action: TileDirectAction['action'], restore: () => void) => void
-  onAddUnlisted: (paths: string[]) => void
   control: Ref<TiledControl | null>
   t: Translate
   locale?: string
@@ -382,8 +380,8 @@ interface ActionOrigin {
 }
 
 export function TiledView({
-  columns, unlisted, cwd, currentRepo, expanded, filter, focus, narrow, inFlight, notices, onFocusPointer, onOpenTimeline, onExpand,
-  onCollapse, onPointerActions, onDirectAction, onAddUnlisted, control, t, locale,
+  columns, cwd, currentRepo, expanded, filter, focus, narrow, inFlight, notices, onFocusPointer, onOpenTimeline, onExpand,
+  onCollapse, onPointerActions, onDirectAction, control, t, locale,
 }: TiledViewProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const actionOriginRef = useRef<ActionOrigin | null>(null)
@@ -464,7 +462,7 @@ export function TiledView({
   }
 
   const focused = focus === null ? null : columns.flatMap(column => column.view?.pointers ?? []).find(pointer => pointer.id === focus)
-    ?? unlisted.flatMap(view => view.pointers).find(pointer => pointer.id === focus) ?? null
+    ?? null
   const focusedColumn = focused === null ? undefined : columns.find(column => column.view?.path === focused.repo)
   const focusedView = focusedColumn?.view ?? null
   const notice = notices.get(focused?.repo ?? currentRepo)
@@ -511,21 +509,6 @@ export function TiledView({
             </section>
           )
         })}
-        {unlisted.length > 0 ? (
-          <aside className="vcs-tile-column vcs-tile-unlisted" data-repository="">
-            <b>{formatPlural(t, 'overview.unlisted', unlisted.length, locale)}</b>
-            <ul>
-              {unlisted.map(view => (
-                <li key={view.path} title={view.path}>
-                  {view.relativePath}
-                  {view.unique > 0 ? <span data-state="unique"> · {formatPlural(t, 'overview.metric.unique', view.unique, locale)}</span> : null}
-                  {view.dirty > 0 ? <span data-state="unsaved"> · {formatPlural(t, 'overview.metric.unsaved', view.dirty, locale)}</span> : null}
-                </li>
-              ))}
-            </ul>
-            <button type="button" className="vcs-button" onClick={() => { onAddUnlisted(unlisted.map(view => view.relativePath)) }}>{t('overview.unlistedAdd')}</button>
-          </aside>
-        ) : null}
       </div>
       {focusedView !== null || notice !== undefined ? (
         <div className="vcs-tile-actionbar" role="region" aria-label={t('tile.selected')}>

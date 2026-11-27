@@ -1009,6 +1009,27 @@ function repositoryPaths(answer) {
   return answer.body.repositories.map(repo => repo.path).sort()
 }
 
+test('registered repository scan respects discovery rules and does not write configuration', async t => {
+  const f = repositoryDiscoveryFixture(t)
+  const path = '/api/vcs.repository-scan'
+  f.writeConfig({ scanDirectories: ['plugins'] })
+  const before = await readFile(f.configPath, 'utf8')
+  assert.deepEqual(await f.get(path), {
+    status: 200,
+    body: { roots: [{ path: 'plugins/archive/two', vcs: 'git' }], truncated: false },
+  })
+  assert.equal(await readFile(f.configPath, 'utf8'), before)
+  assert.deepEqual(repositoryPaths(await f.get('/api/vcs.repositories')), [f.workspace, f.gitRepo].sort())
+
+  const listings = f.directoriesListed.length
+  for (const [sessionId, status, code] of [['', 400, 'bad-request'], ['missing', 409, 'no-session']]) {
+    const result = await f.get(path, { sessionId })
+    assert.equal(result.status, status)
+    assert.equal(result.body.error.code, code)
+  }
+  assert.equal(f.directoriesListed.length, listings)
+})
+
 test('configured directory discovery is shallow, merges sources, and authorizes real Git operations until removed', async t => {
   const f = repositoryDiscoveryFixture(t)
   assert.deepEqual(repositoryPaths(await f.get('/api/vcs.repositories')), [f.workspace])
@@ -3138,6 +3159,7 @@ test('apply registers every GET and POST route inside the fence and honors enabl
   apply(ctx, undefined)
   assert.deepEqual(routes.filter(r => r.path !== REPOSITORY_CONFIG_ROUTE && r.path !== REPOSITORY_PREVIEW_ROUTE).map(r => r.path), [
     '/api/vcs.repositories',
+    '/api/vcs.repository-scan',
     '/api/vcs.overview',
     '/api/vcs.activity',
     '/api/vcs.watch',
@@ -5331,7 +5353,7 @@ test('Jujutsu overview falls back from root to the local main, or leaves distanc
   ])
 })
 
-test('Jujutsu overview reads an unlisted colocated root without needing git', { skip: !HAS_JJ }, async t => {
+test('manual scan finds a nested colocated Jujutsu root without Git or summaries', { skip: !HAS_JJ }, async t => {
   const { source, ctx } = lifecycleFixture(t, 'jujutsu')
   const hidden = join(source, 'nest', 'deep')
   mkdirSync(join(source, 'nest'))
@@ -5348,15 +5370,18 @@ test('Jujutsu overview reads an unlisted colocated root without needing git', { 
     spawn: spec => { seen.push(spec.argv); return spawn(spec) },
   } }
   const all = await jjOverview(onlyJj, {})
-  assert.deepEqual(all.lines?.map(line => line.type), ['scope', 'repository', 'repository', 'done'], JSON.stringify(all))
-  const [listed, unlisted] = all.lines.slice(1, -1).map(line => line.repository)
+  assert.deepEqual(all.lines?.map(line => line.type), ['scope', 'repository', 'done'], JSON.stringify(all))
+  const listed = all.lines[1].repository
   assert.equal(listed.path, source)
   assert.equal(listed.registered, true)
-  assert.equal(unlisted.path, hidden)
-  assert.equal(unlisted.registered, false)
-  assert.equal(unlisted.vcs, 'jujutsu')
-  assert.deepEqual(unlisted.pointers.map(p => [p.kind, p.name, p.isBase]), [['branch', 'main', true]])
   assert.ok(seen.length > 0 && seen.every(argv => argv.includes('--ignore-working-copy')))
+
+  seen.length = 0
+  const scan = await call(createHandlers(onlyJj).repositoryScan, route('/api/vcs.repository-scan', { sessionId: 'source' }))
+  assert.equal(scan.status, 200)
+  assert.deepEqual(scan.body, { roots: [{ path: 'nest/deep', vcs: 'jujutsu' }], truncated: false })
+  assert.ok(!seen.some(argv => ['bookmark', 'tag', 'status'].some(cmd => argv.includes(cmd))))
+  assert.ok(seen.every(argv => argv.includes('--ignore-working-copy')))
 })
 
 test('overview without jj answers vcs-missing for one repository and per line for all', async t => {

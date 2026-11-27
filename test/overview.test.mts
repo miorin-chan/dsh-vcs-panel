@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 
 import { createHandlers } from '../index.js'
 import {
-  countStatusEntries, parseGitVersion, parseRefRecords, parseTrack, unpublishedCounts, versionAtLeast,
+  countStatusEntries, parseGitVersion, parseRefRecords, parseTrack, UNLISTED_REPOSITORY_MAX, unpublishedCounts, versionAtLeast,
 } from '../lib/overview.js'
 import { parseStashList } from '../lib/stash.js'
 
@@ -328,17 +328,67 @@ test('overview streams every discovered repository with bases, distances, unique
   assert.equal(pointer(local, 'branch', 'main').isBase, true)
 })
 
-test('overview lists unlisted repositories under the session directory and never walks a symlink out', async () => {
-  const { lines } = await overview({ sessionId: 's-overview' })
+test('overview does not walk nested directories or stream unlisted roots', async () => {
+  const listings: string[] = []
+  const traced = createHandlers(host({ fs: { ...fakeFs, listDir: (resolved: { targetKey: string }) => {
+    listings.push(resolved.targetKey)
+    return fakeFs.listDir(resolved)
+  } } }) as never)
+  const { lines } = await overview({ sessionId: 's-overview' }, traced.overview)
   const repositories = repositoryLines(lines)
-  const deep = repositories.find(entry => entry.path === fixture.deep)
-  assert.ok(deep, 'the deep repository is found by the walk')
-  assert.equal(deep.registered, false)
-  assert.equal(deep.pointers.length, 1)
-  // Linked checkouts belong to the fork, not to separate repositories.
-  assert.equal(repositories.filter(entry => entry.path === fixture.linked || entry.path === fixture.loose).length, 0)
-  assert.equal(repositories.some(entry => entry.path.startsWith(join(fixture.scratch, 'outside'))), false)
-  assert.equal(lines.at(-1)?.unlistedTruncated, false)
+  assert.deepEqual(repositories.map(entry => entry.path).sort(), [fixture.fork, fixture.local].sort())
+  assert.ok(repositories.every(entry => entry.registered === true))
+  assert.deepEqual(lines.at(-1), { type: 'done' })
+  assert.ok(listings.includes(fixture.session))
+  assert.ok(!listings.some(path => path === join(fixture.session, 'deep') || path.startsWith(`${join(fixture.session, 'deep')}${sep}`)))
+})
+
+function scanRequest(sessionId: string, signal?: AbortSignal): Request {
+  return new Request(`http://127.0.0.1/api/vcs.repository-scan?${new URLSearchParams({ sessionId })}`, { signal })
+}
+
+test('manual scan returns rule-ready Git roots without summaries, linked duplicates or symlink escapes', async t => {
+  const alias = join(fixture.scratch, 'session-alias')
+  symlinkSync(fixture.session, alias)
+  sessions.set('s-alias', { header: { cwd: alias } })
+  t.after(() => { sessions.delete('s-alias') })
+  const nestedLinked = join(fixture.session, 'deep', 'linked')
+  git(fixture.fork, ['worktree', 'add', '-q', '--detach', nestedLinked, 'main'])
+  t.after(() => { git(fixture.fork, ['worktree', 'remove', nestedLinked]) })
+  const seen: string[][] = []
+  const traced = createHandlers(host({ subprocess: fakeSubprocess(argv => { seen.push(argv); return argv }) }) as never)
+  const response = await traced.repositoryScan(scanRequest('s-alias'))
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('cache-control'), 'no-store')
+  assert.deepEqual(await response.json(), { roots: [{ path: 'deep/nested/repo', vcs: 'git' }], truncated: false })
+  assert.ok(seen.some(argv => argv.includes('worktree') && argv.includes('list')))
+  assert.ok(!seen.some(argv => ['status', 'for-each-ref', 'rev-list', 'stash'].some(cmd => argv.includes(cmd))))
+})
+
+test('manual scan caps the number of returned repository roots', async t => {
+  const cwd = join(fixture.scratch, 'cap')
+  sessions.set('s-cap', { header: { cwd } })
+  t.after(() => { sessions.delete('s-cap') })
+  for (let index = 0; index <= UNLISTED_REPOSITORY_MAX; index += 1) initRepo(join(cwd, 'nested', `repo-${index}`))
+  const response = await handlers.repositoryScan(scanRequest('s-cap'))
+  assert.equal(response.status, 200)
+  const { roots, truncated } = await response.json()
+  assert.equal(roots.length, UNLISTED_REPOSITORY_MAX)
+  assert.equal(truncated, true)
+})
+
+test('manual scan stops when the request aborts during the directory walk', async () => {
+  const cancellation = new AbortController()
+  const reason = new DOMException('Scan cancelled', 'AbortError')
+  const listings: string[] = []
+  const traced = createHandlers(host({ fs: { ...fakeFs, listDir: async (resolved: { targetKey: string }, signal: AbortSignal) => {
+    listings.push(resolved.targetKey)
+    if (resolved.targetKey === join(fixture.session, 'deep')) cancellation.abort(reason)
+    signal.throwIfAborted()
+    return fakeFs.listDir(resolved)
+  } } }) as never)
+  await assert.rejects(traced.repositoryScan(scanRequest('s-overview', cancellation.signal)), error => error === reason)
+  assert.equal(listings.at(-1), join(fixture.session, 'deep'))
 })
 
 test('overview reads one discovered repository and rejects other targets', async () => {

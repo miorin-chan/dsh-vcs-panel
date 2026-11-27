@@ -520,6 +520,12 @@ export interface RepositoryPreviewAnswer {
   truncated: boolean
 }
 
+/** The paths found by an explicit scan, relative to the Session directory. */
+export interface RepositoryScanAnswer {
+  roots: Array<{ path: string, vcs: string }>
+  truncated: boolean
+}
+
 /** The target one branch action acts on. */
 export interface BranchOpTarget {
   branch: string
@@ -589,7 +595,7 @@ export type OverviewLine =
   | { type: 'scope', cwd: string, repositories: number }
   | { type: 'repository', repository: OverviewRepository }
   | { type: 'error', path: string, vcs?: string, registered?: boolean, error: { code: string, message?: string } }
-  | { type: 'done', unlistedTruncated?: boolean, failed?: boolean }
+  | { type: 'done', failed?: boolean }
 
 export interface Api {
   /** Repositories the Session may show. */
@@ -610,6 +616,8 @@ export interface Api {
   repositoryConfig(signal?: AbortSignal): Promise<RepositoryConfigAnswer>
   /** What one candidate path would contribute. */
   repositoryPreview(path: string, kind: 'directory' | 'repository', signal?: AbortSignal): Promise<RepositoryPreviewAnswer>
+  /** Explicitly look for repositories outside the current discovery rules. */
+  repositoryScan(signal?: AbortSignal): Promise<RepositoryScanAnswer>
   /** Persist one discovery configuration. */
   saveRepositoryConfig(
     revision: string,
@@ -876,6 +884,10 @@ export function createApi(sessionId: string, options: ApiOptions = {}): Api {
 
     repositoryPreview(path, kind, signal) {
       return get('/api/vcs.repository-preview', { path, kind }, signal)
+    },
+
+    repositoryScan(signal) {
+      return get('/api/vcs.repository-scan', {}, signal)
     },
 
     saveRepositoryConfig(revision, scanDirectories, repositories, backends) {

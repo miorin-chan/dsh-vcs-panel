@@ -714,8 +714,7 @@ export function VcsView({
     abortBranches,
   })
   const { resetActionsUi } = actions
-  const [addingRepositories, setAddingRepositories] = useState<string[] | null>(null)
-  const hasOpenOverlay = actions.menu !== null || actions.dialog !== null || manageCurrentRepositories || addingRepositories !== null
+  const hasOpenOverlay = actions.menu !== null || actions.dialog !== null || manageCurrentRepositories
   // The timeline hands over its structural row and anchor types; the actions
   // controller holds the same objects as the panel's rows.
   const timelineRefActions: RefActionsHandler | undefined = capabilities?.branchOps === true || capabilities?.tagOps === true
@@ -906,7 +905,6 @@ export function VcsView({
     [overviewCwd, overviewData.repositories],
   )
   const viewByPath = useMemo(() => new Map(overviewViews.map(view => [view.path, view])), [overviewViews])
-  const unlistedViews = useMemo(() => overviewViews.filter(view => !view.registered), [overviewViews])
 
   const tilePathsKey = JSON.stringify(repositories.list.map(entry => entry.path))
   const tilePaths = useMemo(() => parseJson<string[]>(tilePathsKey), [tilePathsKey])
@@ -2418,7 +2416,6 @@ export function VcsView({
             onSelectPointer={revealPointer}
             onPointerActions={openPointerActions}
             onManageRepositories={restoreFocus => { setRepositoryManagement({ sessionId, restoreFocus }) }}
-            onAddUnlisted={paths => { setAddingRepositories(paths) }}
             writes={actions.inFlight}
             notices={notices}
             onSync={path => { void actions.syncRepository(path) }}
@@ -2469,7 +2466,6 @@ export function VcsView({
           <div className="vcs-main vcs-main-tiled">
             <TiledView
               columns={tileColumns}
-              unlisted={unlistedViews}
               cwd={overviewCwd}
               currentRepo={allScope ? null : state.repo}
               expanded={state.tileExpanded}
@@ -2484,7 +2480,6 @@ export function VcsView({
               onCollapse={path => { update({ tileExpanded: state.tileExpanded.filter(item => item !== path) }) }}
               onPointerActions={openPointerActions}
               onDirectAction={(pointer, action, restore) => { requestPointerAction({ kind: 'direct', pointer, action, restore }) }}
-              onAddUnlisted={paths => { setAddingRepositories(paths) }}
               control={tiledControl}
               t={t}
               locale={locale}
@@ -2612,19 +2607,6 @@ export function VcsView({
           onCancel={closeRepositoryManagement}
           onSaved={() => {
             closeRepositoryManagement()
-            refresh('repositories')
-          }}
-          t={t}
-        />
-      ) : addingRepositories !== null ? (
-        <RepositoryConfigDialog
-          api={api}
-          cwd={repositories.cwd}
-          repositories={repositories.list}
-          initialRepositories={addingRepositories}
-          onCancel={() => { setAddingRepositories(null) }}
-          onSaved={() => {
-            setAddingRepositories(null)
             refresh('repositories')
           }}
           t={t}

@@ -11,12 +11,13 @@ import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 
+import { REPOSITORY_CONFIG_PATH_MAX } from '../lib/repository-config-limits.js'
 import { failureOf } from './api.js'
 import type {
-  Api, ApiFailure, RepositoryConfigAnswer, RepositoryConfigPath, RepositoryInfo, RepositoryPreviewAnswer, RepositorySource,
+  Api, ApiFailure, RepositoryConfigAnswer, RepositoryConfigPath, RepositoryInfo, RepositoryPreviewAnswer, RepositoryScanAnswer, RepositorySource,
 } from './api.js'
 import { Dialog } from './Dialog.jsx'
-import { errorMessage, formatPlural } from './format.js'
+import { errorMessage } from './format.js'
 import { Chevron } from './ui.jsx'
 
 /** The kind of discovery rule the dialog adds. */
@@ -187,19 +188,16 @@ export interface RepositoryConfigDialogProps {
   repositories: readonly RepositoryInfo[]
   onCancel: () => void
   onSaved: () => void
-  /**
-   * Repositories to add on opening, relative to the session folder. Each is
-   * previewed like a typed path; those the Host accepts join the draft, so
-   * saving writes them.
-   */
-  initialRepositories?: readonly string[]
   t: Translate
 }
 
 /** Edit the rules for this session root. The Host owns validation and revision checks. */
-export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSaved, initialRepositories, t }: RepositoryConfigDialogProps) {
+export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSaved, t }: RepositoryConfigDialogProps) {
   const headingRef = useRef<HTMLHeadingElement | null>(null)
   const pathRef = useRef<HTMLInputElement | null>(null)
+  const scanButtonRef = useRef<HTMLButtonElement | null>(null)
+  const scanAddButtons = useRef(new Map<string, HTMLButtonElement>())
+  const scanRequest = useRef<AbortController | null>(null)
   const previewRef = useRef<AbortController | null>(null)
   const savingRef = useRef(false)
   const lifetime = useRef<AbortController | null>(null)
@@ -215,8 +213,10 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
   const [previewError, setPreviewError] = useState<ApiFailure | null>(null)
   const [previewing, setPreviewing] = useState(false)
   const [addedPath, setAddedPath] = useState<string | null>(null)
-  const [initial, setInitial] = useState<{ added: number, failed: string[] } | null>(null)
-  const initialRef = useRef(initialRepositories)
+  const [scanAddedPath, setScanAddedPath] = useState<string | null>(null)
+  const [scan, setScan] = useState<
+    { status: 'idle' | 'scanning' } | { status: 'ready', result: RepositoryScanAnswer } | { status: 'error', error: ApiFailure }
+  >({ status: 'idle' })
   const relativePath = path.startsWith('/') ? path : path.replace(/^(?:\.\/)+/u, '').replace(/\/+$/u, '')
 
   useEffect(() => {
@@ -238,41 +238,10 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
     return () => {
       controller.abort()
       previewRef.current?.abort()
+      scanRequest.current?.abort()
+      scanRequest.current = null
     }
   }, [api, loadAttempt])
-
-  // Preview each repository the dialog opened with and add the ones the Host accepts.
-  useEffect(() => {
-    const paths = initialRef.current
-    if (config === null || paths === undefined || paths.length === 0) return undefined
-    const controller = new AbortController()
-    void (async () => {
-      const accepted: string[] = []
-      const failed: string[] = []
-      for (const candidate of paths) {
-        try {
-          const result = await api.repositoryPreview(candidate, 'repository', controller.signal)
-          if (result.repositories.length === 1) accepted.push(candidate)
-          else failed.push(candidate)
-        } catch {
-          if (controller.signal.aborted) return
-          failed.push(candidate)
-        }
-      }
-      if (controller.signal.aborted) return
-      initialRef.current = undefined
-      setDraft(previous => previous === null ? previous : {
-        ...previous,
-        repositories: [
-          ...previous.repositories,
-          ...accepted.filter(candidate => !previous.repositories.some(entry => entry.path === candidate))
-            .map(candidate => ({ path: candidate, available: true })),
-        ],
-      })
-      setInitial({ added: accepted.length, failed })
-    })()
-    return () => { controller.abort() }
-  }, [api, config])
 
   const conflict = saveError?.code === 'repository-config-conflict'
   const configError = config?.error ? { code: config.error } : null
@@ -286,8 +255,45 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
   const property = kind === 'directory' ? 'scanDirectories' : 'repositories'
   const duplicate = draft?.[property]?.some(entry => entry.path === relativePath)
   const canPreview = editing && relativePath !== '' && !duplicate && !previewing
-  const canAdd = editing && preview !== null && (kind === 'directory' || preview.repositories.length === 1)
+  const ruleLimitReached = (draft?.[property].length ?? 0) >= REPOSITORY_CONFIG_PATH_MAX
+  const canAdd = editing && !duplicate && !ruleLimitReached && preview !== null && (kind === 'directory' || preview.repositories.length === 1)
   const canSave = editing && changed
+  const scanCapacity = REPOSITORY_CONFIG_PATH_MAX - (draft?.repositories.length ?? 0)
+  const scanMatches = scan.status === 'ready'
+    ? scan.result.roots.filter(root => !draft?.repositories.some(entry => entry.path === root.path))
+    : []
+
+  const findUnlisted = async () => {
+    if (!editing || scanRequest.current !== null) return
+    const controller = new AbortController()
+    scanRequest.current = controller
+    setScanAddedPath(null)
+    setScan({ status: 'scanning' })
+    try {
+      const result = await api.repositoryScan(controller.signal)
+      if (!controller.signal.aborted) setScan({ status: 'ready', result })
+    } catch (error) {
+      if (!controller.signal.aborted) setScan({ status: 'error', error: failureOf(error) })
+    } finally {
+      if (scanRequest.current === controller) scanRequest.current = null
+    }
+  }
+
+  const addScanned = (paths: readonly string[]) => {
+    if (!editing || paths.length > scanCapacity) return
+    setDraft(previous => {
+      if (previous === null) return previous
+      const entries = paths.filter(path => !previous.repositories.some(entry => entry.path === path))
+      if (entries.length + previous.repositories.length > REPOSITORY_CONFIG_PATH_MAX) return previous
+      return { ...previous, repositories: [...previous.repositories, ...entries.map(path => ({ path, available: true }))] }
+    })
+    const one = paths.length === 1 ? paths[0] : undefined
+    setScanAddedPath(one ?? null)
+    const index = scanMatches.findIndex(root => root.path === one)
+    const remaining = index === -1 || scanCapacity === 1 ? undefined : scanMatches[index + 1] ?? scanMatches[index - 1]
+    const nextButton = remaining === undefined ? undefined : scanAddButtons.current.get(remaining.path)
+    ;(nextButton ?? scanButtonRef.current)?.focus()
+  }
 
   const clearPreview = () => {
     previewRef.current?.abort()
@@ -306,6 +312,8 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
     setDraft(null)
     setLoadError(null)
     setSaveError(null)
+    setScanAddedPath(null)
+    setScan({ status: 'idle' })
     setLoadAttempt(value => value + 1)
   }
 
@@ -345,6 +353,7 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
 
   const remove = (field: PathField, removedPath: string) => {
     if (addedPath === removedPath) setAddedPath(null)
+    if (scanAddedPath === removedPath) setScanAddedPath(null)
     setDraft(previous => (
       previous === null ? previous : { ...previous, [field]: previous[field].filter(entry => entry.path !== removedPath) }
     ))
@@ -401,15 +410,6 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
       {cwd ? <p className="vcs-dialog-text vcs-repository-scope" title={cwd}>{t('repositoryConfig.scope', { path: cwd })}</p> : null}
       <div className="vcs-repository-body">
         {config === null && loadError === null ? <p className="vcs-dialog-busy" role="status">{t('repositoryConfig.loading')}</p> : null}
-        {initialRepositories !== undefined && initial === null && config !== null ? (
-          <p className="vcs-dialog-busy" role="status">{t('repositoryConfig.checking')}</p>
-        ) : null}
-        {initial === null ? null : (
-          <p className="vcs-dialog-text" role="status">
-            {formatPlural(t, 'repositoryConfig.pending', initial.added)}
-            {initial.failed.length > 0 ? ` ${t('repositoryConfig.pendingFailed', { paths: initial.failed.join(', ') })}` : ''}
-          </p>
-        )}
         {editable ? (
           <section className="vcs-repository-editor">
             <label className="vcs-dialog-label" htmlFor="vcs-repository-config-kind">{t('repositoryConfig.addRule')}</label>
@@ -452,6 +452,7 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
                 {t('repositoryConfig.add')}
               </button>
             </div>
+            {ruleLimitReached ? <p className="vcs-dialog-text">{t('repositoryConfig.ruleLimit', { limit: REPOSITORY_CONFIG_PATH_MAX })}</p> : null}
             {duplicate ? <p className="vcs-dialog-text">{t('repositoryConfig.duplicate')}</p> : null}
             {previewError === null ? null : <p className="vcs-dialog-error" role="alert">{errorMessage(t, previewError)}</p>}
             {preview?.repositories.length ? (
@@ -460,6 +461,50 @@ export function RepositoryConfigDialog({ api, cwd, repositories, onCancel, onSav
                   {preview.repositories.map(entry => <li key={entry.path}><code>{entry.path}</code></li>)}
                 </ul>
               </section>
+            ) : null}
+          </section>
+        ) : null}
+        {editable ? (
+          <section className="vcs-repository-section">
+            <div className="vcs-dialog-actions vcs-repository-add-actions vcs-repository-scan-actions">
+              <button ref={scanButtonRef} type="button" className="vcs-button"
+                aria-disabled={!editing || scan.status === 'scanning'} onClick={findUnlisted}>
+                {t('repositoryConfig.scanUnlisted')}
+              </button>
+              {scanMatches.length > 1 ? (
+                <button type="button" className="vcs-button" disabled={!editing || scanMatches.length > scanCapacity}
+                  onClick={() => { addScanned(scanMatches.map(root => root.path)) }}>{t('repositoryConfig.addScannedAll')}</button>
+              ) : null}
+            </div>
+            <div role="status" className="vcs-repository-feedback">
+              {scan.status === 'scanning' ? t('repositoryConfig.scanningUnlisted') : null}
+              {scan.status === 'ready' ? (
+                <>
+                  {scan.result.roots.length === 0 ? t('repositoryConfig.noUnlisted')
+                    : scanMatches.length === 0 ? t('repositoryConfig.unlistedInDraft')
+                      : `${t('repositoryConfig.unlistedFound')} (${scanMatches.length})`}
+                  {scanAddedPath !== null ? <> {t('repositoryConfig.addedDraft', { path: scanAddedPath })}</> : null}
+                  {scanMatches.length > scanCapacity ? <> {t('repositoryConfig.scanCapacity', { available: scanCapacity })}</> : null}
+                  {scan.result.truncated ? <> {t('repositoryConfig.scanTruncated')}</> : null}
+                </>
+              ) : null}
+            </div>
+            {scan.status === 'error' ? <p className="vcs-dialog-error" role="alert">{errorMessage(t, scan.error)}</p> : null}
+            {scanMatches.length > 0 ? (
+              <ul aria-label={t('repositoryConfig.unlistedFound')}>
+                {scanMatches.map(root => (
+                  <li key={root.path}>
+                    <code>{root.path}</code>
+                    <button type="button" className="vcs-button" disabled={!editing || scanCapacity < 1}
+                      ref={button => {
+                        if (button === null) scanAddButtons.current.delete(root.path)
+                        else scanAddButtons.current.set(root.path, button)
+                      }}
+                      aria-label={t('repositoryConfig.addScannedPath', { path: root.path })}
+                      onClick={() => { addScanned([root.path]) }}>{t('repositoryConfig.add')}</button>
+                  </li>
+                ))}
+              </ul>
             ) : null}
           </section>
         ) : null}

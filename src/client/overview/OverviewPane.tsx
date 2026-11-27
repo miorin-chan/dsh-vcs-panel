@@ -59,7 +59,6 @@ export interface OverviewPaneProps {
   onSelectPointer: (pointer: PointerView, keyboard: boolean) => void
   onPointerActions: (pointer: PointerView, point: { clientX: number, clientY: number }, element: HTMLElement | null) => void
   onManageRepositories: (restoreFocus: () => void) => void
-  onAddUnlisted: (paths: string[]) => void
   /** Each repository's write in flight. */
   writes: ReadonlyMap<string, RepoWrite>
   /** Each repository's last result; a sync outcome shows under its row. */
@@ -208,7 +207,7 @@ function PendingPointers() {
 
 export function OverviewPane({
   data, repositories, views, cwd, currentRepo, selected, width, onResize, onSelectRepository, onSelectPointer, onPointerActions,
-  allRepositories, onSelectAll, onManageRepositories, onAddUnlisted, writes, notices, onSync, control, t, locale,
+  allRepositories, onSelectAll, onManageRepositories, writes, notices, onSync, control, t, locale,
   turnGraphs = [], turnFilter = false, turnRevision, onTurnFilter,
 }: OverviewPaneProps) {
   const titleRef = useRef<HTMLDivElement | null>(null)
@@ -220,7 +219,6 @@ export function OverviewPane({
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const [quietOpen, setQuietOpen] = useState(false)
-  const [unlistedOpen, setUnlistedOpen] = useState(false)
   const [cursor, setCursor] = useState<string | null>(null)
   useLayoutEffect(() => {
     if (turnFilter) { setQuery(''); setCursor(null); setFilter(null) }
@@ -232,7 +230,6 @@ export function OverviewPane({
   const discovered = useMemo(() => new Set(capabilities.keys()), [capabilities])
   const syncing = useSyncing(writes, data)
   const registered = useMemo(() => views.filter(view => view.registered && discovered.has(view.path)), [discovered, views])
-  const unlisted = useMemo(() => views.filter(view => !view.registered && !discovered.has(view.path)).sort(byAttention), [discovered, views])
   const counts = useMemo(() => filterCounts(registered), [registered])
   const summarized = useMemo(() => new Set(registered.map(view => view.path)), [registered])
   const unread = repositories.filter(entry => !summarized.has(entry.path))
@@ -289,7 +286,6 @@ export function OverviewPane({
     ...failed.map(({ entry }) => repositoryStop(entry.path)),
     ...pending.map(entry => repositoryStop(entry.path)),
     ...(quietExpanded ? quiet.map(view => repositoryStop(view.path)) : []),
-    ...(unlistedOpen && !narrowed ? unlisted.flatMap(stopsWithPointers) : []),
   ]
   const hasRow = (key: string | null) => rows.some(row => row.key === key)
   const defaultKey = turnFilter ? rows[0]?.key ?? null
@@ -560,7 +556,6 @@ export function OverviewPane({
             <>
               {view.remotes.length > 1 ? <span className="vcs-overview-tag">{formatPlural(t, 'overview.remotes', view.remotes.length, locale)}</span> : null}
               {view.checkouts.length > 1 ? <span className="vcs-overview-tag" title={formatPlural(t, 'overview.checkouts', view.checkouts.length, locale)}>⌂{view.checkouts.length}</span> : null}
-              {view.registered ? null : <span className="vcs-overview-tag" data-off="">{t('overview.unlistedTag')}</span>}
               <span data-stale={fetch.stale || undefined}>{fetch.text}</span>
               {syncControl(view)}
             </>
@@ -762,27 +757,6 @@ export function OverviewPane({
               <span>{quiet.map(view => view.relativePath.split('/').at(-1)).join(' · ')}</span>
             </button>,
           ]),
-          ...(!narrowed && unlisted.length > 0 ? [
-            heading('overview.unlistedTitle', unlisted.length),
-            <div key="unlisted-summary" className="vcs-overview-unlisted">
-              <span>
-                {formatPlural(t, 'overview.unlisted', unlisted.length, locale)}
-                {unlisted.some(view => !view.quiet)
-                  ? ` ${formatPlural(t, 'overview.unlistedAttention', unlisted.filter(view => !view.quiet).length, locale)}`
-                  : ''}
-              </span>
-              <span className="vcs-overview-actions">
-                <button type="button" className="vcs-button" onClick={() => { setUnlistedOpen(open => !open) }}>
-                  {t(unlistedOpen ? 'overview.unlistedHide' : 'overview.unlistedShow')}
-                </button>
-                <button type="button" className="vcs-button" onClick={() => { onAddUnlisted(unlisted.map(view => relativeTo(view.path, cwd))) }}>
-                  {t('overview.unlistedAdd')}
-                </button>
-              </span>
-            </div>,
-            ...(unlistedOpen ? unlisted.flatMap(rowsWithPointers) : []),
-          ] : []),
-          data.unlistedTruncated ? <p key="truncated" className="vcs-note">{t('overview.unlistedTruncated')}</p> : null,
           data.status === 'ready' && rows.length === 0 && narrowed ? <p key="empty" className="vcs-note">{t('overview.empty')}</p> : null,
         ]}
       </div>

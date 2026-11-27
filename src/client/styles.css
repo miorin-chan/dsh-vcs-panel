@@ -881,6 +881,12 @@ select.vcs-repository-kind {
   margin: 0;
 }
 
+.vcs-repository-scan-actions.vcs-dialog-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
 .vcs-repository-editor > :is(.vcs-dialog-text, .vcs-dialog-error, .vcs-dialog-busy, .vcs-repository-preview) {
   margin: 8px 0 0;
 }
@@ -3421,8 +3427,7 @@ select.vcs-repository-kind {
   grid-column: auto;
 }
 
-.vcs-overview-quiet,
-.vcs-overview-unlisted {
+.vcs-overview-quiet {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -3454,11 +3459,6 @@ select.vcs-repository-kind {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.vcs-overview-actions {
-  display: flex;
-  gap: 6px;
 }
 
 .vcs-overview-resizer {
@@ -3798,25 +3798,6 @@ select.vcs-repository-kind {
   margin-top: 8px;
   padding: 8px 4px 0;
   border-top: 0.5px dashed var(--dsw-alias-border-l2);
-}
-
-.vcs-tile-unlisted {
-  flex-basis: 240px;
-  gap: 8px;
-  padding: 12px;
-  border-style: dashed;
-  font-size: 12px;
-}
-
-.vcs-tile-unlisted ul {
-  margin: 0;
-  padding-left: 16px;
-  overflow-y: auto;
-  color: var(--dsw-alias-label-secondary);
-}
-
-.vcs-tile-unlisted [data-state] {
-  color: var(--vcs-chip-color);
 }
 
 .vcs-tile-actionbar {

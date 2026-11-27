@@ -18,7 +18,8 @@ Host 端为无运行时依赖的 Node ESM 插件，注入 `['connection', 'sessi
 | `GET /api/vcs.repository-config` | `sessionId` | `revision`、`scanDirectories[]`、`repositories[]`（条目含 `path`、`available`）、`backends[]`（条目含 `path`、`vcs`、`available`）、`error?` |
 | `GET /api/vcs.repository-preview` | `sessionId`、`path`、`kind`（`directory` 或 `repository`） | `repositories[]`（相对 `path`、`name`、`vcs`、`availableVcs`）、`truncated` |
 | `POST /api/vcs.repository-config` | JSON `{ sessionId, revision, scanDirectories, repositories, backends? }`（两个路径数组，以及 `{ path, vcs }` 偏好数组） | 同配置 GET |
-| `GET /api/vcs.overview` | `sessionId`、`repo?`（至多一个，须是已发现的仓库） | NDJSON：先 `scope`（`cwd`、`repositories`），每个仓库读完一行 `repository`（`OverviewRepository`）或 `error`（`path`、`error.code`），最后 `done`（`unlistedTruncated`）；见[全景读取](#全景读取) |
+| `GET /api/vcs.repository-scan` | `sessionId` | `{ roots: [{path, vcs}], truncated }`，路径相对会话目录；仅由设置中的扫描按钮触发 |
+| `GET /api/vcs.overview` | `sessionId`、`repo?`（至多一个，须是已发现的仓库） | NDJSON：先 `scope`（`cwd`、`repositories`），每个仓库读完一行 `repository`（`OverviewRepository`）或 `error`（`path`、`error.code`），最后 `done`；见[全景读取](#全景读取) |
 | `GET /api/vcs.activity` | `sessionId`、`until?`（含该秒）、`limit?` | `ActivityAnswer`：`entries[]`、`next`、`failures[]`；见[全部仓库活动读取](#全部仓库活动读取) |
 | `GET /api/vcs.status` | `sessionId`、`repo`、`worktree?`、`readOnly?`（`1` 跳过 Jujutsu 快照） | `repo`、`vcs`、`capabilities`、`defaultNode`、`branch`、`workingCopy?`、`groups`、`total`、`untrackedTotal`、`untrackedAdded`、`truncated`、`stageHistory` |
 | `GET /api/vcs.watch` | `sessionId`、`repo?`、`worktree?`（可重复）、`client?` | SSE `ready` 与 `invalidate`（`domains[]`、`origin?`） |
@@ -339,9 +340,9 @@ Git 原生命令遇到这些占用时可能已经恢复了 U，或直接覆盖�
 `vcs.overview` 为[全景栏与平铺](DESIGN.md#全景栏)提供每个指针的基线、领先 / 落后、独有与占用。
 带 `repo` 时只读这一个仓库，目标按读取路由的规则校验；参数无效或缺少后端命令时在流开始前返回 JSON 错误。
 不带 `repo` 时沿用仓库发现及同仓库工作树的归组规则，每次最多读 4 个，读完一个就写出一行，单个仓库失败只写一行 `error`。
-已登记的仓库读完后，Host 从会话目录逐层列目录（最深 6 层、最多 20,000 次列举，跳过 `.git`、`.jj`、`node_modules`，
-只进入解析后仍在会话目录内的目录），把带标记、却与已登记仓库不共用后端元数据目录的仓库按 `registered: false` 写出；
-主检出在会话目录外的仓库不列出。
+全景不扫描规则外的仓库。`vcs.repository-scan` 由「管理仓库」手动触发，只返回候选路径，不读取指针摘要。
+Host 从会话目录逐层列出目录，最深 6 层，最多 20,000 次列举，至多返回 50 个候选。
+扫描跳过 `.git`、`.jj`、`node_modules` 和符号链接，排除与已登记仓库共用后端元数据目录或主检出位于会话目录外的候选。
 
 每个 Git 仓库的读取：
 
@@ -609,7 +610,8 @@ type TurnSummary = {
 | 项目 | 上限 | 执行位置 |
 | --- | --- | --- |
 | 单会话初始仓库根 / 附加工作树数 | 各 50 | Host `discoverRepositories` / `groupRepositories` |
-| 全景：每仓库检出 / 指针；未登记仓库的列举深度 / 列举次数 / 仓库数 | 51 / 2,000；6 层 / 20,000 / 50 | Host `overview.js` |
+| 全景：每仓库检出 / 指针 | 51 / 2,000 | Host `overview.js` |
+| 手动扫描：未登记仓库的列举深度 / 列举次数 / 仓库数 | 6 层 / 20,000 / 50 | Host `overview.js` |
 | 贮藏列表（全景、历史首页与全部仓库）/ 检查及冲突路径 / 存放说明 | 200 条 / 50 条 / 1,000 字符 | Host `stash.js` / `stash-ops.js` / `handlers.js` |
 | 全景栏宽度 / 抽屉阈值；平铺每列历史 / 并发读取 | 320–600px（默认 400）/ 余宽 360px；300 个提交 / 4 | Client `state.ts`、`VcsView`、`useTileHistories` |
 | 仓库发现标记检查 / 配置文件 / 每组配置路径与后端偏好 | 1,000 项 / 64 KiB / 50 项 | Host `repositories.js` / `repository-config.js` |
